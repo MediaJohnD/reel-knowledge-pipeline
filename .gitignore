@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.pyright/
+.claude/scheduled_tasks.lock
+
+.env
+
+# Generated/runtime data - keep the directories, ignore their contents.
+data/inbox/*
+!data/inbox/.gitkeep
+data/logs/*
+!data/logs/.gitkeep
+data/tmp/*
+!data/tmp/.gitkeep
+data/notes/*
+!data/notes/.gitkeep
+data/generated_skills/*
+!data/generated_skills/.gitkeep

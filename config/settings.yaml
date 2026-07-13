@@ -1,0 +1,89 @@
+# Non-secret configuration for the reel pipeline.
+# Secrets (API keys, webhook shared secret) live in environment variables / .env - see .env.example.
+# Any value here can be overridden by an environment variable prefixed with REEL_
+# (e.g. paths.vault_dir is overridden by REEL_VAULT_DIR).
+
+paths:
+  inbox_dir: data/inbox
+  queue_file: data/inbox/queue.txt
+  state_file: data/inbox/state.json
+  needs_attention_file: data/inbox/needs-attention.txt
+  logs_dir: data/logs
+  tmp_dir: data/tmp
+  vault_dir: data/notes
+  skills_dir: data/generated_skills
+
+prompts:
+  enrich_transcript: config/prompts/enrich_transcript.md
+  create_skill: config/prompts/create_skill.md
+
+transcription:
+  backend: local # local | openai
+  local_model_size: base
+  openai_model: whisper-1
+
+# LLM used for enrichment and skill generation. "ollama" runs fully locally (no
+# API key, no cost) against an already-running Ollama instance with the model
+# below already pulled (`ollama pull qwen2.5:14b`). Switch to "anthropic" (and
+# set ANTHROPIC_API_KEY in .env) for hosted Claude instead.
+llm:
+  provider: ollama # anthropic | ollama
+  ollama_host: http://localhost:11434
+  # Ollama defaults to a 4096-token context regardless of the model's real
+  # capacity; long transcripts or multi-image carousels can exceed that.
+  ollama_num_ctx: 16384
+
+enrichment:
+  # Model name meaning depends on llm.provider above - an Ollama model tag here,
+  # or an Anthropic model id (e.g. claude-sonnet-4-5) if provider is "anthropic".
+  model: qwen2.5:14b
+  max_tokens: 4096
+
+skill_writer:
+  model: qwen2.5:14b
+  max_tokens: 2048
+  enabled: true
+
+# Photo posts / carousels (no video) are described by a vision-capable model
+# instead of transcribed. Must support image input - check `ollama list` for a
+# "vision" capability tag, or any current Claude model if llm.provider is
+# "anthropic".
+image_description:
+  model: mistral-small3.1
+  max_tokens: 1024
+
+# Platforms the downloader will attempt. Anything not matched here is rejected up
+# front rather than attempted. Instagram is handled by gallery-dl (downloader.py's
+# DispatchingDownloader), everything else by yt-dlp - both require the same
+# guardrails: no browser automation, and Instagram specifically requires an
+# explicitly-configured authenticated session (REEL_INSTAGRAM_COOKIES_FILE or
+# REEL_INSTAGRAM_COOKIES_BROWSER in .env) rather than working anonymously. This
+# is a deliberate, scoped exception to the "no Instagram by default" guardrail in
+# CLAUDE.md/AGENTS.md, made for low-volume personal use with the account owner's
+# own real account (no burner) - see docs/runbook.md and the research note in
+# the Obsidian vault under 20-Resources/Tools/.
+download:
+  allowed_domains:
+    - youtube.com
+    - youtu.be
+    - vimeo.com
+    - tiktok.com
+    - twitter.com
+    - x.com
+    - instagram.com
+  blocked_domains: []
+
+webhook:
+  host: 127.0.0.1
+  port: 8787
+
+# Automatic disk/log housekeeping - runs at the top of every run_once() (so it
+# fires on every webhook hit / queue check, no separate cron job needed). Set
+# either value to 0 to keep everything forever instead of pruning.
+maintenance:
+  # data/tmp/<content_id>/ dirs older than this are deleted regardless of the
+  # item's status - bounds disk use even for items that never succeed.
+  tmp_retention_days: 30
+  # needs-attention.txt lines older than this are dropped - the item is still
+  # tracked in state.json either way, this only trims the human-readable log.
+  needs_attention_retention_days: 30
