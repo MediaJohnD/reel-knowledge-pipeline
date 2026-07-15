@@ -381,3 +381,57 @@ def test_multi_video_carousel_transcribes_every_clip_and_combines_them(tmp_path)
     note_text = note_path.read_text(encoding="utf-8")
     assert "transcript for" in note_text
     assert note_text.count("transcript for") == 2  # both clips' text made it into the note
+
+
+def test_reprocessing_with_a_new_title_removes_the_stale_note_and_skill(tmp_path):
+    # Regression test: enrichment (an LLM call) isn't deterministic, so reprocessing
+    # an already-DONE item (a concurrent duplicate run, or a manual retry) can produce
+    # a different title -> a different <content_id>-<title-slug>.md filename. Without
+    # cleanup, the old file/skill-dir would sit around forever as an orphan duplicate.
+    settings = make_settings(tmp_path)
+
+    class VariableTitleEnricher:
+        def __init__(self):
+            self.call_count = 0
+
+        def enrich(self, transcript, source_url):
+            self.call_count += 1
+            title = "First Title" if self.call_count == 1 else "Second Title"
+            return EnrichmentResult(
+                title=title,
+                summary="A short summary.",
+                tags=["howto"],
+                tools_mentioned=["Widget"],
+                key_takeaways=["Step one"],
+                high_signal=True,
+                skill_candidate_reason="Reusable process.",
+            )
+
+    pipeline = WorkerPipeline(
+        settings=settings,
+        queue_manager=QueueManager(settings),
+        downloader=FakeDownloader(),
+        transcriber=FakeTranscriber(),
+        image_describer=FakeImageDescriber(),
+        enricher=VariableTitleEnricher(),
+        skill_writer=FakeSkillWriter(settings),
+    )
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=rerun1\n", encoding="utf-8"
+    )
+    pipeline.run_once()
+    (content_id,) = pipeline.queue_manager.load_state().keys()
+    record = pipeline.queue_manager.load_state()[content_id]
+    assert record.note_path is not None
+    first_note_path = Path(record.note_path)
+    assert first_note_path.exists()
+
+    # Simulate reprocessing the same (already-DONE) record - e.g. the concurrency race
+    # this fix closes, or a manual retry - producing a different title this time.
+    pipeline.process_item(record)
+
+    assert not first_note_path.exists()  # stale note cleaned up
+    second_record = pipeline.queue_manager.load_state()[content_id]
+    assert second_record.note_path is not None
+    assert Path(second_record.note_path).exists()
+    assert second_record.note_path != str(first_note_path)

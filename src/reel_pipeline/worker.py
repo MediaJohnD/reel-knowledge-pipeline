@@ -118,6 +118,8 @@ class WorkerPipeline:
             note_path = write_note(self.settings, content_item)
             skill_path = self.skill_writer.generate(content_item)
 
+            previous_note_path = record.note_path
+            previous_skill_path = record.skill_path
             record.status = ItemStatus.DONE
             record.note_path = str(note_path)
             record.skill_path = str(skill_path) if skill_path else None
@@ -130,6 +132,8 @@ class WorkerPipeline:
                 note_path=str(note_path),
             )
             self._cleanup_tmp_dir(record.content_id)
+            self._cleanup_stale_note(previous_note_path, record.note_path)
+            self._cleanup_stale_skill(previous_skill_path, record.skill_path)
 
         except Exception as exc:  # noqa: BLE001 - any stage failure must be recorded, not raised
             new_error = str(exc)
@@ -173,6 +177,38 @@ class WorkerPipeline:
             backend=results[0].backend,
             duration_seconds=total_duration,
         )
+
+    def _cleanup_stale_note(self, previous_path: str | None, new_path: str) -> None:
+        """Reprocessing an already-DONE item (e.g. a concurrent duplicate run, or a
+        manual retry after clearing an error) can produce a different title -
+        enrichment is an LLM call, not deterministic - and note filenames are
+        `<content_id>-<title-slug>.md`. Without this, the old file would sit in the
+        vault forever as an orphan duplicate, indistinguishable from a genuinely
+        different note.
+        """
+        if not previous_path or previous_path == new_path:
+            return
+        try:
+            old_file = Path(previous_path)
+            if old_file.is_file():
+                old_file.unlink()
+        except OSError as exc:
+            log_context(logger, 30, "stale note cleanup failed", path=previous_path, error=str(exc))
+
+    def _cleanup_stale_skill(self, previous_path: str | None, new_path: str | None) -> None:
+        """Same rationale as _cleanup_stale_note, for skill_writer's `<slug>/SKILL.md`
+        artifacts - removes the whole stale `<slug>/` directory, not just the file.
+        """
+        if not previous_path or previous_path == new_path:
+            return
+        try:
+            old_dir = Path(previous_path).parent
+            if old_dir.is_dir():
+                shutil.rmtree(old_dir)
+        except OSError as exc:
+            log_context(
+                logger, 30, "stale skill cleanup failed", path=previous_path, error=str(exc)
+            )
 
     def _cleanup_tmp_dir(self, content_id: str) -> None:
         """Remove downloaded media for a successfully-processed item - its content is

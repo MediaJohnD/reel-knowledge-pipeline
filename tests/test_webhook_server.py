@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import threading
+import time
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
+from reel_pipeline import webhook_server
 from reel_pipeline.config import Settings
 from reel_pipeline.models import ItemStatus, QueueSource, StateRecord
 from reel_pipeline.queue_manager import QueueManager
@@ -92,3 +95,46 @@ def test_webhook_rejects_missing_secret(tmp_path):
     response = client.post("/webhook", json={"url": "https://www.youtube.com/watch?v=abc"})
 
     assert response.status_code == 401
+
+
+def test_concurrent_background_triggers_never_run_worker_concurrently(tmp_path, monkeypatch):
+    # Reproduces (as a regression test) a real bug: two webhook POSTs for the same
+    # item arriving close together used to each spawn their own run_once(), and both
+    # would pick up and fully reprocess the same not-yet-DONE record - duplicate
+    # downloads/LLM calls, and (since enrichment titles aren't deterministic) two
+    # differently-named notes/skills for the same content_id.
+    settings = make_settings(tmp_path)
+    lock = threading.Lock()
+    active = 0
+    max_concurrent = 0
+    run_count = 0
+
+    class FakeSummary:
+        processed = 0
+        done = 0
+        failed = 0
+
+    class FakeWorker:
+        def run_once(self):
+            nonlocal active, max_concurrent, run_count
+            with lock:
+                active += 1
+                max_concurrent = max(max_concurrent, active)
+            time.sleep(0.05)
+            with lock:
+                active -= 1
+                run_count += 1
+            return FakeSummary()
+
+    monkeypatch.setattr(webhook_server, "build_worker", lambda settings: FakeWorker())
+
+    t1 = threading.Thread(target=webhook_server._run_worker_in_background, args=(settings,))
+    t1.start()
+    time.sleep(0.01)  # ensure t1 has acquired the lock before t2 starts
+    t2 = threading.Thread(target=webhook_server._run_worker_in_background, args=(settings,))
+    t2.start()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+
+    assert max_concurrent == 1  # never ran two run_once() calls at the same time
+    assert run_count == 2  # but t2's trigger still caused a drain pass, not silently lost

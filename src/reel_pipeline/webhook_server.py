@@ -13,6 +13,7 @@ alternative to scraping platforms like Instagram directly.
 from __future__ import annotations
 
 import hmac
+import threading
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
@@ -123,19 +124,43 @@ class WebhookResponse(BaseModel):
     reason: str | None = None
 
 
+# Single-flight guard: get_actionable_items() has no "currently being processed" concept,
+# so two webhook POSTs arriving close together (a double-tap, or the same link submitted
+# twice before the first pass finishes) used to each schedule their own background
+# run_once(), and both would pick up and fully reprocess the same not-yet-DONE record -
+# duplicate downloads, duplicate LLM calls, and (since enrichment titles aren't
+# deterministic) two differently-named notes/skills for the same content_id. Confirmed
+# happening in production logs before this fix. Only one run_once() loop runs at a time
+# per process now; a request that arrives mid-run just marks the loop to run one more
+# pass after finishing (draining), rather than spawning a concurrent duplicate.
+_worker_lock = threading.Lock()
+_rerun_requested = threading.Event()
+
+
 def _run_worker_in_background(settings: Settings) -> None:
+    if not _worker_lock.acquire(blocking=False):
+        _rerun_requested.set()
+        return
     try:
-        summary = build_worker(settings).run_once()
-        log_context(
-            logger,
-            20,
-            "background run_once complete",
-            processed=summary.processed,
-            done=summary.done,
-            failed=summary.failed,
-        )
-    except Exception as exc:  # noqa: BLE001 - background task must never crash the server
-        log_context(logger, 40, "background run_once failed", error=str(exc))
+        while True:
+            _rerun_requested.clear()
+            try:
+                summary = build_worker(settings).run_once()
+                log_context(
+                    logger,
+                    20,
+                    "background run_once complete",
+                    processed=summary.processed,
+                    done=summary.done,
+                    failed=summary.failed,
+                )
+            except Exception as exc:  # noqa: BLE001 - background task must never crash the server
+                log_context(logger, 40, "background run_once failed", error=str(exc))
+                break
+            if not _rerun_requested.is_set():
+                break
+    finally:
+        _worker_lock.release()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
