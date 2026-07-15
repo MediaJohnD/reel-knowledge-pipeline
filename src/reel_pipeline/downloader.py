@@ -2,15 +2,22 @@
 
 Dispatches by platform: Instagram goes through gallery-dl (better-maintained
 Instagram extractor than yt-dlp - see the research note in the Obsidian vault
-under 20-Resources/Tools/), everything else through yt-dlp. URL-level guardrails
-(blocked domains, allow-list) are enforced upstream in validators.validate_url /
+under 20-Resources/Tools/), everything else (YouTube, Facebook, LinkedIn,
+TikTok, X/Twitter, Vimeo) through yt-dlp. URL-level guardrails (blocked
+domains, allow-list) are enforced upstream in validators.validate_url /
 queue_manager - this module assumes it is only ever called with a URL that
 already passed validation, but still surfaces downloader failures clearly
 rather than swallowing them.
 
 Instagram requires an authenticated session to download reliably; see
 Settings.require_instagram_cookies() and docs/runbook.md for how to configure
-REEL_INSTAGRAM_COOKIES_FILE / REEL_INSTAGRAM_COOKIES_BROWSER.
+REEL_INSTAGRAM_COOKIES_FILE / REEL_INSTAGRAM_COOKIES_BROWSER. Facebook and
+LinkedIn generally require the same, via the separate, optional
+REEL_YTDLP_COOKIES_FILE / REEL_YTDLP_COOKIES_BROWSER (see
+Settings.optional_ytdlp_cookies()) - optional because public YouTube already
+works anonymously. LinkedIn's yt-dlp extractor coverage is historically
+limited/unreliable outside LinkedIn Learning content; a DownloadError on a
+LinkedIn feed-post URL may reflect that gap rather than a config problem.
 
 (2026-07-13 currency check: yt-dlp 2026.07.04 reworked its Instagram extractor
 and added cookie-invalidation detection; gallery-dl 1.32.6 shipped no
@@ -69,6 +76,19 @@ class YtDlpDownloader:
                 }
             ],
         }
+
+        # Optional: public YouTube works anonymously, but gated platforms (Facebook,
+        # LinkedIn) generally require a logged-in session the same way Instagram does.
+        # If configured, yt-dlp uses it for every domain it handles; if not, yt-dlp
+        # attempts anonymous access and raises its own clear "log in required" error
+        # for content that needs it.
+        cookies = self.settings.optional_ytdlp_cookies()
+        if cookies is not None:
+            cookie_kind, cookie_value = cookies
+            if cookie_kind == "file":
+                ydl_opts["cookiefile"] = cookie_value
+            else:
+                ydl_opts["cookiesfrombrowser"] = (cookie_value,)
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # pyright: ignore[reportArgumentType]

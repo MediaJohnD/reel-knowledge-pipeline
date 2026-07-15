@@ -19,13 +19,20 @@ The system supports:
   general "no Instagram by default" baseline, made for the project owner's own real account
   (no burner) at low volume ("a handful of reels that matter", not bulk/scheduled scraping).
   See `docs/runbook.md`'s "Instagram setup" section and the research note in the Obsidian
-  vault (`20-Resources/Tools/Instagram Reel Ingestion Research (2026-07-11).md`). Any
-  `download.blocked_domains` entries are still enforced up front - blocked URLs route to
-  `data/inbox/needs-attention.txt`, never downloaded.
+  vault (`20-Resources/Tools/Instagram Reel Ingestion Research (2026-07-11).md`).
+- Facebook and LinkedIn are enabled as of 2026-07-14 under the same terms as Instagram -
+  cookie-authenticated via yt-dlp (`REEL_YTDLP_COOKIES_FILE`/`REEL_YTDLP_COOKIES_BROWSER`,
+  optional since public YouTube works without them), owner's own real account, low volume.
+  LinkedIn's yt-dlp extractor coverage is historically limited/unreliable outside LinkedIn
+  Learning content - some LinkedIn URLs will fail regardless of cookie config; that's a
+  yt-dlp coverage gap, not a misconfiguration. YouTube/TikTok/X/Vimeo remain anonymous
+  (no cookies configured/required) since they're public by default.
+- Any `download.blocked_domains` entries are still enforced up front - blocked URLs route
+  to `data/inbox/needs-attention.txt`, never downloaded.
 - Treat any other third-party account automation as out of scope unless explicitly requested.
 - Never hardcode secrets, cookies, or personal absolute paths. Secrets (including the
-  Instagram cookies file/browser choice) live only in environment variables (`.env`, never
-  committed) - see `.env.example`.
+  Instagram/yt-dlp cookies file/browser choice) live only in environment variables (`.env`,
+  never committed) - see `.env.example`.
 
 ## Architecture rules
 - Capture, queue, downloader, transcriber, enricher, note writer, and skill writer stay in separate modules under `src/reel_pipeline/` (see `docs/architecture.md`).

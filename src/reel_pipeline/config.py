@@ -128,6 +128,14 @@ class Settings(BaseModel):
     instagram_cookies_file: str | None = None
     instagram_cookies_browser: str | None = None
 
+    # Generic cookies for everything yt-dlp handles (YouTube, Facebook, LinkedIn,
+    # TikTok, X/Twitter, Vimeo) - unlike Instagram's, these are optional: public
+    # YouTube already works anonymously, but Facebook and LinkedIn generally gate
+    # most content behind a login the same way Instagram does. Same env-only,
+    # never-in-settings.yaml treatment as the Instagram cookies above.
+    ytdlp_cookies_file: str | None = None
+    ytdlp_cookies_browser: str | None = None
+
     model_config = {"arbitrary_types_allowed": True}
 
     def resolve(self, relative_path: str) -> Path:
@@ -206,6 +214,18 @@ class Settings(BaseModel):
             "REEL_INSTAGRAM_COOKIES_FILE (a Netscape-format cookies.txt) or "
             "REEL_INSTAGRAM_COOKIES_BROWSER (e.g. 'chrome') in .env - see docs/runbook.md."
         )
+
+    def optional_ytdlp_cookies(self) -> tuple[str, str] | None:
+        """Returns (kind, value) if configured, else None - unlike Instagram's cookies,
+        these are optional: public YouTube works without them, but gated platforms
+        (Facebook, LinkedIn) will fail with a clear "log in" error from yt-dlp itself
+        if content requires auth and none is configured.
+        """
+        if self.ytdlp_cookies_file:
+            return "file", self.ytdlp_cookies_file
+        if self.ytdlp_cookies_browser:
+            return "browser", self.ytdlp_cookies_browser
+        return None
 
     def ensure_directories(self) -> None:
         for directory in (
@@ -289,6 +309,8 @@ def load_settings(
         openai_api_key=env.get("OPENAI_API_KEY") or None,
         instagram_cookies_file=env.get("REEL_INSTAGRAM_COOKIES_FILE") or None,
         instagram_cookies_browser=env.get("REEL_INSTAGRAM_COOKIES_BROWSER") or None,
+        ytdlp_cookies_file=env.get("REEL_YTDLP_COOKIES_FILE") or None,
+        ytdlp_cookies_browser=env.get("REEL_YTDLP_COOKIES_BROWSER") or None,
     )
 
 

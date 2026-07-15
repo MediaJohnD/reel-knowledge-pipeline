@@ -6,9 +6,12 @@ enriches the transcript into structured metadata, writes an Obsidian note,
 and - only for high-signal content - generates a reusable Claude/Codex skill
 artifact.
 
-No browser automation. No hardcoded secrets. No Instagram scraping by
-default. See [`docs/architecture.md`](docs/architecture.md) for the full
-design and [`docs/runbook.md`](docs/runbook.md) for day-to-day operation.
+No browser automation. No hardcoded secrets. No social-platform scraping by
+default - YouTube/TikTok/X/Vimeo work anonymously; Instagram, Facebook, and
+LinkedIn are each a deliberate, cookie-authenticated opt-in (see
+`docs/runbook.md`). See [`docs/architecture.md`](docs/architecture.md) for
+the full design and [`docs/runbook.md`](docs/runbook.md) for day-to-day
+operation.
 
 ## Quickstart
 
@@ -76,7 +79,7 @@ docs/               architecture, runbook, acceptance tests
 - Only the platforms listed in `download.allowed_domains` are ever attempted, via yt-dlp or gallery-dl.
 - No browser automation, ever - both downloaders are cookie-authenticated CLI tools, never a driven browser session.
 - `download.blocked_domains` is enforced before any download attempt - those URLs are logged to `needs-attention.txt` instead.
-- Instagram is a deliberate, scoped exception to a general "no Instagram by default" baseline: enabled via gallery-dl for low-volume personal use with the account owner's own real account. See `docs/runbook.md`'s "Instagram setup" section.
-- Secrets (including Instagram cookies config) are read from the environment only; `config/settings.yaml` never contains secrets.
+- Instagram, Facebook, and LinkedIn are each a deliberate, scoped exception to a general "no social platform by default" baseline: enabled via gallery-dl (Instagram) or optional yt-dlp cookies (Facebook/LinkedIn) for low-volume personal use with the account owner's own real account. YouTube/TikTok/X/Vimeo stay anonymous. See `docs/runbook.md`'s "Instagram setup" and "Facebook and LinkedIn setup" sections.
+- Secrets (including Instagram/yt-dlp cookies config) are read from the environment only; `config/settings.yaml` never contains secrets.
 
 See [`CLAUDE.md`](CLAUDE.md) for the full set of project rules this repository was built against.

@@ -54,14 +54,18 @@ image_description:
 
 # Platforms the downloader will attempt. Anything not matched here is rejected up
 # front rather than attempted. Instagram is handled by gallery-dl (downloader.py's
-# DispatchingDownloader), everything else by yt-dlp - both require the same
-# guardrails: no browser automation, and Instagram specifically requires an
-# explicitly-configured authenticated session (REEL_INSTAGRAM_COOKIES_FILE or
-# REEL_INSTAGRAM_COOKIES_BROWSER in .env) rather than working anonymously. This
-# is a deliberate, scoped exception to the "no Instagram by default" guardrail in
-# CLAUDE.md/AGENTS.md, made for low-volume personal use with the account owner's
-# own real account (no burner) - see docs/runbook.md and the research note in
-# the Obsidian vault under 20-Resources/Tools/.
+# DispatchingDownloader), everything else (including Facebook and LinkedIn) by
+# yt-dlp - both require the same guardrails: no browser automation, and gated
+# platforms require an explicitly-configured authenticated session
+# (REEL_INSTAGRAM_COOKIES_FILE/BROWSER for Instagram, REEL_YTDLP_COOKIES_FILE/BROWSER
+# for everything else) rather than working anonymously. Instagram, Facebook, and
+# LinkedIn are each a deliberate, scoped exception to the "no social platform by
+# default" guardrail in CLAUDE.md/AGENTS.md, made for low-volume personal use with
+# the account owner's own real account (no burner) - see docs/runbook.md and the
+# research note in the Obsidian vault under 20-Resources/Tools/. LinkedIn in
+# particular has historically limited/unreliable yt-dlp extractor support outside
+# LinkedIn Learning content - expect some LinkedIn URLs to fail even with cookies
+# configured; that's a yt-dlp coverage gap, not a misconfiguration.
 download:
   allowed_domains:
     - youtube.com
@@ -71,6 +75,9 @@ download:
     - twitter.com
     - x.com
     - instagram.com
+    - facebook.com
+    - fb.watch
+    - linkedin.com
   blocked_domains: []
 
 webhook:

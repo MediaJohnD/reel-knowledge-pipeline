@@ -214,6 +214,36 @@ Cookies expire and need periodic refresh (re-export or just stay logged in for
 option B). This is documented as a real, accepted tradeoff for low-volume
 personal use - see the guardrail note above.
 
+## Facebook and LinkedIn setup (cookies, optional)
+
+Facebook and LinkedIn (like Instagram) generally require an authenticated
+session for yt-dlp to download most content, even public-looking posts. Set
+exactly one of these in `.env` - same two options as Instagram, just a
+different pair of variables since these go through yt-dlp, not gallery-dl:
+
+**Option A - cookies file:**
+1. Log into facebook.com and/or linkedin.com in a desktop browser with your real account.
+2. Export cookies with a browser extension like "Get cookies.txt LOCALLY", scoped to the site(s) you need.
+3. Save the exported file outside the repo (e.g. `C:/Users/you/ytdlp-cookies.txt`).
+4. Set `REEL_YTDLP_COOKIES_FILE=C:/Users/you/ytdlp-cookies.txt` in `.env`.
+
+**Option B - read cookies directly from an installed browser:**
+1. Log into facebook.com and/or linkedin.com in Chrome, Edge, or Firefox.
+2. Set `REEL_YTDLP_COOKIES_BROWSER=chrome` (or `edge`, `firefox`) in `.env`.
+3. Close the browser first if you hit a "database is locked" error.
+
+Unlike Instagram's cookies, these are **optional** - YouTube, TikTok, X, and
+Vimeo already work anonymously and will keep working if you never set this.
+It only matters for Facebook/LinkedIn URLs, and yt-dlp will fail with its own
+clear "log in required" message if the content needs auth and none is
+configured.
+
+**Known limitation:** LinkedIn's yt-dlp extractor mainly covers LinkedIn
+Learning content; regular feed video posts have historically limited/
+unreliable support. A `DownloadError` on a LinkedIn feed-post URL may reflect
+that yt-dlp coverage gap rather than a cookie problem - check the error
+message for specifics before assuming misconfiguration.
+
 ## Remote ingestion via Tailscale + iOS Shortcut
 
 For sending links from a phone without relying on the same WiFi network:
@@ -237,13 +267,15 @@ Tailscale itself only controls *reachability*, not authentication.
 ### Alternative: web form, no Shortcut needed
 
 The webhook server also serves a minimal page at `GET /` - a text box and a
-Send button, with the shared secret already embedded so it can call
-`/webhook` itself. Open `http://<tailscale-magicdns-name>:<port>/` in any
-browser on a tailnet device (phone, laptop, anything), paste a link, tap
-Send. Add it to your phone's home screen (Safari: Share -> Add to Home
-Screen) for a one-tap-open icon. Less slick than the Shortcut (no
-clipboard auto-read, no Action Button binding), but needs zero setup beyond
-Tailscale itself and works from any device/browser, not just iOS.
+Send button. The first time you use it (per device/browser), tap "Set/change
+webhook secret" and paste in your `REEL_WEBHOOK_SECRET` - it's saved in that
+browser's `localStorage`, never embedded in the page itself. Open
+`http://<tailscale-magicdns-name>:<port>/` in any browser on a tailnet device
+(phone, laptop, anything), paste a link, tap Send. Add it to your phone's
+home screen (Safari: Share -> Add to Home Screen) for a one-tap-open icon.
+Less slick than the Shortcut (no clipboard auto-read, no Action Button
+binding), but needs zero setup beyond Tailscale itself and works from any
+device/browser, not just iOS.
 
 ## Troubleshooting
 
@@ -257,6 +289,8 @@ Tailscale itself and works from any device/browser, not just iOS.
 | `RuntimeError: Instagram downloads require a logged-in session` | Set `REEL_INSTAGRAM_COOKIES_FILE` or `REEL_INSTAGRAM_COOKIES_BROWSER` - see "Instagram setup" above |
 | yt-dlp download errors | Unsupported/blocked domain, network issue, or `ffmpeg` missing |
 | gallery-dl download errors / empty results | Cookies expired - re-export the cookies file, or make sure you're still logged in in the browser `REEL_INSTAGRAM_COOKIES_BROWSER` points at |
+| yt-dlp "log in" / "requested content is not available" on Facebook or LinkedIn URLs | Set `REEL_YTDLP_COOKIES_FILE` or `REEL_YTDLP_COOKIES_BROWSER` - see "Facebook and LinkedIn setup" above |
+| yt-dlp fails on a LinkedIn feed-post URL even with cookies configured | Likely a yt-dlp extractor coverage gap (LinkedIn's non-Learning video support is historically limited), not a config problem - check the error message |
 | `CERTIFICATE_VERIFY_FAILED` on any download/API call | A local security tool (antivirus HTTPS scanning, corporate proxy) is intercepting TLS with a malformed root certificate - this is a machine-level issue, not this project's code; check `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE` env vars and your antivirus's HTTPS-scanning settings |
 | `TranscriptionError: faster-whisper is not installed` | Run `uv sync --extra local-whisper`, or switch `REEL_TRANSCRIPTION_BACKEND=openai` |
 | Note not appearing where expected | Check `REEL_VAULT_DIR` / `paths.vault_dir` in `config/settings.yaml` |

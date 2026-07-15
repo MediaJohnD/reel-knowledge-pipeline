@@ -12,10 +12,14 @@ def test_loads_defaults_from_settings_yaml():
     assert settings.webhook.port == 8787
     assert "instagram.com" in settings.download.allowed_domains
     assert "youtube.com" in settings.download.allowed_domains
+    assert "facebook.com" in settings.download.allowed_domains
+    assert "linkedin.com" in settings.download.allowed_domains
     assert settings.webhook_secret is None
     assert settings.anthropic_api_key is None
     assert settings.instagram_cookies_file is None
     assert settings.instagram_cookies_browser is None
+    assert settings.ytdlp_cookies_file is None
+    assert settings.ytdlp_cookies_browser is None
 
 
 def test_env_overrides_take_precedence(tmp_path):
@@ -84,6 +88,33 @@ def test_require_instagram_cookies_falls_back_to_browser():
     )
 
     assert settings.require_instagram_cookies() == ("browser", "chrome")
+
+
+def test_optional_ytdlp_cookies_returns_none_when_unset():
+    settings = load_settings(config_path=DEFAULT_SETTINGS_PATH, env={})
+
+    assert settings.optional_ytdlp_cookies() is None
+
+
+def test_optional_ytdlp_cookies_prefers_file_over_browser():
+    settings = load_settings(
+        config_path=DEFAULT_SETTINGS_PATH,
+        env={
+            "REEL_YTDLP_COOKIES_FILE": "/tmp/ytdlp-cookies.txt",
+            "REEL_YTDLP_COOKIES_BROWSER": "chrome",
+        },
+    )
+
+    assert settings.optional_ytdlp_cookies() == ("file", "/tmp/ytdlp-cookies.txt")
+
+
+def test_optional_ytdlp_cookies_falls_back_to_browser():
+    settings = load_settings(
+        config_path=DEFAULT_SETTINGS_PATH,
+        env={"REEL_YTDLP_COOKIES_BROWSER": "chrome"},
+    )
+
+    assert settings.optional_ytdlp_cookies() == ("browser", "chrome")
 
 
 def test_resolved_paths_are_absolute_under_project_root(tmp_path):

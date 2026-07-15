@@ -37,7 +37,7 @@ identical regardless of which branch produced the text.
 | `models.py` | Pydantic models shared by every stage (the enrichment output contract lives here) |
 | `validators.py` | URL normalization, deterministic `content_id` hashing, allow/block-list checks |
 | `queue_manager.py` | Reads `queue.txt`, persists `state.json`, writes `needs-attention.txt` |
-| `downloader.py` | Media download - dispatches Instagram to gallery-dl (cookie-authenticated), everything else to yt-dlp. Detects photo-only posts and returns `media_type=IMAGE` with all carousel image paths |
+| `downloader.py` | Media download - dispatches Instagram to gallery-dl (cookie-authenticated), everything else (YouTube, Facebook, LinkedIn, TikTok, X, Vimeo) to yt-dlp, optionally cookie-authenticated. Detects photo-only posts and returns `media_type=IMAGE` with all carousel image paths |
 | `transcriber.py` | Pluggable transcription backends (local faster-whisper / OpenAI API) - video/audio only |
 | `image_describer.py` | Turns photo posts/carousels into a text description via a vision-capable LLM (`config/prompts/describe_image_post.md`), producing the same `TranscriptResult` shape as `transcriber.py` |
 | `enricher.py` | Calls an LLM (via `llm_client.py`) with `config/prompts/enrich_transcript.md`, parses `EnrichmentResult` |
@@ -72,14 +72,17 @@ or webhook - converges on `state.json` before any processing begins, so:
   `download.blocked_domains` (if any are added later) is enforced up front:
   those URLs are routed to `needs-attention.txt` with a clear reason instead
   of being downloaded.
-- Instagram is a deliberate, scoped exception to `CLAUDE.md`'s "no Instagram
-  by default" baseline - enabled here for low-volume personal use with the
-  account owner's own real account, via gallery-dl + explicit cookie config
-  (`REEL_INSTAGRAM_COOKIES_FILE`/`_BROWSER`). See `docs/runbook.md` and the
-  research note in the Obsidian vault (`20-Resources/Tools/`).
+- Instagram, Facebook, and LinkedIn are each a deliberate, scoped exception to
+  `CLAUDE.md`'s "no social platform by default" baseline - enabled here for
+  low-volume personal use with the account owner's own real account, via
+  gallery-dl + explicit cookie config (`REEL_INSTAGRAM_COOKIES_FILE`/`_BROWSER`)
+  for Instagram, and yt-dlp + optional cookie config
+  (`REEL_YTDLP_COOKIES_FILE`/`_BROWSER`) for Facebook/LinkedIn. YouTube/TikTok/X/
+  Vimeo stay anonymous. See `docs/runbook.md` and the research note in the
+  Obsidian vault (`20-Resources/Tools/`).
 - Secrets (`ANTHROPIC_API_KEY`, `REEL_WEBHOOK_SECRET`, `OPENAI_API_KEY`,
-  Instagram cookies) are only ever read from the environment / `.env` - never
-  from `config/settings.yaml`, never hardcoded.
+  Instagram/yt-dlp cookies) are only ever read from the environment / `.env` -
+  never from `config/settings.yaml`, never hardcoded.
 
 ## Skill generation vs. this repo's own skills
 

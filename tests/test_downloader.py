@@ -1,12 +1,55 @@
 from __future__ import annotations
 
 import subprocess
+import sys
+import types
 
 import pytest
 
 from reel_pipeline.config import Settings
 from reel_pipeline.downloader import DispatchingDownloader, GalleryDlDownloader, YtDlpDownloader
 from reel_pipeline.models import DownloadResult, MediaType
+
+
+def _install_fake_yt_dlp(monkeypatch, extract_info_impl=None):
+    """Fakes the yt_dlp package well enough to exercise YtDlpDownloader.download()
+    without a real network call - mirrors the faster_whisper fake in
+    tests/test_transcriber.py (lazy-imported module, so sys.modules injection works).
+    """
+    captured_opts = []
+
+    class FakeDownloadError(Exception):
+        pass
+
+    class FakeYoutubeDL:
+        def __init__(self, opts):
+            captured_opts.append(opts)
+            self.opts = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def extract_info(self, url, download=True):
+            if extract_info_impl is not None:
+                return extract_info_impl(url)
+            # Write the file yt-dlp's outtmpl (audio.%(ext)s) would have produced.
+            import pathlib
+
+            outtmpl = self.opts["outtmpl"]
+            path = pathlib.Path(outtmpl.replace("%(ext)s", "mp3"))
+            path.write_bytes(b"fake-audio")
+            return {"extractor_key": "Fake", "title": "Fake Title", "duration": 12.0}
+
+    fake_module = types.ModuleType("yt_dlp")
+    fake_module.YoutubeDL = FakeYoutubeDL  # type: ignore[attr-defined]
+    fake_utils_module = types.ModuleType("yt_dlp.utils")
+    fake_utils_module.DownloadError = FakeDownloadError  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "yt_dlp", fake_module)
+    monkeypatch.setitem(sys.modules, "yt_dlp.utils", fake_utils_module)
+    return captured_opts
 
 
 def test_dispatches_instagram_urls_to_gallery_dl(tmp_path, monkeypatch):
@@ -189,3 +232,62 @@ def test_gallery_dl_downloader_raises_when_no_media_found(tmp_path, monkeypatch)
 
     with pytest.raises(DownloadError, match="no video or image files"):
         GalleryDlDownloader(settings).download("https://www.instagram.com/p/abc/", content_id)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.facebook.com/watch/?v=123456",
+        "https://fb.watch/abc123/",
+        "https://www.linkedin.com/posts/someone_activity-123",
+    ],
+)
+def test_dispatches_facebook_and_linkedin_urls_to_yt_dlp(tmp_path, monkeypatch, url):
+    settings = Settings(project_root=tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        YtDlpDownloader,
+        "download",
+        lambda self, url, content_id: calls.append(("yt-dlp", url)) or DownloadResult(
+            content_id=content_id, media_paths=["x"], platform="facebook"
+        ),
+    )
+    monkeypatch.setattr(
+        GalleryDlDownloader,
+        "download",
+        lambda self, url, content_id: pytest.fail("gallery-dl should not handle Facebook/LinkedIn"),
+    )
+
+    DispatchingDownloader(settings).download(url, "cid-fb-li")
+
+    assert calls == [("yt-dlp", url)]
+
+
+def test_yt_dlp_downloader_omits_cookies_when_not_configured(tmp_path, monkeypatch):
+    settings = Settings(project_root=tmp_path)
+    captured_opts = _install_fake_yt_dlp(monkeypatch)
+
+    YtDlpDownloader(settings).download("https://www.youtube.com/watch?v=abc", "cid1")
+
+    assert "cookiefile" not in captured_opts[0]
+    assert "cookiesfrombrowser" not in captured_opts[0]
+
+
+def test_yt_dlp_downloader_passes_cookie_file_when_configured(tmp_path, monkeypatch):
+    settings = Settings(project_root=tmp_path, ytdlp_cookies_file="C:/fake/cookies.txt")
+    captured_opts = _install_fake_yt_dlp(monkeypatch)
+
+    YtDlpDownloader(settings).download("https://www.facebook.com/watch/?v=1", "cid2")
+
+    assert captured_opts[0]["cookiefile"] == "C:/fake/cookies.txt"
+    assert "cookiesfrombrowser" not in captured_opts[0]
+
+
+def test_yt_dlp_downloader_passes_cookies_from_browser_when_configured(tmp_path, monkeypatch):
+    settings = Settings(project_root=tmp_path, ytdlp_cookies_browser="chrome")
+    captured_opts = _install_fake_yt_dlp(monkeypatch)
+
+    YtDlpDownloader(settings).download("https://www.linkedin.com/posts/abc", "cid3")
+
+    assert captured_opts[0]["cookiesfrombrowser"] == ("chrome",)
+    assert "cookiefile" not in captured_opts[0]

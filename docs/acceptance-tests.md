@@ -48,6 +48,15 @@ call / API key and are not exercised by the automated test suite.
       Automated: `test_gallery_dl_downloader_detects_video_over_images`,
       `test_gallery_dl_downloader_detects_image_carousel`,
       `test_gallery_dl_downloader_raises_when_no_media_found`.
+- [ ] Facebook and LinkedIn URLs dispatch to yt-dlp (not gallery-dl), and
+      optional cookies (`REEL_YTDLP_COOKIES_FILE`/`_BROWSER`) are passed
+      through when configured, omitted when not.
+      Automated: `test_dispatches_facebook_and_linkedin_urls_to_yt_dlp`,
+      `test_yt_dlp_downloader_omits_cookies_when_not_configured`,
+      `test_yt_dlp_downloader_passes_cookie_file_when_configured`,
+      `test_yt_dlp_downloader_passes_cookies_from_browser_when_configured`.
+- [ ] A real Facebook or LinkedIn URL downloads successfully with cookies
+      configured. **(manual - requires real cookies)**
 
 ## 5. Transcription module
 
