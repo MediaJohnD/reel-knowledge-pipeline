@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from reel_pipeline.config import DownloadConfig, Settings
+from reel_pipeline.config import DownloadConfig, Settings, TextCaptureConfig
 from reel_pipeline.models import ItemStatus, QueueSource
 from reel_pipeline.queue_manager import QueueManager
 
@@ -14,6 +14,14 @@ def make_settings(tmp_path) -> Settings:
             allowed_domains=["youtube.com", "vimeo.com"],
             blocked_domains=["instagram.com"],
         ),
+    )
+
+
+def make_settings_with_text_capture(tmp_path) -> Settings:
+    return Settings(
+        project_root=tmp_path,
+        download=DownloadConfig(allowed_domains=["youtube.com"], blocked_domains=["instagram.com"]),
+        text_capture=TextCaptureConfig(allowed_domains=["github.com"]),
     )
 
 
@@ -157,3 +165,35 @@ def test_prune_needs_attention_keeps_malformed_lines(tmp_path):
 
     assert removed == 0
     assert "some garbage line" in qm.needs_attention_file.read_text(encoding="utf-8")
+
+
+def test_github_url_registers_as_pending_with_text_content_kind(tmp_path):
+    settings = make_settings_with_text_capture(tmp_path)
+    qm = QueueManager(settings)
+    qm.queue_file.write_text("https://github.com/owner/repo\n", encoding="utf-8")
+
+    registered = qm.sync_queue_file_into_state()
+
+    assert len(registered) == 1
+    assert registered[0].status == ItemStatus.PENDING
+    assert registered[0].content_kind == "text"
+
+
+def test_youtube_url_registers_with_media_content_kind(tmp_path):
+    settings = make_settings_with_text_capture(tmp_path)
+    qm = QueueManager(settings)
+    qm.queue_file.write_text("https://www.youtube.com/watch?v=abc123\n", encoding="utf-8")
+
+    registered = qm.sync_queue_file_into_state()
+
+    assert registered[0].content_kind == "media"
+
+
+def test_unmatched_domain_still_rejected_with_text_capture_configured(tmp_path):
+    settings = make_settings_with_text_capture(tmp_path)
+    qm = QueueManager(settings)
+    qm.queue_file.write_text("https://airtable.com/base/abc\n", encoding="utf-8")
+
+    registered = qm.sync_queue_file_into_state()
+
+    assert registered[0].status == ItemStatus.BLOCKED

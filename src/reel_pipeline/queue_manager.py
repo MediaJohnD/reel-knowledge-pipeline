@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 
 from reel_pipeline.config import Settings
 from reel_pipeline.models import ItemStatus, QueueSource, StateRecord
-from reel_pipeline.validators import validate_url
+from reel_pipeline.validators import classify_url_kind, validate_url
 
 
 class QueueManager:
@@ -110,6 +110,30 @@ class QueueManager:
         result = validate_url(url, self.settings)
         now = datetime.now(UTC)
 
+        # validate_url() only knows about download.allowed_domains - a URL it
+        # rejects for "not in the configured allow-list" may still be a valid
+        # text-capture URL, so re-check via classify_url_kind() before treating
+        # it as genuinely blocked.
+        if not result.ok and not result.blocked:
+            kind = classify_url_kind(url, self.settings)
+            if kind == "text":
+                content_id = result.content_id
+                existing = state.get(content_id)
+                if existing is not None:
+                    return existing
+                record = StateRecord(
+                    content_id=content_id,
+                    url=url,
+                    normalized_url=result.normalized_url,
+                    source=source,
+                    status=ItemStatus.PENDING,
+                    content_kind="text",
+                    added_at=now,
+                    updated_at=now,
+                )
+                state[content_id] = record
+                return record
+
         if not result.ok:
             content_id = result.content_id or url
             existing = state.get(content_id)
@@ -139,6 +163,7 @@ class QueueManager:
             normalized_url=result.normalized_url,
             source=source,
             status=ItemStatus.PENDING,
+            content_kind="media",
             added_at=now,
             updated_at=now,
         )
