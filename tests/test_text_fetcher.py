@@ -7,11 +7,23 @@ import pytest
 import respx
 
 from reel_pipeline.config import Settings
-from reel_pipeline.text_fetcher import GitHubFetcher, NotionFetcher, TextFetchError
+from reel_pipeline.text_fetcher import (
+    DispatchingTextFetcher,
+    GitHubFetcher,
+    NotionFetcher,
+    TextFetchError,
+    get_text_fetcher,
+)
 
 
 def _readme_response(content: str) -> dict:
     return {"content": base64.b64encode(content.encode()).decode(), "encoding": "base64"}
+
+
+def TranscriptResultStub(content_id):
+    from reel_pipeline.models import TranscriptResult
+
+    return TranscriptResult(content_id=content_id, text="stub", backend="stub")
 
 
 @respx.mock
@@ -145,3 +157,55 @@ def test_notion_fetcher_raises_clear_error_on_http_failure(tmp_path):
 
     with pytest.raises(TextFetchError, match="404"):
         NotionFetcher(settings).fetch("https://www.notion.so/Missing-Page", "cid7")
+
+
+def test_dispatching_text_fetcher_routes_github_to_github_fetcher(tmp_path, monkeypatch):
+    settings = Settings(project_root=tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        GitHubFetcher,
+        "fetch",
+        lambda self, url, content_id: calls.append(("github", url))
+        or TranscriptResultStub(content_id),
+    )
+    monkeypatch.setattr(
+        NotionFetcher,
+        "fetch",
+        lambda self, url, content_id: pytest.fail("Notion should not handle github.com"),
+    )
+
+    DispatchingTextFetcher(settings).fetch("https://github.com/owner/repo", "cid8")
+
+    assert calls == [("github", "https://github.com/owner/repo")]
+
+
+def test_dispatching_text_fetcher_routes_notion_to_notion_fetcher(tmp_path, monkeypatch):
+    settings = Settings(project_root=tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        NotionFetcher,
+        "fetch",
+        lambda self, url, content_id: calls.append(("notion", url))
+        or TranscriptResultStub(content_id),
+    )
+    monkeypatch.setattr(
+        GitHubFetcher,
+        "fetch",
+        lambda self, url, content_id: pytest.fail("GitHub should not handle notion.so"),
+    )
+
+    DispatchingTextFetcher(settings).fetch("https://www.notion.so/Some-Page-abc", "cid9")
+
+    assert calls == [("notion", "https://www.notion.so/Some-Page-abc")]
+
+
+def test_dispatching_text_fetcher_raises_on_unrecognized_domain(tmp_path):
+    settings = Settings(project_root=tmp_path)
+
+    with pytest.raises(TextFetchError, match="unrecognized"):
+        DispatchingTextFetcher(settings).fetch("https://example.com/x", "cid10")
+
+
+def test_get_text_fetcher_returns_dispatching_instance(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    assert isinstance(get_text_fetcher(settings), DispatchingTextFetcher)

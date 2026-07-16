@@ -14,6 +14,7 @@ their public share URL (no JS execution - not browser automation).
 from __future__ import annotations
 
 import base64
+from typing import Protocol
 from urllib.parse import urlparse
 
 import httpx
@@ -151,3 +152,33 @@ class NotionFetcher:
             backend="notion-fetch",
             duration_seconds=None,
         )
+
+
+class TextFetcher(Protocol):
+    def fetch(self, url: str, content_id: str) -> TranscriptResult: ...
+
+
+_GITHUB_DOMAINS = ("github.com",)
+_NOTION_DOMAINS = ("notion.so", "notion.site")
+
+
+class DispatchingTextFetcher:
+    """Routes each URL to the platform-appropriate concrete fetcher."""
+
+    def __init__(self, settings: Settings):
+        self._github = GitHubFetcher(settings)
+        self._notion = NotionFetcher(settings)
+
+    def fetch(self, url: str, content_id: str) -> TranscriptResult:
+        host = urlparse(url).netloc.split(":")[0].lower()
+        if host.startswith("www."):
+            host = host[len("www.") :]
+        if any(host == d or host.endswith(f".{d}") for d in _GITHUB_DOMAINS):
+            return self._github.fetch(url, content_id)
+        if any(host == d or host.endswith(f".{d}") for d in _NOTION_DOMAINS):
+            return self._notion.fetch(url, content_id)
+        raise TextFetchError(f"unrecognized text-capture domain for {url!r}")
+
+
+def get_text_fetcher(settings: Settings) -> TextFetcher:
+    return DispatchingTextFetcher(settings)
