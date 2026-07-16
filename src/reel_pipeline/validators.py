@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from typing import Literal
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from reel_pipeline.config import Settings
@@ -130,3 +131,28 @@ def validate_url(url: str, settings: Settings) -> ValidationResult:
         )
 
     return ValidationResult(ok=True, normalized_url=normalized, content_id=content_id)
+
+
+def _matches_any(host: str, domains: list[str]) -> bool:
+    return any(host == d or host.endswith(f".{d}") for d in domains)
+
+
+def classify_url_kind(url: str, settings: Settings) -> Literal["media", "text"] | None:
+    """Which pipeline a URL belongs in, checked before any download/fetch attempt.
+
+    Returns None if the host matches neither allow-list - the caller (QueueManager)
+    falls through to today's existing "not in the configured allow-list" rejection.
+    The two allow-lists are expected to stay disjoint (no domain in both) since the
+    platforms don't overlap in practice; "media" wins as a defensive tie-break if
+    that assumption is ever violated, so behavior stays deterministic either way.
+    """
+    parsed = urlparse(url.strip())
+    host = parsed.netloc.split(":")[0].lower()
+    if host.startswith("www."):
+        host = host[len("www.") :]
+
+    if _matches_any(host, settings.download.allowed_domains):
+        return "media"
+    if _matches_any(host, settings.text_capture.allowed_domains):
+        return "text"
+    return None
