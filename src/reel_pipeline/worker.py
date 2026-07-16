@@ -31,6 +31,7 @@ from reel_pipeline.models import (
 from reel_pipeline.obsidian_writer import write_note
 from reel_pipeline.queue_manager import QueueManager
 from reel_pipeline.skill_writer import SkillWriter
+from reel_pipeline.text_fetcher import TextFetcher, get_text_fetcher
 from reel_pipeline.transcriber import Transcriber, get_transcriber
 
 logger = get_logger(__name__)
@@ -62,6 +63,7 @@ class WorkerPipeline:
         downloader: Downloader,
         transcriber: Transcriber,
         image_describer: ImageDescriber,
+        text_fetcher: TextFetcher,
         enricher: EnrichmentProvider,
         skill_writer: SkillGenerator,
     ):
@@ -70,30 +72,43 @@ class WorkerPipeline:
         self.downloader = downloader
         self.transcriber = transcriber
         self.image_describer = image_describer
+        self.text_fetcher = text_fetcher
         self.enricher = enricher
         self.skill_writer = skill_writer
 
     def process_item(self, record: StateRecord) -> StateRecord:
         try:
-            record.status = ItemStatus.DOWNLOADING
-            self.queue_manager.update_record(record)
-            download_result = self.downloader.download(record.url, record.content_id)
-            log_context(logger, 20, "downloaded", content_id=record.content_id, url=record.url)
-
-            record.status = ItemStatus.TRANSCRIBING
-            self.queue_manager.update_record(record)
-            media_paths = [Path(p) for p in download_result.media_paths]
-            if download_result.media_type is MediaType.IMAGE:
-                transcript = self.image_describer.describe(media_paths, record.content_id)
+            if record.content_kind == "text":
+                record.status = ItemStatus.DOWNLOADING
+                self.queue_manager.update_record(record)
+                transcript = self.text_fetcher.fetch(record.url, record.content_id)
+                log_context(
+                    logger, 20, "text captured", content_id=record.content_id, url=record.url
+                )
+                record.status = ItemStatus.TRANSCRIBING
+                self.queue_manager.update_record(record)
             else:
-                transcript = self._transcribe_media_paths(media_paths, record.content_id)
-            log_context(
-                logger,
-                20,
-                "transcribed",
-                content_id=record.content_id,
-                media_type=download_result.media_type.value,
-            )
+                record.status = ItemStatus.DOWNLOADING
+                self.queue_manager.update_record(record)
+                download_result = self.downloader.download(record.url, record.content_id)
+                log_context(
+                    logger, 20, "downloaded", content_id=record.content_id, url=record.url
+                )
+
+                record.status = ItemStatus.TRANSCRIBING
+                self.queue_manager.update_record(record)
+                media_paths = [Path(p) for p in download_result.media_paths]
+                if download_result.media_type is MediaType.IMAGE:
+                    transcript = self.image_describer.describe(media_paths, record.content_id)
+                else:
+                    transcript = self._transcribe_media_paths(media_paths, record.content_id)
+                log_context(
+                    logger,
+                    20,
+                    "transcribed",
+                    content_id=record.content_id,
+                    media_type=download_result.media_type.value,
+                )
 
             record.status = ItemStatus.ENRICHING
             self.queue_manager.update_record(record)
@@ -278,6 +293,7 @@ def build_worker(settings: Settings) -> WorkerPipeline:
         downloader=get_downloader(settings),
         transcriber=get_transcriber(settings),
         image_describer=get_image_describer(settings),
+        text_fetcher=get_text_fetcher(settings),
         enricher=Enricher(settings),
         skill_writer=SkillWriter(settings),
     )

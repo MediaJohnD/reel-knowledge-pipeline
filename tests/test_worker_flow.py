@@ -4,7 +4,7 @@ import os
 import time
 from pathlib import Path
 
-from reel_pipeline.config import DownloadConfig, MaintenanceConfig, Settings
+from reel_pipeline.config import DownloadConfig, MaintenanceConfig, Settings, TextCaptureConfig
 from reel_pipeline.models import (
     DownloadResult,
     EnrichmentResult,
@@ -120,6 +120,20 @@ class FakeImageDescriber:
         )
 
 
+class FakeTextFetcher:
+    def __init__(self):
+        self.calls = []
+
+    def fetch(self, url: str, content_id: str) -> TranscriptResult:
+        self.calls.append(url)
+        return TranscriptResult(
+            content_id=content_id,
+            text="# repo\n\nA CLI tool that automates a repeatable build workflow.",
+            content_kind="text",
+            backend="github-api",
+        )
+
+
 class FakeEnricher:
     def enrich(self, transcript: TranscriptResult, source_url: str) -> EnrichmentResult:
         return EnrichmentResult(
@@ -151,13 +165,16 @@ def make_settings(tmp_path) -> Settings:
     )
 
 
-def build_pipeline(settings, downloader, transcriber=None, image_describer=None) -> WorkerPipeline:
+def build_pipeline(
+    settings, downloader, transcriber=None, image_describer=None, text_fetcher=None
+) -> WorkerPipeline:
     return WorkerPipeline(
         settings=settings,
         queue_manager=QueueManager(settings),
         downloader=downloader,
         transcriber=transcriber or FakeTranscriber(),
         image_describer=image_describer or FakeImageDescriber(),
+        text_fetcher=text_fetcher or FakeTextFetcher(),
         enricher=FakeEnricher(),
         skill_writer=FakeSkillWriter(settings),
     )
@@ -360,6 +377,27 @@ def test_tmp_sweep_disabled_when_retention_is_zero(tmp_path):
     assert stale_dir.exists()
 
 
+def test_text_capture_item_routes_to_text_fetcher_not_downloader(tmp_path):
+    settings = Settings(
+        project_root=tmp_path,
+        download=DownloadConfig(allowed_domains=["youtube.com"]),
+        text_capture=TextCaptureConfig(allowed_domains=["github.com"]),
+    )
+    # FailingDownloader (defined earlier in this file) raises on any call - if the
+    # worker mistakenly routed this text item through Downloader, the item would
+    # end up FAILED instead of DONE, which the assertions below would catch.
+    text_fetcher = FakeTextFetcher()
+    pipeline = build_pipeline(settings, FailingDownloader(), text_fetcher=text_fetcher)
+    pipeline.queue_manager.queue_file.write_text(
+        "https://github.com/owner/repo\n", encoding="utf-8"
+    )
+
+    summary = pipeline.run_once()
+
+    assert summary.done == 1
+    assert text_fetcher.calls == ["https://github.com/owner/repo"]
+
+
 def test_multi_video_carousel_transcribes_every_clip_and_combines_them(tmp_path):
     settings = Settings(
         project_root=tmp_path,
@@ -413,6 +451,7 @@ def test_reprocessing_with_a_new_title_removes_the_stale_note_and_skill(tmp_path
         downloader=FakeDownloader(),
         transcriber=FakeTranscriber(),
         image_describer=FakeImageDescriber(),
+        text_fetcher=FakeTextFetcher(),
         enricher=VariableTitleEnricher(),
         skill_writer=FakeSkillWriter(settings),
     )
