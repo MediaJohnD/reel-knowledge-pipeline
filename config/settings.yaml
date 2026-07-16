@@ -54,9 +54,9 @@ image_description:
 
 # Platforms the downloader will attempt. Anything not matched here is rejected up
 # front rather than attempted. Instagram is handled by gallery-dl (downloader.py's
-# DispatchingDownloader), everything else (including Facebook and LinkedIn) by
-# yt-dlp - both require the same guardrails: no browser automation, and gated
-# platforms require an explicitly-configured authenticated session
+# DispatchingDownloader), everything else (including Facebook, LinkedIn, and Google
+# Drive) by yt-dlp - both require the same guardrails: no browser automation, and
+# gated platforms require an explicitly-configured authenticated session
 # (REEL_INSTAGRAM_COOKIES_FILE/BROWSER for Instagram, REEL_YTDLP_COOKIES_FILE/BROWSER
 # for everything else) rather than working anonymously. Instagram, Facebook, and
 # LinkedIn are each a deliberate, scoped exception to the "no social platform by
@@ -66,6 +66,11 @@ image_description:
 # particular has historically limited/unreliable yt-dlp extractor support outside
 # LinkedIn Learning content - expect some LinkedIn URLs to fail even with cookies
 # configured; that's a yt-dlp coverage gap, not a misconfiguration.
+#
+# "drive.google.com" is intentionally listed as a specific subdomain, not
+# "google.com" - allow-list entries are matched against the full host, so this
+# permits Drive video-file links (yt-dlp has a working GoogleDrive extractor)
+# without opening every Google property (Docs, Sheets, Photos, Search, ...).
 download:
   allowed_domains:
     - youtube.com
@@ -78,6 +83,7 @@ download:
     - facebook.com
     - fb.watch
     - linkedin.com
+    - drive.google.com
   blocked_domains: []
 
 webhook:

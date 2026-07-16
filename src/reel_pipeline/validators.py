@@ -98,6 +98,9 @@ def validate_url(url: str, settings: Settings) -> ValidationResult:
     normalized = normalize_url(stripped)
     content_id = compute_content_id(stripped)
     domain = _registrable_domain(parsed.netloc)
+    host = parsed.netloc.split(":")[0].lower()
+    if host.startswith("www."):
+        host = host[len("www.") :]
 
     blocked_domains = settings.download.blocked_domains
     if any(domain == blocked or domain.endswith(f".{blocked}") for blocked in blocked_domains):
@@ -113,8 +116,12 @@ def validate_url(url: str, settings: Settings) -> ValidationResult:
             blocked=True,
         )
 
+    # Matched against the full host (not reduced to a registrable domain) so an
+    # allow-list entry with a subdomain (e.g. "drive.google.com") only allows that
+    # subdomain, rather than every property under the parent domain (e.g. all of
+    # google.com - Docs, Sheets, Photos, Search).
     allowed = settings.download.allowed_domains
-    if allowed and not any(domain == d or domain.endswith(f".{d}") for d in allowed):
+    if allowed and not any(host == d or host.endswith(f".{d}") for d in allowed):
         return ValidationResult(
             ok=False,
             normalized_url=normalized,

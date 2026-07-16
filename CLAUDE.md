@@ -27,6 +27,12 @@ The system supports:
   Learning content - some LinkedIn URLs will fail regardless of cookie config; that's a
   yt-dlp coverage gap, not a misconfiguration. YouTube/TikTok/X/Vimeo remain anonymous
   (no cookies configured/required) since they're public by default.
+- `drive.google.com` is enabled as of 2026-07-16, scoped to that exact subdomain (not all of
+  `google.com` - Docs/Sheets/Photos/Search stay unreachable) for video files shared via Google
+  Drive, using yt-dlp's existing GoogleDrive extractor. Same optional cookie treatment as
+  Facebook/LinkedIn. `validate_url` in `validators.py` matches `allowed_domains` against the
+  full host, not a reduced two-label domain, specifically so a subdomain entry like this one
+  doesn't accidentally open the whole parent domain.
 - Any `download.blocked_domains` entries are still enforced up front - blocked URLs route
   to `data/inbox/needs-attention.txt`, never downloaded.
 - Treat any other third-party account automation as out of scope unless explicitly requested.
