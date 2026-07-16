@@ -11,13 +11,25 @@ rather than swallowing them.
 
 Instagram requires an authenticated session to download reliably; see
 Settings.require_instagram_cookies() and docs/runbook.md for how to configure
-REEL_INSTAGRAM_COOKIES_FILE / REEL_INSTAGRAM_COOKIES_BROWSER. Facebook and
-LinkedIn generally require the same, via the separate, optional
+REEL_INSTAGRAM_COOKIES_FILE / REEL_INSTAGRAM_COOKIES_BROWSER. Facebook
+generally requires the same, via the separate, optional
 REEL_YTDLP_COOKIES_FILE / REEL_YTDLP_COOKIES_BROWSER (see
 Settings.optional_ytdlp_cookies()) - optional because public YouTube already
-works anonymously. LinkedIn's yt-dlp extractor coverage is historically
-limited/unreliable outside LinkedIn Learning content; a DownloadError on a
-LinkedIn feed-post URL may reflect that gap rather than a config problem.
+works anonymously.
+
+LinkedIn is a narrower case than "generally works with cookies": yt-dlp
+2026.07.04 (the pinned version) removed LinkedIn login support entirely
+(upstream commit a5e0f87, issue #17039 - "Remove broken login support"), so
+REEL_YTDLP_COOKIES_FILE/_BROWSER do nothing for LinkedIn regardless of
+config. Separately, yt-dlp's LinkedInIE only recognizes
+`linkedin.com/posts/...-<id>-<hash>` and
+`linkedin.com/feed/update/urn:li:activity:<id>` URLs (confirmed against its
+source) - `urn:li:groupPost:...` URLs (LinkedIn Group posts) aren't matched
+by any LinkedIn-specific pattern at all and fall through to yt-dlp's generic
+webpage extractor, which 404s. A DownloadError on a LinkedIn URL is very
+likely one of these two verified gaps, not a config problem - check whether
+the URL is a group post (`urn:li:groupPost:`) before assuming cookies would
+help.
 
 (2026-07-13 currency check: yt-dlp 2026.07.04 reworked its Instagram extractor
 and added cookie-invalidation detection; gallery-dl 1.32.6 shipped no
@@ -77,9 +89,11 @@ class YtDlpDownloader:
             ],
         }
 
-        # Optional: public YouTube works anonymously, but gated platforms (Facebook,
-        # LinkedIn) generally require a logged-in session the same way Instagram does.
-        # If configured, yt-dlp uses it for every domain it handles; if not, yt-dlp
+        # Optional: public YouTube works anonymously, but Facebook generally requires a
+        # logged-in session the same way Instagram does. LinkedIn is the exception - see
+        # this module's docstring: yt-dlp 2026.07.04 dropped LinkedIn login support, so
+        # this option is inert there regardless of config. If configured, yt-dlp uses it
+        # for every domain it handles; if not, yt-dlp
         # attempts anonymous access and raises its own clear "log in required" error
         # for content that needs it.
         cookies = self.settings.optional_ytdlp_cookies()

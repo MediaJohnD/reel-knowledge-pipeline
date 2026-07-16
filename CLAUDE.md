@@ -23,9 +23,13 @@ The system supports:
 - Facebook and LinkedIn are enabled as of 2026-07-14 under the same terms as Instagram -
   cookie-authenticated via yt-dlp (`REEL_YTDLP_COOKIES_FILE`/`REEL_YTDLP_COOKIES_BROWSER`,
   optional since public YouTube works without them), owner's own real account, low volume.
-  LinkedIn's yt-dlp extractor coverage is historically limited/unreliable outside LinkedIn
-  Learning content - some LinkedIn URLs will fail regardless of cookie config; that's a
-  yt-dlp coverage gap, not a misconfiguration. YouTube/TikTok/X/Vimeo remain anonymous
+  LinkedIn cookies are effectively inert as of yt-dlp 2026.07.04 (the pinned version), which
+  removed LinkedIn login support entirely (upstream commit a5e0f87, issue #17039). Separately,
+  yt-dlp's LinkedIn extractor only recognizes `linkedin.com/posts/...` and
+  `linkedin.com/feed/update/urn:li:activity:<id>` URLs - `urn:li:groupPost:...` URLs (Group
+  posts) aren't matched at all and 404 via the generic extractor. Both are verified, specific
+  gaps (see `src/reel_pipeline/downloader.py`'s module docstring), not a config problem or
+  vague "historically unreliable" hand-wave. YouTube/TikTok/X/Vimeo remain anonymous
   (no cookies configured/required) since they're public by default.
 - `drive.google.com` is enabled as of 2026-07-16, scoped to that exact subdomain (not all of
   `google.com` - Docs/Sheets/Photos/Search stay unreachable) for video files shared via Google

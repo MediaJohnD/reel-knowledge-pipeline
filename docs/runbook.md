@@ -216,33 +216,45 @@ personal use - see the guardrail note above.
 
 ## Facebook and LinkedIn setup (cookies, optional)
 
-Facebook and LinkedIn (like Instagram) generally require an authenticated
-session for yt-dlp to download most content, even public-looking posts. Set
-exactly one of these in `.env` - same two options as Instagram, just a
-different pair of variables since these go through yt-dlp, not gallery-dl:
+Facebook (like Instagram) generally requires an authenticated session for
+yt-dlp to download most content, even public-looking posts. Set exactly one
+of these in `.env` - same two options as Instagram, just a different pair
+of variables since these go through yt-dlp, not gallery-dl:
 
 **Option A - cookies file:**
-1. Log into facebook.com and/or linkedin.com in a desktop browser with your real account.
-2. Export cookies with a browser extension like "Get cookies.txt LOCALLY", scoped to the site(s) you need.
+1. Log into facebook.com in a desktop browser with your real account.
+2. Export cookies with a browser extension like "Get cookies.txt LOCALLY", scoped to the site.
 3. Save the exported file outside the repo (e.g. `C:/Users/you/ytdlp-cookies.txt`).
 4. Set `REEL_YTDLP_COOKIES_FILE=C:/Users/you/ytdlp-cookies.txt` in `.env`.
 
 **Option B - read cookies directly from an installed browser:**
-1. Log into facebook.com and/or linkedin.com in Chrome, Edge, or Firefox.
+1. Log into facebook.com in Chrome, Edge, or Firefox.
 2. Set `REEL_YTDLP_COOKIES_BROWSER=chrome` (or `edge`, `firefox`) in `.env`.
 3. Close the browser first if you hit a "database is locked" error.
 
 Unlike Instagram's cookies, these are **optional** - YouTube, TikTok, X, and
 Vimeo already work anonymously and will keep working if you never set this.
-It only matters for Facebook/LinkedIn URLs, and yt-dlp will fail with its own
-clear "log in required" message if the content needs auth and none is
-configured.
+For Facebook, yt-dlp will fail with its own clear "log in required" message
+if the content needs auth and none is configured.
 
-**Known limitation:** LinkedIn's yt-dlp extractor mainly covers LinkedIn
-Learning content; regular feed video posts have historically limited/
-unreliable support. A `DownloadError` on a LinkedIn feed-post URL may reflect
-that yt-dlp coverage gap rather than a cookie problem - check the error
-message for specifics before assuming misconfiguration.
+**Known LinkedIn limitations (verified, not a cookie problem):**
+1. **Cookies don't help.** yt-dlp 2026.07.04 (the version this project
+   pins) removed LinkedIn login support entirely (upstream commit `a5e0f87`,
+   issue [#17039](https://github.com/yt-dlp/yt-dlp/issues/17039)). Setting
+   `REEL_YTDLP_COOKIES_FILE`/`_BROWSER` has no effect on LinkedIn URLs.
+2. **Group posts aren't recognized at all.** yt-dlp's LinkedIn extractor only
+   matches `linkedin.com/posts/...-<id>-<hash>` and
+   `linkedin.com/feed/update/urn:li:activity:<id>` URLs. A
+   `urn:li:groupPost:...` URL (shared from a LinkedIn Group) isn't matched by
+   any LinkedIn-specific pattern, so it falls through to yt-dlp's generic
+   webpage extractor and fails with an HTTP 404 - check the URL for
+   `groupPost` before assuming misconfiguration.
+
+Both are upstream yt-dlp limitations, confirmed by reading its LinkedIn
+extractor source and changelog directly - not something a local config change
+can fix. If LinkedIn support matters enough to unblock, the options are
+tracking/contributing to yt-dlp's own group-post support, or capturing that
+one post manually.
 
 ## GitHub and Notion text capture
 
@@ -307,8 +319,9 @@ device/browser, not just iOS.
 | `RuntimeError: Instagram downloads require a logged-in session` | Set `REEL_INSTAGRAM_COOKIES_FILE` or `REEL_INSTAGRAM_COOKIES_BROWSER` - see "Instagram setup" above |
 | yt-dlp download errors | Unsupported/blocked domain, network issue, or `ffmpeg` missing |
 | gallery-dl download errors / empty results | Cookies expired - re-export the cookies file, or make sure you're still logged in in the browser `REEL_INSTAGRAM_COOKIES_BROWSER` points at |
-| yt-dlp "log in" / "requested content is not available" on Facebook or LinkedIn URLs | Set `REEL_YTDLP_COOKIES_FILE` or `REEL_YTDLP_COOKIES_BROWSER` - see "Facebook and LinkedIn setup" above |
-| yt-dlp fails on a LinkedIn feed-post URL even with cookies configured | Likely a yt-dlp extractor coverage gap (LinkedIn's non-Learning video support is historically limited), not a config problem - check the error message |
+| yt-dlp "log in" / "requested content is not available" on Facebook URLs | Set `REEL_YTDLP_COOKIES_FILE` or `REEL_YTDLP_COOKIES_BROWSER` - see "Facebook and LinkedIn setup" above |
+| yt-dlp fails on any LinkedIn URL, cookies configured or not | Cookies are inert for LinkedIn as of yt-dlp 2026.07.04 (login support removed upstream) - see "Known LinkedIn limitations" above, not a config problem |
+| yt-dlp 404s specifically on a `linkedin.com/feed/update/urn:li:groupPost:...` URL | Confirmed unsupported URN type - yt-dlp's LinkedIn extractor only matches `urn:li:activity:` and `/posts/...` URLs, not group posts |
 | `CERTIFICATE_VERIFY_FAILED` on any download/API call | A local security tool (antivirus HTTPS scanning, corporate proxy) is intercepting TLS with a malformed root certificate - this is a machine-level issue, not this project's code; check `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE` env vars and your antivirus's HTTPS-scanning settings |
 | `TranscriptionError: faster-whisper is not installed` | Run `uv sync --extra local-whisper`, or switch `REEL_TRANSCRIPTION_BACKEND=openai` |
 | Note not appearing where expected | Check `REEL_VAULT_DIR` / `paths.vault_dir` in `config/settings.yaml` |
