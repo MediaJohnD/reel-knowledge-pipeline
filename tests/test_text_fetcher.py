@@ -7,7 +7,7 @@ import pytest
 import respx
 
 from reel_pipeline.config import Settings
-from reel_pipeline.text_fetcher import GitHubFetcher, TextFetchError
+from reel_pipeline.text_fetcher import GitHubFetcher, NotionFetcher, TextFetchError
 
 
 def _readme_response(content: str) -> dict:
@@ -93,3 +93,55 @@ def test_github_fetcher_raises_clear_error_on_rate_limit(tmp_path):
 
     with pytest.raises(TextFetchError, match="rate limit"):
         GitHubFetcher(settings).fetch("https://github.com/owner/repo", "cid4")
+
+
+_NOTION_PAGE_HTML = """
+<html><body><article>
+<h1>Project Notes</h1>
+<p>This page documents the onboarding process for new team members.</p>
+<p>Step one: clone the repo. Step two: install dependencies.</p>
+</article></body></html>
+"""
+
+_NOTION_LOGIN_WALL_HTML = """
+<html><body><div id="notion-app"></div>
+<script>window.__NOTION_LOGIN_REQUIRED__ = true;</script>
+</body></html>
+"""
+
+
+@respx.mock
+def test_notion_fetcher_extracts_main_text(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    respx.get("https://www.notion.so/Project-Notes-abc123").mock(
+        return_value=httpx.Response(200, text=_NOTION_PAGE_HTML)
+    )
+
+    result = NotionFetcher(settings).fetch(
+        "https://www.notion.so/Project-Notes-abc123", "cid5"
+    )
+
+    assert "onboarding process" in result.text
+    assert "clone the repo" in result.text
+    assert result.content_kind == "text"
+    assert result.backend == "notion-fetch"
+
+
+@respx.mock
+def test_notion_fetcher_raises_clear_error_when_extraction_is_empty(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    respx.get("https://www.notion.so/Private-Page-xyz").mock(
+        return_value=httpx.Response(200, text=_NOTION_LOGIN_WALL_HTML)
+    )
+
+    with pytest.raises(TextFetchError, match="not public|empty|login"):
+        NotionFetcher(settings).fetch("https://www.notion.so/Private-Page-xyz", "cid6")
+
+
+@respx.mock
+def test_notion_fetcher_raises_clear_error_on_http_failure(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    respx.get("https://www.notion.so/Missing-Page").mock(return_value=httpx.Response(404))
+
+    with pytest.raises(TextFetchError, match="404"):
+        NotionFetcher(settings).fetch("https://www.notion.so/Missing-Page", "cid7")

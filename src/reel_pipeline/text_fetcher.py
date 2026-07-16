@@ -17,6 +17,7 @@ import base64
 from urllib.parse import urlparse
 
 import httpx
+import trafilatura
 
 from reel_pipeline.config import Settings
 from reel_pipeline.models import TranscriptResult
@@ -111,3 +112,42 @@ class GitHubFetcher:
         if data.get("encoding") == "base64" and encoded:
             return base64.b64decode(encoded).decode("utf-8", errors="replace")
         return encoded
+
+
+class NotionFetcher:
+    def __init__(self, settings: Settings, client: httpx.Client | None = None):
+        self.settings = settings
+        self._client = client
+
+    def fetch(self, url: str, content_id: str) -> TranscriptResult:
+        owned_client = self._client or httpx.Client(timeout=30.0, follow_redirects=True)
+        owns_client = self._client is None
+        try:
+            try:
+                response = owned_client.get(url)
+            except httpx.HTTPError as exc:
+                raise TextFetchError(f"failed to fetch Notion page {url!r}: {exc}") from exc
+            if response.status_code != 200:
+                raise TextFetchError(
+                    f"Notion page {url!r} returned HTTP {response.status_code}"
+                )
+            html = response.text
+        finally:
+            if owns_client:
+                owned_client.close()
+
+        extracted = trafilatura.extract(html)
+        if not extracted or not extracted.strip():
+            raise TextFetchError(
+                f"Notion page {url!r} produced no extractable text - it's likely "
+                "not actually public (login wall), rather than empty"
+            )
+
+        return TranscriptResult(
+            content_id=content_id,
+            text=extracted.strip(),
+            content_kind="text",
+            language=None,
+            backend="notion-fetch",
+            duration_seconds=None,
+        )
