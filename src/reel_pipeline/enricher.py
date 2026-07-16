@@ -49,11 +49,21 @@ class Enricher:
     def __init__(self, settings: Settings, client: httpx.Client | None = None):
         self.settings = settings
         self._client = client
-        self._prompt_template = settings.enrich_transcript_prompt.read_text(encoding="utf-8")
+        self._transcript_prompt_template = settings.enrich_transcript_prompt.read_text(
+            encoding="utf-8"
+        )
+        self._text_capture_prompt_template = settings.enrich_text_capture_prompt.read_text(
+            encoding="utf-8"
+        )
 
     def enrich(self, transcript: TranscriptResult, source_url: str) -> EnrichmentResult:
+        template = (
+            self._text_capture_prompt_template
+            if transcript.content_kind == "text"
+            else self._transcript_prompt_template
+        )
         prompt = render_template(
-            self._prompt_template,
+            template,
             source_url=source_url,
             transcript=transcript.text,
         )
