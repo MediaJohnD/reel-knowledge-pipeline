@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -44,6 +45,7 @@ class StateRecord(BaseModel):
     normalized_url: str
     source: QueueSource
     status: ItemStatus
+    content_kind: Literal["media", "text"] = "media"
     added_at: datetime
     updated_at: datetime
     error: str | None = None
@@ -73,13 +75,16 @@ class DownloadResult(BaseModel):
 
 class TranscriptResult(BaseModel):
     """Text content extracted from the downloaded media - a literal transcript
-    for video/audio (from Transcriber), or a vision-model description for image
-    posts (from ImageDescriber). Downstream stages (enrichment, note writing)
-    treat `.text` identically either way.
+    for video/audio (from Transcriber), a vision-model description for image
+    posts (from ImageDescriber), or fetched page text for GitHub/Notion links
+    (from TextFetcher). Downstream stages (enrichment, note writing) treat
+    `.text` identically regardless of source; `content_kind` only changes
+    which enrichment prompt is used.
     """
 
     content_id: str
     text: str
+    content_kind: Literal["media", "text"] = "media"
     language: str | None = None
     backend: str
     duration_seconds: float | None = None

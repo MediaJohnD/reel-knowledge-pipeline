@@ -86,6 +86,16 @@ download:
     - drive.google.com
   blocked_domains: []
 
+# Non-media knowledge sources - routed to TextFetcher (fetch + extract text)
+# instead of Downloader (yt-dlp/gallery-dl). Public links only - no OAuth/API
+# keys. See docs/runbook.md's "GitHub and Notion text capture" section and
+# docs/superpowers/specs/2026-07-16-text-capture-ingestion-design.md.
+text_capture:
+  allowed_domains:
+    - github.com
+    - notion.so
+    - notion.site
+
 webhook:
   host: 127.0.0.1
   port: 8787

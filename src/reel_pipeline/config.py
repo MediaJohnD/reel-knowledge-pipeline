@@ -33,6 +33,7 @@ class PathsConfig(BaseModel):
 
 class PromptsConfig(BaseModel):
     enrich_transcript: str = "config/prompts/enrich_transcript.md"
+    enrich_text_capture: str = "config/prompts/enrich_text_capture.md"
     create_skill: str = "config/prompts/create_skill.md"
     describe_image_post: str = "config/prompts/describe_image_post.md"
 
@@ -86,6 +87,13 @@ class DownloadConfig(BaseModel):
     blocked_domains: list[str] = Field(default_factory=list)
 
 
+class TextCaptureConfig(BaseModel):
+    # Domains routed to TextFetcher instead of Downloader - see validators.classify_url_kind().
+    # Kept deliberately separate from download.allowed_domains: these aren't media
+    # platforms, and mixing the two lists would make classify_url_kind() ambiguous.
+    allowed_domains: list[str] = Field(default_factory=list)
+
+
 class WebhookConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8787
@@ -114,6 +122,7 @@ class Settings(BaseModel):
     skill_writer: SkillWriterConfig = Field(default_factory=SkillWriterConfig)
     image_description: ImageDescriptionConfig = Field(default_factory=ImageDescriptionConfig)
     download: DownloadConfig = Field(default_factory=DownloadConfig)
+    text_capture: TextCaptureConfig = Field(default_factory=TextCaptureConfig)
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
 
@@ -178,6 +187,10 @@ class Settings(BaseModel):
     @property
     def enrich_transcript_prompt(self) -> Path:
         return self.resolve(self.prompts.enrich_transcript)
+
+    @property
+    def enrich_text_capture_prompt(self) -> Path:
+        return self.resolve(self.prompts.enrich_text_capture)
 
     @property
     def create_skill_prompt(self) -> Path:
@@ -302,6 +315,7 @@ def load_settings(
         skill_writer=SkillWriterConfig(**raw.get("skill_writer", {})),
         image_description=ImageDescriptionConfig(**raw.get("image_description", {})),
         download=DownloadConfig(**raw.get("download", {})),
+        text_capture=TextCaptureConfig(**raw.get("text_capture", {})),
         webhook=WebhookConfig(**raw.get("webhook", {})),
         maintenance=MaintenanceConfig(**raw.get("maintenance", {})),
         webhook_secret=env.get("REEL_WEBHOOK_SECRET") or None,

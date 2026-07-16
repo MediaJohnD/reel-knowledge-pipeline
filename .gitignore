@@ -8,6 +8,9 @@ __pycache__/
 
 .env
 
+# Scratch state for superpowers:subagent-driven-development - not project output.
+.superpowers/
+
 # Generated/runtime data - keep the directories, ignore their contents.
 data/inbox/*
 !data/inbox/.gitkeep
