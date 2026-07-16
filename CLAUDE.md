@@ -33,6 +33,16 @@ The system supports:
   Facebook/LinkedIn. `validate_url` in `validators.py` matches `allowed_domains` against the
   full host, not a reduced two-label domain, specifically so a subdomain entry like this one
   doesn't accidentally open the whole parent domain.
+- Text-capture ingestion (GitHub repos/files, public Notion pages) is enabled as of
+  2026-07-16, scoped to `github.com`, `notion.so`, and `notion.site` in
+  `text_capture.allowed_domains` - a separate allow-list from `download.allowed_domains`,
+  since these aren't media platforms and go through `text_fetcher.py` (GitHub's public
+  REST API, plain HTTP GET + `trafilatura` extraction for Notion) instead of
+  yt-dlp/gallery-dl. Public links only - no OAuth or API keys, matching the project's
+  no-account-automation posture. Airtable was explicitly evaluated and excluded: its
+  public share views require JS execution to render real content, which conflicts with
+  the no-browser-automation rule above. See
+  `docs/superpowers/specs/2026-07-16-text-capture-ingestion-design.md`.
 - Any `download.blocked_domains` entries are still enforced up front - blocked URLs route
   to `data/inbox/needs-attention.txt`, never downloaded.
 - Treat any other third-party account automation as out of scope unless explicitly requested.

@@ -131,6 +131,29 @@ call / API key and are not exercised by the automated test suite.
       error when `REEL_WEBHOOK_SECRET` is set, and fails fast with a clear
       message when it isn't.
 
+## 12. Text-capture ingestion (GitHub, Notion)
+
+- [ ] A `github.com/owner/repo` URL is classified as `content_kind=text` and
+      routed to `TextFetcher`, never `Downloader`.
+      Automated: `test_text_capture_item_routes_to_text_fetcher_not_downloader`.
+- [ ] A GitHub repo-root URL captures metadata + README; a
+      `.../blob/<ref>/<path>` URL captures that specific file's content instead.
+      Automated: `test_github_fetcher_fetches_repo_root_metadata_and_readme`,
+      `test_github_fetcher_fetches_specific_file_not_readme`.
+- [ ] A private/nonexistent GitHub repo fails with a clear error, not a crash.
+      Automated: `test_github_fetcher_raises_clear_error_on_404`.
+- [ ] A public Notion page's main text content is extracted correctly.
+      Automated: `test_notion_fetcher_extracts_main_text`.
+- [ ] A non-public Notion page (login wall) fails with a clear error rather
+      than producing a near-empty note.
+      Automated: `test_notion_fetcher_raises_clear_error_when_extraction_is_empty`.
+- [ ] Enrichment selects `enrich_text_capture.md` for `content_kind=text` items
+      and `enrich_transcript.md` for everything else.
+      Automated: `test_enrich_uses_text_capture_prompt_for_text_content`,
+      `test_enrich_uses_transcript_prompt_for_media_content`.
+- [ ] A real public GitHub repo and a real public Notion page each produce a
+      working Obsidian note end-to-end. **(manual)**
+
 ## Full verification log
 
 See the final delivery summary for the actual `pytest` / `ruff` / `pyright`

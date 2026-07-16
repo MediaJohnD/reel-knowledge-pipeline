@@ -9,8 +9,9 @@ artifact.
 No browser automation. No hardcoded secrets. No social-platform scraping by
 default - YouTube/TikTok/X/Vimeo work anonymously; Instagram, Facebook,
 LinkedIn, and Google Drive (video files only) are each a deliberate,
-cookie-authenticated opt-in (see `docs/runbook.md`). See
-[`docs/architecture.md`](docs/architecture.md) for
+cookie-authenticated opt-in (see `docs/runbook.md`). GitHub and public Notion
+pages are captured as text via a separate, public-links-only path (no
+credentials needed). See [`docs/architecture.md`](docs/architecture.md) for
 the full design and [`docs/runbook.md`](docs/runbook.md) for day-to-day
 operation.
 
@@ -81,6 +82,7 @@ docs/               architecture, runbook, acceptance tests
 - No browser automation, ever - both downloaders are cookie-authenticated CLI tools, never a driven browser session.
 - `download.blocked_domains` is enforced before any download attempt - those URLs are logged to `needs-attention.txt` instead.
 - Instagram, Facebook, LinkedIn, and Google Drive are each a deliberate, scoped exception to a general "no social platform by default" baseline: enabled via gallery-dl (Instagram) or optional yt-dlp cookies (Facebook/LinkedIn/Drive) for low-volume personal use with the account owner's own real account. Drive is scoped to that exact subdomain, not all of `google.com`. YouTube/TikTok/X/Vimeo stay anonymous. See `docs/runbook.md`'s "Instagram setup" and "Facebook and LinkedIn setup" sections.
+- GitHub repos/files and public Notion pages are captured as text (not downloaded as media) via a separate `text_capture.allowed_domains` list and `text_fetcher.py` - public links only, no credentials of any kind. Airtable was evaluated and excluded (its share views need JS execution to render, conflicting with the no-browser-automation rule).
 - Secrets (including Instagram/yt-dlp cookies config) are read from the environment only; `config/settings.yaml` never contains secrets.
 
 See [`CLAUDE.md`](CLAUDE.md) for the full set of project rules this repository was built against.

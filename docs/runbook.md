@@ -244,6 +244,24 @@ unreliable support. A `DownloadError` on a LinkedIn feed-post URL may reflect
 that yt-dlp coverage gap rather than a cookie problem - check the error
 message for specifics before assuming misconfiguration.
 
+## GitHub and Notion text capture
+
+GitHub repo/file links and public Notion pages are captured as text instead
+of downloaded as media - no setup needed, since both use public-only access:
+
+- **GitHub**: uses GitHub's public REST API, unauthenticated (60 requests/hour,
+  2 calls per URL - comfortably enough for personal sharing volume). Works for
+  any public repo, either the repo root or a link to one specific file
+  (`.../blob/<branch>/<path>`).
+- **Notion**: fetches the public share-page URL directly and extracts the main
+  text content. Only works for pages actually shared as "public" (Notion's
+  "Share to web" toggle) - a private/workspace-only page will fail with a
+  clear "not public" error rather than silently producing an empty note.
+
+Neither requires any environment variable or credential. Airtable links are
+not supported (see `docs/architecture.md`'s Safety guardrails section for why)
+and continue to route to `needs-attention.txt`.
+
 ## Remote ingestion via Tailscale + iOS Shortcut
 
 For sending links from a phone without relying on the same WiFi network:
