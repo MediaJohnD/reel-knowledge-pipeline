@@ -121,6 +121,19 @@ _NOTION_LOGIN_WALL_HTML = """
 </body></html>
 """
 
+# A real-world case found via manual verification (see docs/superpowers/plans -
+# roadmap.notion.site returns exactly this shape): a client-rendered app shell
+# whose only server-sent text is a <noscript> fallback message, which
+# trafilatura extracts as non-empty "content" - the empty-string check alone
+# missed this, silently producing a garbage note before this test was added.
+_NOTION_JS_REQUIRED_HTML = """
+<!doctype html><html><head><title>Notion</title></head>
+<body><div id="notion-app"></div>
+<noscript>JavaScript must be enabled in order to use Notion.
+Please enable JavaScript to continue.</noscript>
+</body></html>
+"""
+
 
 @respx.mock
 def test_notion_fetcher_extracts_main_text(tmp_path):
@@ -148,6 +161,22 @@ def test_notion_fetcher_raises_clear_error_when_extraction_is_empty(tmp_path):
 
     with pytest.raises(TextFetchError, match="not public|empty|login"):
         NotionFetcher(settings).fetch("https://www.notion.so/Private-Page-xyz", "cid6")
+
+
+@respx.mock
+def test_notion_fetcher_raises_clear_error_for_js_rendered_app_shell(tmp_path):
+    """Regression test for a real page found during manual verification: the
+    server HTML is a client-rendered app shell with only a <noscript> fallback
+    message, which trafilatura extracts as non-empty text - the fetcher must
+    still treat this as unusable, not as real page content.
+    """
+    settings = Settings(project_root=tmp_path)
+    respx.get("https://roadmap.notion.site/").mock(
+        return_value=httpx.Response(200, text=_NOTION_JS_REQUIRED_HTML)
+    )
+
+    with pytest.raises(TextFetchError, match="client-side"):
+        NotionFetcher(settings).fetch("https://roadmap.notion.site/", "cid-js-shell")
 
 
 @respx.mock

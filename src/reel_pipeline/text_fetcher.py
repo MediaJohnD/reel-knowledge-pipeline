@@ -115,6 +115,16 @@ class GitHubFetcher:
         return encoded
 
 
+_NOTION_APP_SHELL_MARKERS = (
+    "javascript must be enabled",
+    "please enable javascript",
+)
+# Below this length, extracted text is more likely to be app-shell boilerplate
+# (a stray noscript/meta fragment) than real page content - real Notion pages,
+# even short ones, run well past this once trafilatura strips markup.
+_MIN_PLAUSIBLE_EXTRACTED_LENGTH = 60
+
+
 class NotionFetcher:
     def __init__(self, settings: Settings, client: httpx.Client | None = None):
         self.settings = settings
@@ -137,16 +147,29 @@ class NotionFetcher:
             if owns_client:
                 owned_client.close()
 
-        extracted = trafilatura.extract(html)
-        if not extracted or not extracted.strip():
+        extracted = (trafilatura.extract(html) or "").strip()
+        # Many modern Notion pages are a client-rendered app shell with no real
+        # content in the server-sent HTML at all - trafilatura then extracts
+        # whatever stray text IS server-rendered (e.g. a <noscript> fallback
+        # message), which is non-empty but not the page's actual content. The
+        # empty-string check alone doesn't catch this; matching known app-shell
+        # boilerplate and a minimum plausible length does.
+        too_short = len(extracted) < _MIN_PLAUSIBLE_EXTRACTED_LENGTH
+        has_app_shell_marker = any(
+            marker in extracted.lower() for marker in _NOTION_APP_SHELL_MARKERS
+        )
+        looks_like_app_shell = not extracted or too_short or has_app_shell_marker
+        if looks_like_app_shell:
             raise TextFetchError(
-                f"Notion page {url!r} produced no extractable text - it's likely "
-                "not actually public (login wall), rather than empty"
+                f"Notion page {url!r} produced no usable text - it's rendered "
+                "client-side with no real content in the server HTML (or requires "
+                "login), rather than being genuinely empty. This pipeline cannot "
+                "fetch it without browser automation, which is against project policy."
             )
 
         return TranscriptResult(
             content_id=content_id,
-            text=extracted.strip(),
+            text=extracted,
             content_kind="text",
             language=None,
             backend="notion-fetch",
