@@ -16,6 +16,7 @@ dependencies = [
     "yt-dlp>=2024.8.6",
     "gallery-dl>=1.30",
     "trafilatura>=1.12",
+    "filelock>=3.13",
 ]
 
 [project.optional-dependencies]

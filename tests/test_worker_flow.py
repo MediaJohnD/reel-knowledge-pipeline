@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -474,3 +475,78 @@ def test_reprocessing_with_a_new_title_removes_the_stale_note_and_skill(tmp_path
     assert second_record.note_path is not None
     assert Path(second_record.note_path).exists()
     assert second_record.note_path != str(first_note_path)
+
+
+class SlowFakeDownloader:
+    """Sleeps mid-download and tracks concurrent entries - lets a test prove
+    two run_once() calls never overlap inside the locked section, regardless
+    of which WorkerPipeline instance (i.e. which "process") is running it.
+    """
+
+    def __init__(self):
+        self.active = 0
+        self.max_concurrent_observed = 0
+        self._lock = threading.Lock()
+
+    def download(self, url: str, content_id: str) -> DownloadResult:
+        with self._lock:
+            self.active += 1
+            self.max_concurrent_observed = max(self.max_concurrent_observed, self.active)
+        time.sleep(0.2)
+        with self._lock:
+            self.active -= 1
+        return DownloadResult(
+            content_id=content_id,
+            media_type=MediaType.VIDEO,
+            media_paths=[f"/fake/{content_id}.mp3"],
+            platform="youtube",
+        )
+
+
+def test_concurrent_run_once_calls_never_interleave(tmp_path):
+    """Two separate WorkerPipeline instances (simulating two separate processes -
+    e.g. a manual CLI run-once racing the webhook server's own background run)
+    must not process items concurrently - run_once()'s cross-process file lock
+    should serialize them.
+    """
+    settings = make_settings(tmp_path)
+    shared_downloader = SlowFakeDownloader()
+
+    def build():
+        return WorkerPipeline(
+            settings=settings,
+            queue_manager=QueueManager(settings),
+            downloader=shared_downloader,
+            transcriber=FakeTranscriber(),
+            image_describer=FakeImageDescriber(),
+            text_fetcher=FakeTextFetcher(),
+            enricher=FakeEnricher(),
+            skill_writer=FakeSkillWriter(settings),
+        )
+
+    pipeline_a = build()
+    pipeline_a.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=race1\nhttps://www.youtube.com/watch?v=race2\n",
+        encoding="utf-8",
+    )
+
+    pipeline_b = build()
+
+    results = {}
+
+    def run(name, pipeline):
+        results[name] = pipeline.run_once()
+
+    t1 = threading.Thread(target=run, args=("a", pipeline_a))
+    t2 = threading.Thread(target=run, args=("b", pipeline_b))
+    t1.start()
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    assert shared_downloader.max_concurrent_observed == 1
+    # Between them, both queued items were processed exactly once (whichever
+    # thread's run_once() picked them up first, since the second call's
+    # sync_queue_file_into_state() runs against an already-drained queue.txt).
+    total_done = results["a"].done + results["b"].done
+    assert total_done == 2

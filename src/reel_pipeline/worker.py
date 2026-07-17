@@ -4,6 +4,17 @@ transcribe -> enrich -> write note -> optionally write skill -> persist state.
 Every stage updates state.json before moving to the next, so a crash mid-item
 leaves an accurate `status` behind and the next run_once() will pick the item
 back up via QueueManager.get_actionable_items() (restart-safe, idempotent).
+
+run_once() is guarded by a cross-process file lock (see RunOnceLockError
+below). webhook_server.py's threading.Lock only prevents overlapping
+webhook-triggered runs *within that one long-lived process* - it does
+nothing for a manually-invoked `run-once` CLI call racing against the
+webhook server, or two manual CLI calls racing against each other. Without
+this, concurrent run_once() calls read/mutate/write state.json independently
+via QueueManager.load_state()/save_state(), and the loser's write silently
+clobbers the winner's - observed in practice as a StateRecord field (e.g.
+content_kind) reverting to its default value, or an item being processed
+twice.
 """
 
 from __future__ import annotations
@@ -14,6 +25,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
+
+from filelock import FileLock
+from filelock import Timeout as FileLockTimeout
 
 from reel_pipeline.config import Settings
 from reel_pipeline.downloader import Downloader, get_downloader
@@ -43,6 +57,14 @@ class EnrichmentProvider(Protocol):
 
 class SkillGenerator(Protocol):
     def generate(self, item: ContentItem) -> Path | None: ...
+
+
+class RunOnceLockError(RuntimeError):
+    """Raised when run_once() can't acquire the cross-process state.json lock
+    within the timeout - another run_once() (this process, another CLI
+    invocation, or the webhook server) is still running after an unexpectedly
+    long time, which likely means something is stuck rather than just busy.
+    """
 
 
 @dataclass
@@ -260,6 +282,27 @@ class WorkerPipeline:
                 log_context(logger, 30, "stale tmp sweep failed", path=str(child), error=str(exc))
 
     def run_once(self) -> RunSummary:
+        """Acquires a cross-process lock on state.json before doing any work, so
+        this run_once() can't interleave with another one in a different
+        process (a concurrent CLI invocation, or the webhook server's own
+        background run) - see this module's docstring for what goes wrong
+        without it. Blocks up to 10 minutes for the lock (a full pass over a
+        large backlog can legitimately take a while); past that, something is
+        very likely stuck rather than just busy, so this raises instead of
+        blocking forever.
+        """
+        lock_path = self.settings.state_file.with_suffix(".lock")
+        try:
+            with FileLock(str(lock_path), timeout=600):
+                return self._run_once_locked()
+        except FileLockTimeout as exc:
+            raise RunOnceLockError(
+                f"Could not acquire the state.json lock ({lock_path}) within 600s - "
+                "another run_once() (this process, another CLI invocation, or the "
+                "webhook server) appears to be stuck rather than just busy."
+            ) from exc
+
+    def _run_once_locked(self) -> RunSummary:
         self.settings.ensure_directories()
         self._sweep_stale_tmp_dirs()
         self.queue_manager.prune_needs_attention(
