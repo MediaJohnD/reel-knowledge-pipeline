@@ -16,6 +16,9 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from reel_pipeline.config import Settings
 
 # Query params that don't affect the identity of the content (tracking/referral noise).
+# fbclid/mibextid in particular: their absence caused a real duplicate content_id for the
+# exact same GitHub URL during manual testing - a link shared once directly and once
+# re-shared/relayed through Facebook normalized to two different URLs without this.
 _STRIP_QUERY_PARAMS = {
     "utm_source",
     "utm_medium",
@@ -29,6 +32,11 @@ _STRIP_QUERY_PARAMS = {
     "ref",
     "ref_src",
     "s",
+    "fbclid",
+    "mibextid",
+    "gclid",
+    "mc_cid",
+    "mc_eid",
 }
 
 

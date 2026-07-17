@@ -1,7 +1,34 @@
 from __future__ import annotations
 
 from reel_pipeline.config import DownloadConfig, Settings
-from reel_pipeline.validators import classify_url_kind, validate_url
+from reel_pipeline.validators import classify_url_kind, normalize_url, validate_url
+
+
+def test_normalize_url_strips_tracking_params_including_fbclid():
+    """Regression test: the same GitHub URL, shared directly vs. relayed through
+    Facebook (which appends fbclid), used to normalize to two different URLs and
+    therefore two different content_ids for identical content - found during
+    manual testing of the text-capture feature.
+    """
+    direct = normalize_url("https://github.com/public-apis/public-apis")
+    via_facebook = normalize_url(
+        "https://github.com/public-apis/public-apis"
+        "?fbclid=PAVERFWATDkcxwZG9mAmV4dG4DYWVtAjEwAHNydGMGYXBwX2lkDzEyNDAyNDU3NDI4NzQxNAAB"
+    )
+
+    assert direct == via_facebook
+
+
+def test_normalize_url_strips_mibextid_gclid_and_mailchimp_params():
+    assert normalize_url("https://example.com/x?mibextid=abc") == normalize_url(
+        "https://example.com/x"
+    )
+    assert normalize_url("https://example.com/x?gclid=abc") == normalize_url(
+        "https://example.com/x"
+    )
+    assert normalize_url("https://example.com/x?mc_cid=abc&mc_eid=def") == normalize_url(
+        "https://example.com/x"
+    )
 
 
 def make_settings(tmp_path, allowed, blocked=None) -> Settings:
