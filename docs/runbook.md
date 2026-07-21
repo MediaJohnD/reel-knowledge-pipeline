@@ -119,7 +119,7 @@ re-runs the same CLI command.
 3. Otherwise: download -> transcribe (video) or describe (photo post/carousel,
    see "Photo posts" below) -> enrich -> write note -> maybe write skill. Each
    stage updates `state.json`'s `status` field.
-4. On success: `data/notes/<content_id>-<title-slug>.md` (or your configured
+4. On success: `data/notes/<title-slug>.md` (or your configured
    `REEL_VAULT_DIR`) is created/overwritten, and `status` becomes `done`.
 5. On failure at any stage: `status` becomes `failed`, the error is recorded
    in `state.json`, and a line is appended to `needs-attention.txt`. The item

@@ -1,8 +1,16 @@
 """Writes Obsidian-compatible markdown notes from a fully-enriched ContentItem.
 
-Filenames are deterministic (`<content_id>-<title-slug>.md`), so re-running the
-pipeline for the same content_id always overwrites the same file instead of
-accumulating duplicates - this is what makes note writing idempotent.
+Filenames are the title slug alone (`<title-slug>.md`), not prefixed with
+content_id - a hex content_id in every filename showed up as low-signal noise
+in Obsidian's file explorer and graph view (see the 2026-07-19 vault title
+cleanup). Idempotency on re-processing does NOT depend on the filename: it's
+handled by worker.py's `_cleanup_stale_note`, which tracks each item's
+previous note_path in state.json and deletes it when a re-run produces a
+different path. The content_id is only consulted here to disambiguate a
+genuine slug collision between two *different* pieces of content that happen
+to produce the same title slug - re-processing the *same* content_id is
+expected to reuse its own existing file rather than being treated as a
+collision.
 """
 
 from __future__ import annotations
@@ -23,12 +31,45 @@ def slugify(text: str, max_length: int = 60) -> str:
     return slug[:max_length].rstrip("-") or "untitled"
 
 
-def note_filename(content_id: str, title: str) -> str:
-    return f"{content_id}-{slugify(title)}.md"
+def _existing_content_id(path: Path) -> str | None:
+    """Reads just the content_id out of a note's frontmatter, or None if the
+    file doesn't exist or has no parseable frontmatter.
+    """
+    if not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not text.startswith("---\n"):
+        return None
+    end = text.find("\n---\n", 4)
+    if end == -1:
+        return None
+    frontmatter = yaml.safe_load(text[4:end])
+    return frontmatter.get("content_id") if isinstance(frontmatter, dict) else None
+
+
+def note_filename(vault_dir: Path, content_id: str, title: str) -> str:
+    """Picks `<slug>.md`, or `<slug>-2.md`, `<slug>-3.md`, ... on collision.
+
+    A "collision" is an existing file with the same slug but a *different*
+    content_id in its frontmatter. If the existing file belongs to this same
+    content_id (the normal re-processing case), its filename is reused as-is.
+    """
+    slug = slugify(title)
+    candidate = f"{slug}.md"
+    suffix = 2
+    while True:
+        existing = _existing_content_id(vault_dir / candidate)
+        if existing is None or existing == content_id:
+            return candidate
+        candidate = f"{slug}-{suffix}.md"
+        suffix += 1
 
 
 def note_path(settings: Settings, content_id: str, title: str) -> Path:
-    return settings.vault_dir / note_filename(content_id, title)
+    return settings.vault_dir / note_filename(settings.vault_dir, content_id, title)
 
 
 def _render_frontmatter(item: ContentItem) -> str:

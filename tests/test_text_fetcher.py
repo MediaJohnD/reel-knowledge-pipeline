@@ -55,6 +55,46 @@ def test_github_fetcher_fetches_repo_root_metadata_and_readme(tmp_path):
 
 
 @respx.mock
+def test_github_fetcher_absolutizes_relative_readme_links(tmp_path):
+    # Regression test: a README's relative links/images point at sibling files
+    # in that repo, not at anything in the Obsidian vault. Left relative, the
+    # note-writer embeds them verbatim and Obsidian creates blank stub notes
+    # for paths like CONTRIBUTING.md at the vault root (observed in practice).
+    settings = Settings(project_root=tmp_path)
+    respx.get("https://api.github.com/repos/owner/repo").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "full_name": "owner/repo",
+                "description": "desc",
+                "stargazers_count": 1,
+                "language": "Python",
+                "topics": [],
+                "default_branch": "develop",
+            },
+        )
+    )
+    readme = (
+        "# repo\n\n"
+        "See the [Contributing Guide](CONTRIBUTING.md) and [LICENSE](LICENSE).\n"
+        "![badge](./docs/badge.svg)\n"
+        "Already absolute: [docs](https://example.com/docs)\n"
+        "Anchor only: [section](#usage)\n"
+    )
+    respx.get("https://api.github.com/repos/owner/repo/readme").mock(
+        return_value=httpx.Response(200, json=_readme_response(readme))
+    )
+
+    result = GitHubFetcher(settings).fetch("https://github.com/owner/repo", "cid-links")
+
+    assert "(https://github.com/owner/repo/blob/develop/CONTRIBUTING.md)" in result.text
+    assert "(https://github.com/owner/repo/blob/develop/LICENSE)" in result.text
+    assert "(https://raw.githubusercontent.com/owner/repo/develop/docs/badge.svg)" in result.text
+    assert "(https://example.com/docs)" in result.text
+    assert "(#usage)" in result.text
+
+
+@respx.mock
 def test_github_fetcher_fetches_specific_file_not_readme(tmp_path):
     settings = Settings(project_root=tmp_path)
     respx.get("https://api.github.com/repos/owner/repo").mock(

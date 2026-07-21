@@ -219,9 +219,9 @@ class WorkerPipeline:
         """Reprocessing an already-DONE item (e.g. a concurrent duplicate run, or a
         manual retry after clearing an error) can produce a different title -
         enrichment is an LLM call, not deterministic - and note filenames are
-        `<content_id>-<title-slug>.md`. Without this, the old file would sit in the
-        vault forever as an orphan duplicate, indistinguishable from a genuinely
-        different note.
+        `<title-slug>.md` (no content_id prefix). Without this, the old file
+        would sit in the vault forever as an orphan duplicate, indistinguishable
+        from a genuinely different note.
         """
         if not previous_path or previous_path == new_path:
             return

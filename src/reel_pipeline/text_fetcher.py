@@ -14,6 +14,7 @@ their public share URL (no JS execution - not browser automation).
 from __future__ import annotations
 
 import base64
+import re
 from typing import Protocol
 from urllib.parse import urlparse
 
@@ -24,6 +25,37 @@ from reel_pipeline.config import Settings
 from reel_pipeline.models import TranscriptResult
 
 _GITHUB_API = "https://api.github.com"
+
+_MARKDOWN_LINK_RE = re.compile(r'(!?)\[([^\]]*)\]\(([^)\s]+)((?:\s+"[^"]*")?)\)')
+
+
+def _absolutize_relative_links(text: str, owner: str, repo: str, ref: str) -> str:
+    """Rewrites a README's relative markdown links/images to absolute GitHub
+    URLs, using the repo's own default branch as the ref.
+
+    A GitHub README's relative links (`[Contributing](CONTRIBUTING.md)`,
+    `![badge](docs/badge.svg)`) point at sibling files *in that repo*, not at
+    anything in the Obsidian vault. Left as-is, embedding the raw README text
+    verbatim in a vault note makes Obsidian treat them as vault-internal
+    wikitargets and silently create blank stub notes for paths like
+    `CONTRIBUTING.md` at the vault root (observed in practice - see the
+    2026-07-19 vault cleanup). Absolute URLs keep the links genuinely useful
+    (they still resolve, just to GitHub instead of nowhere) without that
+    side effect.
+    """
+
+    def _rewrite(match: re.Match[str]) -> str:
+        bang, label, target, title = match.groups()
+        if target.startswith(("http://", "https://", "#", "mailto:")):
+            return match.group(0)
+        clean_target = target.removeprefix("./").removeprefix("/")
+        if bang:
+            absolute = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{clean_target}"
+        else:
+            absolute = f"https://github.com/{owner}/{repo}/blob/{ref}/{clean_target}"
+        return f"{bang}[{label}]({absolute}{title})"
+
+    return _MARKDOWN_LINK_RE.sub(_rewrite, text)
 
 
 class TextFetchError(RuntimeError):
@@ -68,6 +100,9 @@ class GitHubFetcher:
         finally:
             if owns_client:
                 owned_client.close()
+
+        default_branch = metadata.get("default_branch") or "main"
+        content = _absolutize_relative_links(content, owner, repo, default_branch)
 
         parts = [
             heading,

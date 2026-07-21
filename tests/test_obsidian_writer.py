@@ -33,10 +33,27 @@ def test_slugify_produces_url_safe_lowercase():
     assert slugify("How To Build A Thing!") == "how-to-build-a-thing"
 
 
-def test_filename_is_deterministic_from_content_id_and_title():
-    name1 = note_filename("abc123", "How To Build A Thing")
-    name2 = note_filename("abc123", "How To Build A Thing")
-    assert name1 == name2 == "abc123-how-to-build-a-thing.md"
+def test_filename_is_the_title_slug_with_no_content_id_prefix(tmp_path):
+    name1 = note_filename(tmp_path, "abc123", "How To Build A Thing")
+    name2 = note_filename(tmp_path, "abc123", "How To Build A Thing")
+    assert name1 == name2 == "how-to-build-a-thing.md"
+
+
+def test_filename_disambiguates_slug_collision_between_different_content_ids(tmp_path):
+    write_note(Settings(project_root=tmp_path), make_item(content_id="aaa111", title="Same Title"))
+
+    name = note_filename(tmp_path / "data" / "notes", "bbb222", "Same Title")
+
+    assert name == "same-title-2.md"
+
+
+def test_filename_reuses_own_file_on_reprocessing_same_content_id(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    write_note(settings, make_item(content_id="abc123", title="Same Title"))
+
+    name = note_filename(settings.vault_dir, "abc123", "Same Title")
+
+    assert name == "same-title.md"
 
 
 def test_write_note_creates_file_with_required_frontmatter_fields(tmp_path):
@@ -73,5 +90,5 @@ def test_write_note_is_idempotent_and_overwrites_same_path(tmp_path):
     second_path = write_note(settings, item)
 
     assert first_path == second_path
-    matching_files = list(settings.vault_dir.glob(f"{item.content_id}-*.md"))
+    matching_files = list(settings.vault_dir.glob(f"{slugify(item.enrichment.title)}*.md"))
     assert len(matching_files) == 1

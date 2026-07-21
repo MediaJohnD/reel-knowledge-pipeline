@@ -59,7 +59,7 @@ The system supports:
 - Prompts live in versioned markdown files in `config/prompts/`, never as inline strings.
 - Use typed config (`config.py`) and typed models (`models.py`).
 - The worker (`worker.py`) is restart-safe and idempotent: `state.json` is the single source of truth for dedup and in-flight status, keyed by a deterministic `content_id`.
-- Note and skill filenames are deterministic (`<content_id>-<title-slug>`), so re-processing overwrites rather than duplicates.
+- Note and skill filenames are the title slug alone (`<title-slug>`), with no content_id prefix - a hex ID in every filename read as noise in Obsidian's file explorer and graph view. Idempotency on re-processing comes from `state.json` tracking each item's previous note/skill path and `worker.py` deleting it when a re-run's title (and thus filename) changes - not from the filename itself. A content_id is only consulted to disambiguate a genuine slug collision between two different items.
 
 ## Output contracts
 Each Obsidian note includes:

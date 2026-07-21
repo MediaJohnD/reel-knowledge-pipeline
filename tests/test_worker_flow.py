@@ -425,7 +425,7 @@ def test_multi_video_carousel_transcribes_every_clip_and_combines_them(tmp_path)
 def test_reprocessing_with_a_new_title_removes_the_stale_note_and_skill(tmp_path):
     # Regression test: enrichment (an LLM call) isn't deterministic, so reprocessing
     # an already-DONE item (a concurrent duplicate run, or a manual retry) can produce
-    # a different title -> a different <content_id>-<title-slug>.md filename. Without
+    # a different title -> a different <title-slug>.md filename. Without
     # cleanup, the old file/skill-dir would sit around forever as an orphan duplicate.
     settings = make_settings(tmp_path)
 
