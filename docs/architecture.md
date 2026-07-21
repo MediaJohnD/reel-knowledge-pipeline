@@ -49,7 +49,32 @@ identical regardless of which branch produced the text.
 | `webhook_server.py` | FastAPI app: shared-secret-authenticated `/webhook`, background processing |
 | `cli.py` | Typer entry point: `run-once`, `serve-webhook` |
 | `logging_setup.py` | Structured JSON logging to console + `data/logs/pipeline.log` |
-| `llm_client.py` | Shared LLM call (text and vision), dispatched by `llm.provider` (`anthropic` Claude API or a local `ollama` instance), used by enricher, skill_writer, and image_describer |
+| `llm_client.py` | Shared LLM call, dispatched by `llm.provider`: `anthropic` (Claude API) and `ollama` (local instance) support text and vision; `groq` and `gemini` support text only (enricher, skill_writer) - used by enricher, skill_writer, and image_describer |
+
+## Prompt caching
+
+All four prompt templates under `config/prompts/` put shared, repeated
+instruction text first and per-call variable content (source URL, transcript,
+image count, etc.) last, split by a `<!-- CACHE:BOUNDARY -->` marker that
+`enricher.render_and_split()` parses into `(static_prefix, prompt)`. This
+ordering is what makes prefix-keyed caching actually hit:
+
+- **Groq**: automatic prefix-match caching, no code required - only benefits
+  if the shared instructions are a literal prefix of the request, which the
+  reordering guarantees.
+- **Gemini**: automatic implicit caching (2.5+ models), same prefix
+  requirement, subject to a minimum input-token threshold.
+- **Anthropic**: not automatic - `llm_client.call_llm()`'s `static_prefix`
+  param is sent as a separate `system` block with `cache_control: {"type":
+  "ephemeral"}` (see `_call_claude`/`_call_claude_vision`), which is the
+  actual mechanism Claude requires.
+- **Ollama**: no caching; `static_prefix` is just prepended to the prompt
+  text for consistent behavior across providers.
+
+If a provider's model is changed, prefer Gemini's `gemini-3.5-flash-lite`
+(GA, same price as the previously-used `gemini-2.5-flash`) for the
+enrichment/skill-writer extraction task - it's the vendor's current
+recommendation for high-throughput structured extraction.
 
 ## Why state.json, not just the queue file
 

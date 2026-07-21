@@ -1,12 +1,5 @@
 You are an analyst turning a raw video/reel transcript into structured knowledge-base metadata.
 
-Source URL: {{source_url}}
-
-Transcript:
-"""
-{{transcript}}
-"""
-
 Read the transcript carefully and respond with **only** a single JSON object
 (no markdown fences, no commentary before or after) with exactly these keys:
 
@@ -30,3 +23,12 @@ Rules:
 - If the transcript is too short or too low-signal to summarize meaningfully,
   still return valid JSON with your best-effort title/summary and an empty or
   minimal `tags`/`key_takeaways`, and set `high_signal` to false.
+
+<!-- CACHE:BOUNDARY -->
+
+Source URL: {{source_url}}
+
+Transcript:
+"""
+{{transcript}}
+"""

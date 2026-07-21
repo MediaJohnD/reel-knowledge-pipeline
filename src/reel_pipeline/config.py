@@ -51,7 +51,7 @@ class TranscriptionConfig(BaseModel):
 
 
 class LlmConfig(BaseModel):
-    provider: str = "anthropic"  # "anthropic" | "ollama"
+    provider: str = "anthropic"  # "anthropic" | "ollama" | "groq" | "gemini"
     ollama_host: str = "http://localhost:11434"
     # Ollama defaults every request to a 4096-token context window regardless of
     # the model's actual capacity, silently truncating (or, for vision requests,
@@ -130,6 +130,8 @@ class Settings(BaseModel):
     webhook_secret: str | None = None
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
+    groq_api_key: str | None = None
+    gemini_api_key: str | None = None
 
     # Instagram requires an authenticated session to download reliably (see
     # docs/runbook.md). Treated like a secret - a cookies file/browser choice is as
@@ -215,6 +217,22 @@ class Settings(BaseModel):
                 "before running enrichment or skill generation."
             )
         return self.anthropic_api_key
+
+    def require_groq_api_key(self) -> str:
+        if not self.groq_api_key:
+            raise RuntimeError(
+                "GROQ_API_KEY is not set. Set it in your environment or .env "
+                "before running enrichment or skill generation with llm.provider: groq."
+            )
+        return self.groq_api_key
+
+    def require_gemini_api_key(self) -> str:
+        if not self.gemini_api_key:
+            raise RuntimeError(
+                "GEMINI_API_KEY is not set. Set it in your environment or .env "
+                "before running enrichment or skill generation with llm.provider: gemini."
+            )
+        return self.gemini_api_key
 
     def require_instagram_cookies(self) -> tuple[str, str]:
         """Returns (kind, value): ("file", path) or ("browser", browser_name)."""
@@ -321,6 +339,8 @@ def load_settings(
         webhook_secret=env.get("REEL_WEBHOOK_SECRET") or None,
         anthropic_api_key=env.get("ANTHROPIC_API_KEY") or None,
         openai_api_key=env.get("OPENAI_API_KEY") or None,
+        groq_api_key=env.get("GROQ_API_KEY") or None,
+        gemini_api_key=env.get("GEMINI_API_KEY") or None,
         instagram_cookies_file=env.get("REEL_INSTAGRAM_COOKIES_FILE") or None,
         instagram_cookies_browser=env.get("REEL_INSTAGRAM_COOKIES_BROWSER") or None,
         ytdlp_cookies_file=env.get("REEL_YTDLP_COOKIES_FILE") or None,

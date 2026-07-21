@@ -17,6 +17,7 @@ from reel_pipeline.llm_client import LlmCallError, call_llm
 from reel_pipeline.models import EnrichmentResult, TranscriptResult
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+_CACHE_BOUNDARY = "<!-- CACHE:BOUNDARY -->"
 
 
 class EnrichmentError(RuntimeError):
@@ -28,6 +29,21 @@ def render_template(template: str, **values: str) -> str:
     for key, value in values.items():
         rendered = rendered.replace("{{" + key + "}}", value)
     return rendered
+
+
+def render_and_split(template: str, **values: str) -> tuple[str, str]:
+    """Renders the template, then splits at the <!-- CACHE:BOUNDARY --> marker
+    into (static_prefix, prompt): static_prefix is the shared instruction text
+    before the marker (identical across calls, safe to prompt-cache - see
+    llm_client.call_llm's static_prefix param), prompt is the per-call
+    variable content after it. Templates without the marker render as
+    ("", full_text).
+    """
+    rendered = render_template(template, **values)
+    if _CACHE_BOUNDARY not in rendered:
+        return "", rendered
+    static_part, _, dynamic_part = rendered.partition(_CACHE_BOUNDARY)
+    return static_part.strip(), dynamic_part.strip()
 
 
 def _extract_json(raw_text: str) -> dict:
@@ -62,7 +78,7 @@ class Enricher:
             if transcript.content_kind == "text"
             else self._transcript_prompt_template
         )
-        prompt = render_template(
+        static_prefix, prompt = render_and_split(
             template,
             source_url=source_url,
             transcript=transcript.text,
@@ -73,6 +89,8 @@ class Enricher:
                 prompt,
                 model=self.settings.enrichment.model,
                 max_tokens=self.settings.enrichment.max_tokens,
+                json_mode=True,
+                static_prefix=static_prefix,
                 client=self._client,
             )
         except LlmCallError as exc:

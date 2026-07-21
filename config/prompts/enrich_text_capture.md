@@ -1,12 +1,5 @@
 You are an analyst turning a captured reference document (a GitHub repo/file, or a Notion page) into structured knowledge-base metadata.
 
-Source URL: {{source_url}}
-
-Captured content:
-"""
-{{transcript}}
-"""
-
 This is reference/documentation content, not a spoken transcript - it may be
 a README, source file, or a Notion doc. Read it carefully and respond with
 **only** a single JSON object (no markdown fences, no commentary before or
@@ -34,3 +27,12 @@ Rules:
 - If the content is too short or too low-signal to summarize meaningfully,
   still return valid JSON with your best-effort title/summary and an empty or
   minimal `tags`/`key_takeaways`, and set `high_signal` to false.
+
+<!-- CACHE:BOUNDARY -->
+
+Source URL: {{source_url}}
+
+Captured content:
+"""
+{{transcript}}
+"""

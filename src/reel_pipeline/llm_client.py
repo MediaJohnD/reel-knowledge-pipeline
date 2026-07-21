@@ -7,10 +7,19 @@ Dispatches by settings.llm.provider:
 - "ollama": a local Ollama instance (settings.llm.ollama_host), no API key -
   just requires Ollama running and the configured model already pulled
   (`ollama pull <model>`).
+- "groq": Groq's OpenAI-compatible chat completions API (requires GROQ_API_KEY).
+- "gemini": Google's Gemini generateContent API (requires GEMINI_API_KEY).
 
 call_llm() is text-only (enrichment, skill generation). describe_images() adds
 image input for vision-capable models (image-post/carousel description) - the
 model configured must actually support vision (see ImageDescriptionConfig).
+
+Prompt caching: call_llm()'s static_prefix param carries the shared,
+repeated instruction text (see the <!-- CACHE:BOUNDARY --> marker in
+config/prompts/*.md, split out by enricher.render_and_split()) separately
+from the per-call variable content, so it can actually be cached rather than
+invalidated by a differing prefix on every call - see static_prefix's
+docstring below for the per-provider mechanism.
 """
 
 from __future__ import annotations
@@ -25,6 +34,8 @@ from reel_pipeline.config import Settings
 
 _ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
+_GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+_GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
 _DEFAULT_IMAGE_MEDIA_TYPE = "image/jpeg"
 
 
@@ -38,11 +49,25 @@ def _call_claude(
     *,
     model: str,
     max_tokens: int,
+    static_prefix: str = "",
     client: httpx.Client | None = None,
 ) -> str:
     api_key = settings.require_anthropic_api_key()
     owned_client = client or httpx.Client(timeout=120.0)
     owns_client = client is None
+    body: dict = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if static_prefix:
+        body["system"] = [
+            {
+                "type": "text",
+                "text": static_prefix,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
     try:
         response = owned_client.post(
             _ANTHROPIC_ENDPOINT,
@@ -51,11 +76,7 @@ def _call_claude(
                 "anthropic-version": _ANTHROPIC_VERSION,
                 "content-type": "application/json",
             },
-            json={
-                "model": model,
-                "max_tokens": max_tokens,
-                "messages": [{"role": "user", "content": prompt}],
-            },
+            json=body,
         )
         response.raise_for_status()
         payload = response.json()
@@ -109,18 +130,145 @@ def _call_ollama(
     return text
 
 
+def _call_groq(
+    settings: Settings,
+    prompt: str,
+    *,
+    model: str,
+    max_tokens: int,
+    json_mode: bool = False,
+    client: httpx.Client | None = None,
+) -> str:
+    api_key = settings.require_groq_api_key()
+    owned_client = client or httpx.Client(timeout=120.0)
+    owns_client = client is None
+    body: dict = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
+    try:
+        response = owned_client.post(
+            _GROQ_ENDPOINT,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "content-type": "application/json",
+            },
+            json=body,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except httpx.HTTPError as exc:
+        raise LlmCallError(f"Groq API request failed: {exc}") from exc
+    finally:
+        if owns_client:
+            owned_client.close()
+
+    choices = payload.get("choices", [])
+    text = choices[0].get("message", {}).get("content", "") if choices else ""
+    if not text:
+        raise LlmCallError(f"Groq API response had no text content: {payload!r}")
+    return text
+
+
+def _call_gemini(
+    settings: Settings,
+    prompt: str,
+    *,
+    model: str,
+    max_tokens: int,
+    json_mode: bool = False,
+    client: httpx.Client | None = None,
+) -> str:
+    api_key = settings.require_gemini_api_key()
+    owned_client = client or httpx.Client(timeout=120.0)
+    owns_client = client is None
+    generation_config: dict = {"maxOutputTokens": max_tokens}
+    if json_mode:
+        generation_config["response_mime_type"] = "application/json"
+    try:
+        response = owned_client.post(
+            f"{_GEMINI_ENDPOINT}/{model}:generateContent",
+            params={"key": api_key},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": generation_config,
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except httpx.HTTPError as exc:
+        raise LlmCallError(f"Gemini API request failed: {exc}") from exc
+    finally:
+        if owns_client:
+            owned_client.close()
+
+    candidates = payload.get("candidates", [])
+    parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
+    text = "".join(p.get("text", "") for p in parts)
+    if not text:
+        raise LlmCallError(f"Gemini API response had no text content: {payload!r}")
+    return text
+
+
 def call_llm(
     settings: Settings,
     prompt: str,
     *,
     model: str,
     max_tokens: int,
+    json_mode: bool = False,
+    static_prefix: str = "",
     client: httpx.Client | None = None,
 ) -> str:
+    """json_mode requests provider-native JSON-only output (Groq's
+    response_format, Gemini's response_mime_type) instead of relying solely on
+    enricher._extract_json's best-effort fenced-JSON parsing. Only meaningful
+    for groq/gemini; ignored by anthropic and ollama, whose JSON reliability
+    already comes from prompting alone.
+
+    static_prefix is the shared, repeated instruction text that precedes the
+    per-call variable content (source URL, transcript, etc). Anthropic gets it
+    as a separate cache_control-annotated system block (explicit prompt
+    caching - see _call_claude). Groq/Gemini/Ollama get it prepended to the
+    prompt text instead, since their prefix-caching (automatic for Groq and
+    Gemini, none for Ollama) only pays off if the shared text is a literal
+    prefix of the request.
+    """
     if settings.llm.provider == "ollama":
-        return _call_ollama(settings, prompt, model=model, max_tokens=max_tokens, client=client)
+        combined = f"{static_prefix}\n\n{prompt}" if static_prefix else prompt
+        return _call_ollama(settings, combined, model=model, max_tokens=max_tokens, client=client)
     if settings.llm.provider == "anthropic":
-        return _call_claude(settings, prompt, model=model, max_tokens=max_tokens, client=client)
+        return _call_claude(
+            settings,
+            prompt,
+            model=model,
+            max_tokens=max_tokens,
+            static_prefix=static_prefix,
+            client=client,
+        )
+    if settings.llm.provider == "groq":
+        combined = f"{static_prefix}\n\n{prompt}" if static_prefix else prompt
+        return _call_groq(
+            settings,
+            combined,
+            model=model,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+            client=client,
+        )
+    if settings.llm.provider == "gemini":
+        combined = f"{static_prefix}\n\n{prompt}" if static_prefix else prompt
+        return _call_gemini(
+            settings,
+            combined,
+            model=model,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+            client=client,
+        )
     raise ValueError(f"Unknown llm.provider: {settings.llm.provider!r}")
 
 
@@ -135,6 +283,7 @@ def _call_claude_vision(
     *,
     model: str,
     max_tokens: int,
+    static_prefix: str = "",
     client: httpx.Client | None = None,
 ) -> str:
     api_key = settings.require_anthropic_api_key()
@@ -153,6 +302,20 @@ def _call_claude_vision(
         )
     content.append({"type": "text", "text": prompt})
 
+    body: dict = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": content}],
+    }
+    if static_prefix:
+        body["system"] = [
+            {
+                "type": "text",
+                "text": static_prefix,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+
     owned_client = client or httpx.Client(timeout=180.0)
     owns_client = client is None
     try:
@@ -163,11 +326,7 @@ def _call_claude_vision(
                 "anthropic-version": _ANTHROPIC_VERSION,
                 "content-type": "application/json",
             },
-            json={
-                "model": model,
-                "max_tokens": max_tokens,
-                "messages": [{"role": "user", "content": content}],
-            },
+            json=body,
         )
         response.raise_for_status()
         payload = response.json()
@@ -191,8 +350,10 @@ def _call_ollama_vision(
     *,
     model: str,
     max_tokens: int,
+    static_prefix: str = "",
     client: httpx.Client | None = None,
 ) -> str:
+    combined_prompt = f"{static_prefix}\n\n{prompt}" if static_prefix else prompt
     owned_client = client or httpx.Client(timeout=300.0)
     owns_client = client is None
     try:
@@ -200,7 +361,7 @@ def _call_ollama_vision(
             f"{settings.llm.ollama_host}/api/generate",
             json={
                 "model": model,
-                "prompt": prompt,
+                "prompt": combined_prompt,
                 "images": [_encode_image_b64(path) for path in image_paths],
                 "stream": False,
                 "options": {"num_predict": max_tokens, "num_ctx": settings.llm.ollama_num_ctx},
@@ -231,16 +392,29 @@ def describe_images(
     *,
     model: str,
     max_tokens: int,
+    static_prefix: str = "",
     client: httpx.Client | None = None,
 ) -> str:
     if not image_paths:
         raise ValueError("describe_images requires at least one image path")
     if settings.llm.provider == "ollama":
         return _call_ollama_vision(
-            settings, prompt, image_paths, model=model, max_tokens=max_tokens, client=client
+            settings,
+            prompt,
+            image_paths,
+            model=model,
+            max_tokens=max_tokens,
+            static_prefix=static_prefix,
+            client=client,
         )
     if settings.llm.provider == "anthropic":
         return _call_claude_vision(
-            settings, prompt, image_paths, model=model, max_tokens=max_tokens, client=client
+            settings,
+            prompt,
+            image_paths,
+            model=model,
+            max_tokens=max_tokens,
+            static_prefix=static_prefix,
+            client=client,
         )
     raise ValueError(f"Unknown llm.provider: {settings.llm.provider!r}")

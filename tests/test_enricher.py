@@ -4,8 +4,29 @@ import httpx
 import respx
 
 from reel_pipeline.config import LlmConfig, Settings
-from reel_pipeline.enricher import Enricher
+from reel_pipeline.enricher import Enricher, render_and_split
 from reel_pipeline.models import TranscriptResult
+
+
+def test_render_and_split_separates_static_prefix_from_variable_content():
+    template = (
+        "Static instructions here.\n\n"
+        "<!-- CACHE:BOUNDARY -->\n\n"
+        "Source URL: {{source_url}}\n"
+        "Transcript: {{transcript}}"
+    )
+    static_prefix, prompt = render_and_split(
+        template, source_url="https://example.com", transcript="hello"
+    )
+    assert static_prefix == "Static instructions here."
+    assert prompt == "Source URL: https://example.com\nTranscript: hello"
+
+
+def test_render_and_split_without_marker_returns_empty_static_prefix():
+    template = "Source URL: {{source_url}}"
+    static_prefix, prompt = render_and_split(template, source_url="https://example.com")
+    assert static_prefix == ""
+    assert prompt == "Source URL: https://example.com"
 
 
 @respx.mock

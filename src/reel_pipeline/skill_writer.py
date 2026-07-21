@@ -18,7 +18,7 @@ from pathlib import Path
 import httpx
 
 from reel_pipeline.config import Settings
-from reel_pipeline.enricher import render_template
+from reel_pipeline.enricher import render_and_split
 from reel_pipeline.llm_client import LlmCallError, call_llm
 from reel_pipeline.models import ContentItem
 from reel_pipeline.obsidian_writer import slugify
@@ -51,7 +51,7 @@ class SkillWriter:
             return None
 
         enrichment = item.enrichment
-        prompt = render_template(
+        static_prefix, prompt = render_and_split(
             self._prompt_template,
             title=enrichment.title,
             summary=enrichment.summary,
@@ -65,6 +65,7 @@ class SkillWriter:
                 prompt,
                 model=self.settings.skill_writer.model,
                 max_tokens=self.settings.skill_writer.max_tokens,
+                static_prefix=static_prefix,
                 client=self._client,
             )
         except LlmCallError as exc:

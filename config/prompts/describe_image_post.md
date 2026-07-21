@@ -1,8 +1,8 @@
-You are looking at {{image_count}} image(s) from a social media post (if more
-than one, they form a carousel/slideshow and are given to you in the post's
-original order). There is no video or audio for this post - your description
-is the *only* record of its content that downstream analysis will see, so it
-must be dense and complete, not a vague gist.
+You are looking at image(s) from a social media post (if more than one, they
+form a carousel/slideshow and are given to you in the post's original order).
+There is no video or audio for this post - your description is the *only*
+record of its content that downstream analysis will see, so it must be dense
+and complete, not a vague gist.
 
 For each image, and then for the set as a whole, capture:
 
@@ -19,3 +19,7 @@ Write this as flowing, information-preserving prose (not a bulleted image-by-
 image log) that reads like a transcript of what someone would learn from
 looking at the whole post. Do not editorialize or add commentary that isn't
 grounded in what's actually visible.
+
+<!-- CACHE:BOUNDARY -->
+
+This post contains {{image_count}} image(s), attached above/below in order.

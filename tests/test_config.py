@@ -62,6 +62,20 @@ def test_require_anthropic_api_key_raises_when_unset():
         settings.require_anthropic_api_key()
 
 
+def test_require_groq_api_key_raises_when_unset():
+    settings = load_settings(config_path=DEFAULT_SETTINGS_PATH, env={})
+
+    with pytest.raises(RuntimeError, match="GROQ_API_KEY"):
+        settings.require_groq_api_key()
+
+
+def test_require_gemini_api_key_raises_when_unset():
+    settings = load_settings(config_path=DEFAULT_SETTINGS_PATH, env={})
+
+    with pytest.raises(RuntimeError, match="GEMINI_API_KEY"):
+        settings.require_gemini_api_key()
+
+
 def test_require_instagram_cookies_raises_when_unset():
     settings = load_settings(config_path=DEFAULT_SETTINGS_PATH, env={})
 

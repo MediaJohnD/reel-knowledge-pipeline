@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Protocol
 
 from reel_pipeline.config import Settings
-from reel_pipeline.enricher import render_template
+from reel_pipeline.enricher import render_and_split
 from reel_pipeline.llm_client import LlmCallError, describe_images
 from reel_pipeline.models import TranscriptResult
 
@@ -34,7 +34,9 @@ class LlmImageDescriber:
         self._prompt_template = settings.describe_image_post_prompt.read_text(encoding="utf-8")
 
     def describe(self, media_paths: list[Path], content_id: str) -> TranscriptResult:
-        prompt = render_template(self._prompt_template, image_count=str(len(media_paths)))
+        static_prefix, prompt = render_and_split(
+            self._prompt_template, image_count=str(len(media_paths))
+        )
         try:
             text = describe_images(
                 self.settings,
@@ -42,6 +44,7 @@ class LlmImageDescriber:
                 media_paths,
                 model=self.settings.image_description.model,
                 max_tokens=self.settings.image_description.max_tokens,
+                static_prefix=static_prefix,
             )
         except LlmCallError as exc:
             raise ImageDescriptionError(str(exc)) from exc
