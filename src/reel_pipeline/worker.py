@@ -184,6 +184,13 @@ class WorkerPipeline:
             previous_skill_path = record.skill_path
             record.status = ItemStatus.DONE
             record.note_path = str(note_path)
+            # Not yet known at this point - only the try/except below (skill
+            # generation, not yet attempted) determines these. Clearing them here
+            # (rather than leaving the previous attempt's values) avoids a crash
+            # during skill generation permanently recording a stale skill_path/
+            # skill_error pointing at an older run's outcome.
+            record.skill_path = None
+            record.skill_error = None
             record.error = None
             record.attempt_count = 0
             record.next_retry_at = None

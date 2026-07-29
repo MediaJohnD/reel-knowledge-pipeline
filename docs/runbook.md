@@ -152,7 +152,9 @@ re-runs the same CLI command.
   in `config/settings.yaml`'s `retry:` block.
 - **`needs-attention.txt` only gets a new line when a failure is new** (first
   occurrence, or the error message changed) - repeated retries of the same
-  failure don't add duplicate lines.
+  failure don't add duplicate lines. The one exception is the transition to
+  `failed_permanent` itself: that always gets a line (even on an unchanged
+  error), so giving up on an item is never silent.
 - **`data/tmp/<content_id>/` is deleted automatically once an item succeeds** -
   its content is already captured in the note, so the raw download serves no
   further purpose. Failed items keep their tmp files (useful for debugging)
