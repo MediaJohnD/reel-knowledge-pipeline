@@ -62,6 +62,9 @@ def retry(
     if content_id is None and not all_failed_permanent:
         typer.echo("Provide a content_id or use --all-failed-permanent", err=True)
         raise typer.Exit(code=1)
+    if content_id is not None and all_failed_permanent:
+        typer.echo("Provide either a content_id or --all-failed-permanent, not both", err=True)
+        raise typer.Exit(code=1)
 
     settings = get_settings()
     settings.ensure_directories()

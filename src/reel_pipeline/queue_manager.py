@@ -262,11 +262,13 @@ class QueueManager:
                 )
             else:
                 targets = []
+            now = datetime.now(UTC)
             for target in targets:
                 target.status = ItemStatus.PENDING
                 target.attempt_count = 0
                 target.next_retry_at = None
                 target.error = None
+                target.updated_at = now
             return [target.content_id for target in targets]
 
         return self._locked_mutate(mutate)

@@ -113,6 +113,9 @@ def test_reset_for_retry_by_content_id_resets_failed_permanent_record(tmp_path):
     # Already-completed download stage is preserved so a retry doesn't
     # redownload media that's still on disk.
     assert record.last_completed_stage == ItemStage.DOWNLOADED
+    # Regression: reset_for_retry() used to leave updated_at stale, unlike
+    # every other mutation path in this file (update_record, _register, etc).
+    assert record.updated_at > now
 
 
 def test_reset_for_retry_ignores_content_id_not_in_failed_permanent_status(tmp_path):

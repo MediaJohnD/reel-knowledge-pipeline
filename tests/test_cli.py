@@ -73,6 +73,24 @@ def test_retry_without_content_id_or_flag_errors(tmp_path, monkeypatch):
     assert result.exit_code != 0
 
 
+def test_retry_rejects_content_id_combined_with_all_failed_permanent(tmp_path, monkeypatch):
+    """Regression test: passing both used to silently ignore content_id and
+    reset every FAILED_PERMANENT record instead - a footgun, since the CLI
+    gave no indication content_id was ignored.
+    """
+    settings = make_settings(tmp_path)
+    monkeypatch.setattr("reel_pipeline.cli.get_settings", lambda: settings)
+    _seed_failed_permanent(settings, "abc123")
+    _seed_failed_permanent(settings, "def456")
+
+    result = runner.invoke(app, ["retry", "abc123", "--all-failed-permanent"])
+
+    assert result.exit_code != 0
+    state = QueueManager(settings).load_state()
+    assert state["abc123"].status == ItemStatus.FAILED_PERMANENT
+    assert state["def456"].status == ItemStatus.FAILED_PERMANENT
+
+
 def test_retry_reports_when_nothing_matches(tmp_path, monkeypatch):
     settings = make_settings(tmp_path)
     monkeypatch.setattr("reel_pipeline.cli.get_settings", lambda: settings)
