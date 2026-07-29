@@ -290,19 +290,34 @@ git commit -m "feat: add configurable retry/backoff policy"
 
 ---
 
-### Task 3: Locking — shrink the FileLock to per-mutation scope
+### Task 3: Locking — a fine-grained per-mutation lock alongside run_once()'s own serialization lock
+
+> **Design correction (post pre-implementation attempt):** the original version of
+> this task removed `run_once()`'s lock entirely, relying only on a shared
+> per-mutation lock. An implementer attempt found this allows two concurrent
+> `run_once()` calls to double-process the same item: there is no way to
+> distinguish "another live process is actively working this right now" from
+> "a prior process crashed mid-item and this is legitimately resumable,"
+> because that ambiguity never existed under the old design (a single
+> whole-pass lock made concurrent `run_once()` calls physically impossible).
+> The corrected design below uses **two separate lock files**: a fine-grained
+> per-mutation lock (this task's original goal — `add_url()` never blocks on
+> it for long) and a second, distinct, coarse lock that only `run_once()`
+> itself holds for its entire pass (restoring the no-double-processing
+> guarantee). Confirmed with the user before re-implementing.
 
 **Files:**
 - Modify: `src/reel_pipeline/queue_manager.py:1-60` (imports, `save_state`/`update_record`), `:100-105` (`add_url`), `:173-195` (`sync_queue_file_into_state`)
-- Modify: `src/reel_pipeline/worker.py:1-30` (imports/docstring), `:284-328` (`run_once`/`_run_once_locked` merge)
-- Modify: `tests/test_worker_flow.py:506-553` (`test_concurrent_run_once_calls_never_interleave` — its core assertion changes deliberately, see Step 5)
+- Modify: `src/reel_pipeline/worker.py:284-303` (only the `lock_path` line and docstrings in `run_once()` change — the `run_once()`/`_run_once_locked()` split and `RunOnceLockError` are kept, not removed)
 - Test: `tests/test_queue_manager.py` (new lock-contention test)
 
 **Interfaces:**
-- Produces: `QueueManager._locked_mutate(mutate_fn)` (private helper), `StateLockTimeout` exception (replaces `worker.RunOnceLockError`, which is removed).
+- Produces: `QueueManager._locked_mutate(mutate_fn)` (private helper, uses lock file `state.lock`), `StateLockTimeout` exception. `worker.py`'s existing `RunOnceLockError` and its lock (now at `state.run_once.lock`, a distinct file) are unchanged in purpose, just documented more precisely.
 - Consumes: nothing new from earlier tasks.
 
-**Why this shape:** `filelock`'s own docs flag long-held locks as needing special handling (`heartbeat_interval`/`stale_threshold`/`lifetime` params exist specifically for that risk) — confirmed via Context7 during design. The fix is to hold the *same* lock file only across each individual state read-modify-write, not across an entire `run_once()` backlog pass, so a webhook's `add_url()` and a concurrent `run_once()` interleave safely instead of one blocking the other for up to 10 minutes.
+**Why this shape:** `filelock`'s own docs flag long-held locks as needing special handling (`heartbeat_interval`/`stale_threshold`/`lifetime` params exist specifically for that risk) — confirmed via Context7 during design. The *mutation-safety* problem (a webhook's `add_url()` doing an unlocked load-modify-save that a concurrent `run_once()` can clobber) is fixed by giving every state.json mutation its own brief, separate lock (`state.lock`). The *no-double-processing* problem is a distinct concern with a distinct, already-correct mechanism: `run_once()`'s own whole-pass lock, which must stay — it just needs to live on a different lock file (`state.run_once.lock`) than the new fine-grained one, so `run_once()` holding its own lock while internally calling `update_record()` (which briefly acquires the *other* lock file) never self-deadlocks.
+
+**Note:** because `run_once()` keeps its own whole-pass lock, two concurrent `run_once()` calls still cannot overlap — the existing `test_concurrent_run_once_calls_never_interleave` in `tests/test_worker_flow.py` needs no changes and should be left exactly as-is (do not modify it in this task).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -471,120 +486,113 @@ Replace `sync_queue_file_into_state` (currently lines 173-195):
 Run: `uv run pytest tests/test_queue_manager.py::test_add_url_waits_for_a_concurrently_held_state_lock_instead_of_racing -v`
 Expected: PASS
 
-- [ ] **Step 6: Remove the outer FileLock from worker.py's run_once()**
+- [ ] **Step 6: Point run_once()'s existing lock at a separate lock file**
 
-In `src/reel_pipeline/worker.py`, replace the module docstring (currently lines 1-18) with:
+`worker.py`'s `run_once()` already has its own `FileLock`/`RunOnceLockError` mechanism, holding a lock for the entire pass — this stays, and does NOT need removing. The only change: its lock file must be different from the fine-grained one `_locked_mutate` now uses (`state.lock`), so that `run_once()` holding its own lock while internally calling `update_record()` (which briefly acquires the *other* lock file inside the pass) never self-deadlocks.
 
-```python
-"""Orchestrates a single pass of the pipeline: validate/dedup -> download ->
-transcribe -> enrich -> write note -> optionally write skill -> persist state.
-
-Every stage updates state.json before moving to the next, so a crash mid-item
-leaves an accurate `status` behind and the next run_once() will pick the item
-back up via QueueManager.get_actionable_items() (restart-safe, idempotent).
-
-Cross-process safety is provided by QueueManager._locked_mutate(), which every
-state.json read-modify-write goes through with its own short-lived lock - see
-queue_manager.py. run_once() itself holds no lock: the expensive work
-(download/transcribe/enrich/write) runs unlocked, and only the brief
-before/after update_record() calls bracketing each stage take the lock. This
-means a concurrent add_url() (webhook path) and a running run_once() (this
-process, another CLI invocation, or the webhook server's own background run)
-interleave safely without either blocking the other for the length of a full
-backlog pass.
-"""
-```
-
-Remove the now-unused imports (currently lines 29-30):
-
-```python
-from filelock import FileLock
-from filelock import Timeout as FileLockTimeout
-```
-
-Remove the `RunOnceLockError` class (currently lines 62-67):
-
-```python
-class RunOnceLockError(RuntimeError):
-    """Raised when run_once() can't acquire the cross-process state.json lock
-    within the timeout - another run_once() (this process, another CLI
-    invocation, or the webhook server) is still running after an unexpectedly
-    long time, which likely means something is stuck rather than just busy.
-    """
-```
-
-Replace `run_once`/`_run_once_locked` (currently lines 284-328) with a single method:
+In `src/reel_pipeline/worker.py`, find `run_once()` (currently lines 284-303):
 
 ```python
     def run_once(self) -> RunSummary:
-        self.settings.ensure_directories()
-        self._sweep_stale_tmp_dirs()
-        self.queue_manager.prune_needs_attention(
-            self.settings.maintenance.needs_attention_retention_days
-        )
-        self.queue_manager.sync_queue_file_into_state()
-        actionable = self.queue_manager.get_actionable_items()
-
-        summary = RunSummary()
-        for record in actionable:
-            result = self.process_item(record)
-            summary.processed += 1
-            if result.status is ItemStatus.DONE:
-                summary.done += 1
-                if result.note_path:
-                    summary.note_paths.append(result.note_path)
-                if result.skill_path:
-                    summary.skill_paths.append(result.skill_path)
-            else:
-                summary.failed += 1
-                if result.error:
-                    summary.errors.append(f"{result.content_id}: {result.error}")
-        return summary
+        """Acquires a cross-process lock on state.json before doing any work, so
+        this run_once() can't interleave with another one in a different
+        process (a concurrent CLI invocation, or the webhook server's own
+        background run) - see this module's docstring for what goes wrong
+        without it. Blocks up to 10 minutes for the lock (a full pass over a
+        large backlog can legitimately take a while); past that, something is
+        very likely stuck rather than just busy, so this raises instead of
+        blocking forever.
+        """
+        lock_path = self.settings.state_file.with_suffix(".lock")
+        try:
+            with FileLock(str(lock_path), timeout=600):
+                return self._run_once_locked()
+        except FileLockTimeout as exc:
+            raise RunOnceLockError(
+                f"Could not acquire the state.json lock ({lock_path}) within 600s - "
+                "another run_once() (this process, another CLI invocation, or the "
+                "webhook server) appears to be stuck rather than just busy."
+            ) from exc
 ```
 
-- [ ] **Step 7: Update the concurrency test's assertion**
-
-The existing `test_concurrent_run_once_calls_never_interleave` in `tests/test_worker_flow.py` (lines 506-553) asserts `shared_downloader.max_concurrent_observed == 1`, encoding the *old* guarantee (no two `run_once()` calls ever do work at the same time, anywhere). That guarantee is deliberately relaxed by this task — two concurrent `run_once()` calls can now download different items in parallel, since the lock only guards the brief state.json read-modify-write, not the whole pass. The guarantee that must still hold is "no item is ever double-processed, and state.json is never corrupted" — which the existing `total_done == 2` assertion already verifies.
-
-Replace the test's docstring and final assertions:
+Replace it with:
 
 ```python
-def test_concurrent_run_once_calls_never_double_process_the_same_item(tmp_path):
-    """Two separate WorkerPipeline instances (simulating two separate processes -
-    e.g. a manual CLI run-once racing the webhook server's own background run)
-    must never process the same item twice or corrupt state.json, even though
-    (after the locking rework) their actual download/transcribe/enrich work can
-    now run concurrently - only each state.json read-modify-write is serialized.
-    """
+    def run_once(self) -> RunSummary:
+        """Acquires a lock (distinct from QueueManager's per-mutation state.json
+        lock - see queue_manager.py's _locked_mutate()) before doing any work, so
+        this run_once() can't interleave with another one in a different
+        process (a concurrent CLI invocation, or the webhook server's own
+        background run) - see this module's docstring for what goes wrong
+        without it. This lock is deliberately a *different file* than the
+        per-mutation one: run_once() holds this one for the whole pass while
+        internally calling update_record() (via process_item()), which briefly
+        acquires the per-mutation lock on every stage transition - using the
+        same lock file for both would self-deadlock. Blocks up to 10 minutes
+        for the lock (a full pass over a large backlog can legitimately take a
+        while); past that, something is very likely stuck rather than just
+        busy, so this raises instead of blocking forever. add_url() (webhook
+        registration) never touches this lock, only the per-mutation one, so
+        it's never blocked by an in-progress backlog pass.
+        """
+        lock_path = self.settings.state_file.with_suffix(".run_once.lock")
+        try:
+            with FileLock(str(lock_path), timeout=600):
+                return self._run_once_locked()
+        except FileLockTimeout as exc:
+            raise RunOnceLockError(
+                f"Could not acquire the run_once() lock ({lock_path}) within 600s - "
+                "another run_once() (this process, another CLI invocation, or the "
+                "webhook server) appears to be stuck rather than just busy."
+            ) from exc
 ```
 
-Replace the final two assertions (currently lines 547-552):
+Also update the module docstring's second paragraph (currently part of lines 1-18) to mention both locks - find:
 
-```python
-    # Between them, both queued items were processed exactly once (whichever
-    # thread's run_once() picked them up first, since the second call's
-    # sync_queue_file_into_state() runs against an already-drained queue.txt) -
-    # this is the safety property the lock exists to guarantee; the two
-    # downloads themselves may now run concurrently.
-    total_done = results["a"].done + results["b"].done
-    assert total_done == 2
-    state = pipeline_a.queue_manager.load_state()
-    assert len(state) == 2
-    assert all(r.status == ItemStatus.DONE for r in state.values())
+```
+run_once() is guarded by a cross-process file lock (see RunOnceLockError
+below). webhook_server.py's threading.Lock only prevents overlapping
+webhook-triggered runs *within that one long-lived process* - it does
+nothing for a manually-invoked `run-once` CLI call racing against the
+webhook server, or two manual CLI calls racing against each other. Without
+this, concurrent run_once() calls read/mutate/write state.json independently
+via QueueManager.load_state()/save_state(), and the loser's write silently
+clobbers the winner's - observed in practice as a StateRecord field (e.g.
+content_kind) reverting to its default value, or an item being processed
+twice.
 ```
 
-(Leave the rest of the test — `SlowFakeDownloader`, thread setup — unchanged; only the docstring/final-assertion block above changes. Also remove the now-unused `max_concurrent_observed`/`active` bookkeeping from `SlowFakeDownloader` only if `ruff` flags it as dead after this edit — check with Step 8 before removing anything speculatively.)
+Replace with:
 
-- [ ] **Step 8: Run full verification**
+```
+run_once() is guarded by its own cross-process file lock (see RunOnceLockError
+below), held for the entire pass so two run_once() calls (a concurrent CLI
+invocation, or the webhook server's own background run) never process the
+same item twice. webhook_server.py's threading.Lock only prevents overlapping
+webhook-triggered runs *within that one long-lived process* - it does nothing
+for a manually-invoked `run-once` CLI call racing against the webhook server,
+or two manual CLI calls racing against each other; run_once()'s own lock
+covers all of those cases.
+
+Separately, every individual state.json read-modify-write (add_url,
+update_record, sync_queue_file_into_state) goes through
+QueueManager._locked_mutate(), which uses a *different* lock file so that
+webhook registration (add_url()) is never blocked waiting behind an
+in-progress backlog pass - see queue_manager.py.
+```
+
+Do not touch `_run_once_locked()`'s body, the imports (`FileLock`/`FileLockTimeout` stay), or `RunOnceLockError` (it stays, unchanged) - only the two blocks shown above change.
+
+- [ ] **Step 7: Run full verification**
 
 Run: `uv run ruff check . && uv run pyright && uv run pytest -q`
-Expected: all clean, 124 passed (123 + 1 new; the renamed concurrency test replaces the old one, no net-new count from it)
+Expected: all clean, 124 passed (123 + 1 new). `test_concurrent_run_once_calls_never_interleave` in `tests/test_worker_flow.py` must still pass UNCHANGED - two run_once() calls still cannot overlap, since run_once() keeps its own whole-pass lock (just on a different file now). Do not modify that test.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add src/reel_pipeline/queue_manager.py src/reel_pipeline/worker.py tests/test_queue_manager.py tests/test_worker_flow.py
-git commit -m "fix: shrink state.json lock to per-mutation scope instead of whole run_once()"
+git add src/reel_pipeline/queue_manager.py src/reel_pipeline/worker.py tests/test_queue_manager.py
+git commit -m "fix: add a per-mutation state.json lock separate from run_once()'s whole-pass lock"
 ```
 
 ---
