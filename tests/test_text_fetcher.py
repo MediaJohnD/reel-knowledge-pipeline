@@ -213,9 +213,7 @@ def test_notion_fetcher_extracts_main_text(tmp_path):
         return_value=httpx.Response(200, text=_NOTION_PAGE_HTML)
     )
 
-    result = NotionFetcher(settings).fetch(
-        "https://www.notion.so/Project-Notes-abc123", "cid5"
-    )
+    result = NotionFetcher(settings).fetch("https://www.notion.so/Project-Notes-abc123", "cid5")
 
     assert "onboarding process" in result.text
     assert "clone the repo" in result.text
@@ -265,8 +263,9 @@ def test_dispatching_text_fetcher_routes_github_to_github_fetcher(tmp_path, monk
     monkeypatch.setattr(
         GitHubFetcher,
         "fetch",
-        lambda self, url, content_id: calls.append(("github", url))
-        or TranscriptResultStub(content_id),
+        lambda self, url, content_id: (
+            calls.append(("github", url)) or TranscriptResultStub(content_id)
+        ),
     )
     monkeypatch.setattr(
         NotionFetcher,
@@ -285,8 +284,9 @@ def test_dispatching_text_fetcher_routes_notion_to_notion_fetcher(tmp_path, monk
     monkeypatch.setattr(
         NotionFetcher,
         "fetch",
-        lambda self, url, content_id: calls.append(("notion", url))
-        or TranscriptResultStub(content_id),
+        lambda self, url, content_id: (
+            calls.append(("notion", url)) or TranscriptResultStub(content_id)
+        ),
     )
     monkeypatch.setattr(
         GitHubFetcher,

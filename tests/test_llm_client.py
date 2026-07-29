@@ -12,7 +12,8 @@ from reel_pipeline.llm_client import LlmCallError, call_llm
 
 def test_call_llm_dispatches_to_ollama(tmp_path):
     settings = Settings(
-        project_root=tmp_path, llm=LlmConfig(provider="ollama", ollama_host="http://localhost:11434")
+        project_root=tmp_path,
+        llm=LlmConfig(provider="ollama", ollama_host="http://localhost:11434"),
     )
 
     with respx.mock:
@@ -26,7 +27,8 @@ def test_call_llm_dispatches_to_ollama(tmp_path):
 
 def test_call_llm_ollama_raises_clear_error_on_failure(tmp_path):
     settings = Settings(
-        project_root=tmp_path, llm=LlmConfig(provider="ollama", ollama_host="http://localhost:11434")
+        project_root=tmp_path,
+        llm=LlmConfig(provider="ollama", ollama_host="http://localhost:11434"),
     )
 
     with respx.mock:
@@ -102,9 +104,7 @@ def test_call_llm_groq_static_prefix_precedes_prompt(tmp_path):
 
     with respx.mock:
         route = respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
-            return_value=httpx.Response(
-                200, json={"choices": [{"message": {"content": "hello"}}]}
-            )
+            return_value=httpx.Response(200, json={"choices": [{"message": {"content": "hello"}}]})
         )
         call_llm(
             settings,
@@ -159,9 +159,7 @@ def test_call_llm_groq_json_mode_sets_response_format(tmp_path):
 
     with respx.mock:
         route = respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
-            return_value=httpx.Response(
-                200, json={"choices": [{"message": {"content": "{}"}}]}
-            )
+            return_value=httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
         )
         call_llm(
             settings, "prompt text", model="llama-3.1-8b-instant", max_tokens=100, json_mode=True
@@ -177,9 +175,7 @@ def test_call_llm_groq_omits_response_format_by_default(tmp_path):
 
     with respx.mock:
         route = respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
-            return_value=httpx.Response(
-                200, json={"choices": [{"message": {"content": "hello"}}]}
-            )
+            return_value=httpx.Response(200, json={"choices": [{"message": {"content": "hello"}}]})
         )
         call_llm(settings, "prompt text", model="llama-3.1-8b-instant", max_tokens=100)
 
@@ -199,9 +195,7 @@ def test_call_llm_gemini_json_mode_sets_response_mime_type(tmp_path):
                 json={"candidates": [{"content": {"parts": [{"text": "{}"}]}}]},
             )
         )
-        call_llm(
-            settings, "prompt text", model="gemini-2.5-flash", max_tokens=100, json_mode=True
-        )
+        call_llm(settings, "prompt text", model="gemini-2.5-flash", max_tokens=100, json_mode=True)
 
     sent = json.loads(route.calls.last.request.content)
     assert sent["generationConfig"]["response_mime_type"] == "application/json"

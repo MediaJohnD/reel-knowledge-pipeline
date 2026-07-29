@@ -180,9 +180,7 @@ class NotionFetcher:
             except httpx.HTTPError as exc:
                 raise TextFetchError(f"failed to fetch Notion page {url!r}: {exc}") from exc
             if response.status_code != 200:
-                raise TextFetchError(
-                    f"Notion page {url!r} returned HTTP {response.status_code}"
-                )
+                raise TextFetchError(f"Notion page {url!r} returned HTTP {response.status_code}")
             html = response.text
         finally:
             if owns_client:

@@ -38,20 +38,31 @@ def test_healthz_reports_queue_depth_failed_count_and_last_success(tmp_path):
     qm.save_state(
         {
             "done1": StateRecord(
-                content_id="done1", url="https://youtube.com/1", normalized_url="https://youtube.com/1",
-                source=QueueSource.QUEUE_FILE, status=ItemStatus.DONE, added_at=now, updated_at=now,
+                content_id="done1",
+                url="https://youtube.com/1",
+                normalized_url="https://youtube.com/1",
+                source=QueueSource.QUEUE_FILE,
+                status=ItemStatus.DONE,
+                added_at=now,
+                updated_at=now,
             ),
             "failed1": StateRecord(
-                content_id="failed1", url="https://youtube.com/2",
+                content_id="failed1",
+                url="https://youtube.com/2",
                 normalized_url="https://youtube.com/2",
-                source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED,
-                added_at=now, updated_at=now,
+                source=QueueSource.QUEUE_FILE,
+                status=ItemStatus.FAILED,
+                added_at=now,
+                updated_at=now,
             ),
             "pending1": StateRecord(
-                content_id="pending1", url="https://youtube.com/3",
+                content_id="pending1",
+                url="https://youtube.com/3",
                 normalized_url="https://youtube.com/3",
-                source=QueueSource.QUEUE_FILE, status=ItemStatus.PENDING,
-                added_at=now, updated_at=now,
+                source=QueueSource.QUEUE_FILE,
+                status=ItemStatus.PENDING,
+                added_at=now,
+                updated_at=now,
             ),
         }
     )
@@ -77,16 +88,22 @@ def test_healthz_counts_failed_permanent_as_failed_and_excludes_it_from_queue_de
     qm.save_state(
         {
             "permfail1": StateRecord(
-                content_id="permfail1", url="https://youtube.com/4",
+                content_id="permfail1",
+                url="https://youtube.com/4",
                 normalized_url="https://youtube.com/4",
-                source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED_PERMANENT,
-                added_at=now, updated_at=now,
+                source=QueueSource.QUEUE_FILE,
+                status=ItemStatus.FAILED_PERMANENT,
+                added_at=now,
+                updated_at=now,
             ),
             "pending1": StateRecord(
-                content_id="pending1", url="https://youtube.com/3",
+                content_id="pending1",
+                url="https://youtube.com/3",
                 normalized_url="https://youtube.com/3",
-                source=QueueSource.QUEUE_FILE, status=ItemStatus.PENDING,
-                added_at=now, updated_at=now,
+                source=QueueSource.QUEUE_FILE,
+                status=ItemStatus.PENDING,
+                added_at=now,
+                updated_at=now,
             ),
         }
     )
@@ -247,9 +264,7 @@ def test_webhook_resubmission_of_a_failed_item_still_in_backoff_does_not_schedul
     assert scheduled == []  # no-op background run avoided
 
 
-def test_webhook_resubmission_of_a_failed_item_past_backoff_schedules_a_run(
-    tmp_path, monkeypatch
-):
+def test_webhook_resubmission_of_a_failed_item_past_backoff_schedules_a_run(tmp_path, monkeypatch):
     """Once next_retry_at has elapsed, get_actionable_items() would pick the
     item up anyway - a resubmission arriving after that point should still
     schedule a background run_once() rather than making the caller wait for

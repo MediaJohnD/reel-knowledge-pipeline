@@ -33,9 +33,13 @@ def test_get_actionable_items_excludes_failed_permanent(tmp_path):
     from reel_pipeline.models import StateRecord
 
     permanent = StateRecord(
-        content_id="perm1", url="https://youtube.com/1", normalized_url="https://youtube.com/1",
-        source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED_PERMANENT,
-        added_at=now, updated_at=now,
+        content_id="perm1",
+        url="https://youtube.com/1",
+        normalized_url="https://youtube.com/1",
+        source=QueueSource.QUEUE_FILE,
+        status=ItemStatus.FAILED_PERMANENT,
+        added_at=now,
+        updated_at=now,
     )
     qm.save_state({"perm1": permanent})
 
@@ -50,15 +54,25 @@ def test_get_actionable_items_excludes_failed_item_whose_backoff_has_not_elapsed
     from reel_pipeline.models import StateRecord
 
     waiting = StateRecord(
-        content_id="wait1", url="https://youtube.com/1", normalized_url="https://youtube.com/1",
-        source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED,
-        added_at=now, updated_at=now, attempt_count=1,
+        content_id="wait1",
+        url="https://youtube.com/1",
+        normalized_url="https://youtube.com/1",
+        source=QueueSource.QUEUE_FILE,
+        status=ItemStatus.FAILED,
+        added_at=now,
+        updated_at=now,
+        attempt_count=1,
         next_retry_at=now + timedelta(minutes=5),
     )
     ready = StateRecord(
-        content_id="ready1", url="https://youtube.com/2", normalized_url="https://youtube.com/2",
-        source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED,
-        added_at=now, updated_at=now, attempt_count=1,
+        content_id="ready1",
+        url="https://youtube.com/2",
+        normalized_url="https://youtube.com/2",
+        source=QueueSource.QUEUE_FILE,
+        status=ItemStatus.FAILED,
+        added_at=now,
+        updated_at=now,
+        attempt_count=1,
         next_retry_at=now - timedelta(minutes=1),
     )
     qm.save_state({"wait1": waiting, "ready1": ready})
@@ -75,9 +89,15 @@ def test_reset_for_retry_by_content_id_resets_failed_permanent_record(tmp_path):
     from reel_pipeline.models import ItemStage, StateRecord
 
     permanent = StateRecord(
-        content_id="perm1", url="https://youtube.com/1", normalized_url="https://youtube.com/1",
-        source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED_PERMANENT,
-        added_at=now, updated_at=now, attempt_count=5, error="boom",
+        content_id="perm1",
+        url="https://youtube.com/1",
+        normalized_url="https://youtube.com/1",
+        source=QueueSource.QUEUE_FILE,
+        status=ItemStatus.FAILED_PERMANENT,
+        added_at=now,
+        updated_at=now,
+        attempt_count=5,
+        error="boom",
         last_completed_stage=ItemStage.DOWNLOADED,
     )
     qm.save_state({"perm1": permanent})
@@ -103,9 +123,14 @@ def test_reset_for_retry_ignores_content_id_not_in_failed_permanent_status(tmp_p
     from reel_pipeline.models import StateRecord
 
     still_failing = StateRecord(
-        content_id="stillfailing", url="https://youtube.com/1", normalized_url="https://youtube.com/1",
-        source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED,
-        added_at=now, updated_at=now, attempt_count=2,
+        content_id="stillfailing",
+        url="https://youtube.com/1",
+        normalized_url="https://youtube.com/1",
+        source=QueueSource.QUEUE_FILE,
+        status=ItemStatus.FAILED,
+        added_at=now,
+        updated_at=now,
+        attempt_count=2,
     )
     qm.save_state({"stillfailing": still_failing})
 
@@ -125,19 +150,34 @@ def test_reset_for_retry_all_failed_permanent_resets_only_those(tmp_path):
     from reel_pipeline.models import StateRecord
 
     perm_a = StateRecord(
-        content_id="perma", url="https://youtube.com/a", normalized_url="https://youtube.com/a",
-        source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED_PERMANENT,
-        added_at=now, updated_at=now, attempt_count=5,
+        content_id="perma",
+        url="https://youtube.com/a",
+        normalized_url="https://youtube.com/a",
+        source=QueueSource.QUEUE_FILE,
+        status=ItemStatus.FAILED_PERMANENT,
+        added_at=now,
+        updated_at=now,
+        attempt_count=5,
     )
     perm_b = StateRecord(
-        content_id="permb", url="https://youtube.com/b", normalized_url="https://youtube.com/b",
-        source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED_PERMANENT,
-        added_at=now, updated_at=now, attempt_count=5,
+        content_id="permb",
+        url="https://youtube.com/b",
+        normalized_url="https://youtube.com/b",
+        source=QueueSource.QUEUE_FILE,
+        status=ItemStatus.FAILED_PERMANENT,
+        added_at=now,
+        updated_at=now,
+        attempt_count=5,
     )
     still_failing = StateRecord(
-        content_id="stillfailing", url="https://youtube.com/c", normalized_url="https://youtube.com/c",
-        source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED,
-        added_at=now, updated_at=now, attempt_count=1,
+        content_id="stillfailing",
+        url="https://youtube.com/c",
+        normalized_url="https://youtube.com/c",
+        source=QueueSource.QUEUE_FILE,
+        status=ItemStatus.FAILED,
+        added_at=now,
+        updated_at=now,
+        attempt_count=1,
     )
     qm.save_state({"perma": perm_a, "permb": perm_b, "stillfailing": still_failing})
 
@@ -231,16 +271,31 @@ def test_get_actionable_items_excludes_done_and_blocked_but_includes_crash_inter
     from reel_pipeline.models import StateRecord
 
     done = StateRecord(
-        content_id="done1", url="https://youtube.com/1", normalized_url="https://youtube.com/1",
-        source=QueueSource.QUEUE_FILE, status=ItemStatus.DONE, added_at=now, updated_at=now,
+        content_id="done1",
+        url="https://youtube.com/1",
+        normalized_url="https://youtube.com/1",
+        source=QueueSource.QUEUE_FILE,
+        status=ItemStatus.DONE,
+        added_at=now,
+        updated_at=now,
     )
     blocked = StateRecord(
-        content_id="blocked1", url="https://instagram.com/1", normalized_url="https://instagram.com/1",
-        source=QueueSource.QUEUE_FILE, status=ItemStatus.BLOCKED, added_at=now, updated_at=now,
+        content_id="blocked1",
+        url="https://instagram.com/1",
+        normalized_url="https://instagram.com/1",
+        source=QueueSource.QUEUE_FILE,
+        status=ItemStatus.BLOCKED,
+        added_at=now,
+        updated_at=now,
     )
     crashed = StateRecord(
-        content_id="crashed1", url="https://youtube.com/2", normalized_url="https://youtube.com/2",
-        source=QueueSource.QUEUE_FILE, status=ItemStatus.TRANSCRIBING, added_at=now, updated_at=now,
+        content_id="crashed1",
+        url="https://youtube.com/2",
+        normalized_url="https://youtube.com/2",
+        source=QueueSource.QUEUE_FILE,
+        status=ItemStatus.TRANSCRIBING,
+        added_at=now,
+        updated_at=now,
     )
     qm.save_state({"done1": done, "blocked1": blocked, "crashed1": crashed})
 

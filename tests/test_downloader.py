@@ -58,8 +58,9 @@ def test_dispatches_instagram_urls_to_gallery_dl(tmp_path, monkeypatch):
     monkeypatch.setattr(
         GalleryDlDownloader,
         "download",
-        lambda self, url, content_id: calls.append(("gallery-dl", url)) or DownloadResult(
-            content_id=content_id, media_paths=["x"], platform="instagram"
+        lambda self, url, content_id: (
+            calls.append(("gallery-dl", url))
+            or DownloadResult(content_id=content_id, media_paths=["x"], platform="instagram")
         ),
     )
     monkeypatch.setattr(
@@ -80,8 +81,9 @@ def test_dispatches_non_instagram_urls_to_yt_dlp(tmp_path, monkeypatch):
     monkeypatch.setattr(
         YtDlpDownloader,
         "download",
-        lambda self, url, content_id: calls.append(("yt-dlp", url)) or DownloadResult(
-            content_id=content_id, media_paths=["x"], platform="youtube"
+        lambda self, url, content_id: (
+            calls.append(("yt-dlp", url))
+            or DownloadResult(content_id=content_id, media_paths=["x"], platform="youtube")
         ),
     )
     monkeypatch.setattr(
@@ -164,9 +166,7 @@ def test_gallery_dl_downloader_keeps_all_videos_in_multi_video_carousel(tmp_path
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    result = GalleryDlDownloader(settings).download(
-        "https://www.instagram.com/p/abc/", content_id
-    )
+    result = GalleryDlDownloader(settings).download("https://www.instagram.com/p/abc/", content_id)
 
     assert result.media_type is MediaType.VIDEO
     assert result.media_paths == [
@@ -248,8 +248,9 @@ def test_dispatches_facebook_and_linkedin_urls_to_yt_dlp(tmp_path, monkeypatch, 
     monkeypatch.setattr(
         YtDlpDownloader,
         "download",
-        lambda self, url, content_id: calls.append(("yt-dlp", url)) or DownloadResult(
-            content_id=content_id, media_paths=["x"], platform="facebook"
+        lambda self, url, content_id: (
+            calls.append(("yt-dlp", url))
+            or DownloadResult(content_id=content_id, media_paths=["x"], platform="facebook")
         ),
     )
     monkeypatch.setattr(

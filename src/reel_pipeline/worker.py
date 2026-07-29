@@ -381,9 +381,7 @@ class WorkerPipeline:
     def _write_transcript_cache(self, content_id: str, transcript: TranscriptResult) -> None:
         tmp_dir = self.settings.tmp_dir / content_id
         tmp_dir.mkdir(parents=True, exist_ok=True)
-        (tmp_dir / "transcript.json").write_text(
-            transcript.model_dump_json(), encoding="utf-8"
-        )
+        (tmp_dir / "transcript.json").write_text(transcript.model_dump_json(), encoding="utf-8")
 
     def _cached_enrichment_result(self, content_id: str) -> EnrichmentResult | None:
         """Same rationale as _cached_transcript_result, for the enrichment stage."""
@@ -398,13 +396,9 @@ class WorkerPipeline:
     def _write_enrichment_cache(self, content_id: str, enrichment: EnrichmentResult) -> None:
         tmp_dir = self.settings.tmp_dir / content_id
         tmp_dir.mkdir(parents=True, exist_ok=True)
-        (tmp_dir / "enrichment.json").write_text(
-            enrichment.model_dump_json(), encoding="utf-8"
-        )
+        (tmp_dir / "enrichment.json").write_text(enrichment.model_dump_json(), encoding="utf-8")
 
-    def _transcribe_media_paths(
-        self, media_paths: list[Path], content_id: str
-    ) -> TranscriptResult:
+    def _transcribe_media_paths(self, media_paths: list[Path], content_id: str) -> TranscriptResult:
         """Transcribes one or more video files and combines them into a single
         TranscriptResult - a multi-video Instagram carousel produces several files
         (see GalleryDlDownloader.download()), mirroring how image_describer.describe()
@@ -469,9 +463,7 @@ class WorkerPipeline:
             if tmp_dir.exists():
                 shutil.rmtree(tmp_dir)
         except OSError as exc:
-            log_context(
-                logger, 30, "tmp cleanup failed", content_id=content_id, error=str(exc)
-            )
+            log_context(logger, 30, "tmp cleanup failed", content_id=content_id, error=str(exc))
 
     def _warn_if_state_size_exceeds_threshold(self) -> None:
         """state.json is fully reparsed and rewritten on every mutation, an O(n)

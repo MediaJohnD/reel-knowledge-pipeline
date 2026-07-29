@@ -103,7 +103,10 @@ class LocalWhisperTranscriber:
             # problem from the note alone, so log it for anyone reviewing needs-attention
             # or a thin transcript later.
             log_context(
-                logger, 30, "transcription produced no text", content_id=content_id,
+                logger,
+                30,
+                "transcription produced no text",
+                content_id=content_id,
                 media_path=str(media_path),
             )
 

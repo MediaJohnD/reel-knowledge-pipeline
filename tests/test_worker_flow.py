@@ -479,9 +479,7 @@ def test_multi_video_carousel_transcribes_every_clip_and_combines_them(tmp_path)
         download=DownloadConfig(allowed_domains=["instagram.com"], blocked_domains=[]),
     )
     fake_transcriber = FakePerPathTranscriber()
-    pipeline = build_pipeline(
-        settings, FakeMultiVideoDownloader(), transcriber=fake_transcriber
-    )
+    pipeline = build_pipeline(settings, FakeMultiVideoDownloader(), transcriber=fake_transcriber)
     pipeline.queue_manager.queue_file.write_text(
         "https://www.instagram.com/p/multivideo1/\n", encoding="utf-8"
     )
@@ -1009,12 +1007,22 @@ def test_run_once_warns_when_state_size_crosses_configured_threshold(tmp_path, c
     qm.save_state(
         {
             "a": StateRecord(
-                content_id="a", url="https://youtube.com/a", normalized_url="https://youtube.com/a",
-                source=QueueSource.QUEUE_FILE, status=ItemStatus.DONE, added_at=now, updated_at=now,
+                content_id="a",
+                url="https://youtube.com/a",
+                normalized_url="https://youtube.com/a",
+                source=QueueSource.QUEUE_FILE,
+                status=ItemStatus.DONE,
+                added_at=now,
+                updated_at=now,
             ),
             "b": StateRecord(
-                content_id="b", url="https://youtube.com/b", normalized_url="https://youtube.com/b",
-                source=QueueSource.QUEUE_FILE, status=ItemStatus.DONE, added_at=now, updated_at=now,
+                content_id="b",
+                url="https://youtube.com/b",
+                normalized_url="https://youtube.com/b",
+                source=QueueSource.QUEUE_FILE,
+                status=ItemStatus.DONE,
+                added_at=now,
+                updated_at=now,
             ),
         }
     )
