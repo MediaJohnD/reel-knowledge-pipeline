@@ -41,6 +41,40 @@ def run_once() -> None:
         raise typer.Exit(code=1)
 
 
+@app.command("retry")
+def retry(
+    content_id: str | None = typer.Argument(
+        default=None, help="content_id of a FAILED_PERMANENT record to reset."
+    ),
+    all_failed_permanent: bool = typer.Option(
+        False,
+        "--all-failed-permanent",
+        help="Reset every FAILED_PERMANENT record instead of a single content_id.",
+    ),
+) -> None:
+    """Reset FAILED_PERMANENT record(s) back to PENDING so the next run-once retries them.
+
+    Only records currently in FAILED_PERMANENT status are touched - a
+    content_id that's DONE, still FAILED (mid-backoff), etc. is left as-is.
+    """
+    from reel_pipeline.queue_manager import QueueManager
+
+    if content_id is None and not all_failed_permanent:
+        typer.echo("Provide a content_id or use --all-failed-permanent", err=True)
+        raise typer.Exit(code=1)
+
+    settings = get_settings()
+    settings.ensure_directories()
+    reset_ids = QueueManager(settings).reset_for_retry(
+        content_id=content_id, all_failed_permanent=all_failed_permanent
+    )
+    if not reset_ids:
+        typer.echo("No matching FAILED_PERMANENT records found.")
+        raise typer.Exit(code=1)
+    for reset_id in reset_ids:
+        typer.echo(f"reset: {reset_id}")
+
+
 @app.command("serve-webhook")
 def serve_webhook() -> None:
     """Start the webhook ingestion server (blocking)."""

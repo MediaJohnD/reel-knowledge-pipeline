@@ -147,9 +147,13 @@ re-runs the same CLI command.
   `[1, 5, 30, 120, 480]` minutes, indexed by attempt number). After
   `retry.max_attempts` failed attempts (default `5`), the item's status
   becomes `failed_permanent` and `run-once` stops picking it up automatically.
-  To retry a `failed_permanent` item, fix the underlying cause and manually
-  reset its status (or remove its entry) in `state.json`. Tune either setting
-  in `config/settings.yaml`'s `retry:` block.
+  To retry a `failed_permanent` item, fix the underlying cause, then run
+  `uv run python -m reel_pipeline.cli retry <content_id>` (or
+  `--all-failed-permanent` to reset every one) - this resets the record to
+  `pending` with a clean attempt/backoff slate (preserving any already-
+  completed download stage) so the next `run-once` picks it up. It only
+  touches records currently in `failed_permanent` status. Tune either
+  backoff setting in `config/settings.yaml`'s `retry:` block.
 - **`needs-attention.txt` only gets a new line when a failure is new** (first
   occurrence, or the error message changed) - repeated retries of the same
   failure don't add duplicate lines. The one exception is the transition to

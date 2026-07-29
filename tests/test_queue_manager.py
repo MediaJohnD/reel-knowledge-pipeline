@@ -67,6 +67,89 @@ def test_get_actionable_items_excludes_failed_item_whose_backoff_has_not_elapsed
     assert actionable_ids == {"ready1"}
 
 
+def test_reset_for_retry_by_content_id_resets_failed_permanent_record(tmp_path):
+    settings = make_settings(tmp_path)
+    qm = QueueManager(settings)
+    now = datetime.now(UTC)
+
+    from reel_pipeline.models import ItemStage, StateRecord
+
+    permanent = StateRecord(
+        content_id="perm1", url="https://youtube.com/1", normalized_url="https://youtube.com/1",
+        source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED_PERMANENT,
+        added_at=now, updated_at=now, attempt_count=5, error="boom",
+        last_completed_stage=ItemStage.DOWNLOADED,
+    )
+    qm.save_state({"perm1": permanent})
+
+    reset_ids = qm.reset_for_retry(content_id="perm1")
+
+    assert reset_ids == ["perm1"]
+    record = qm.load_state()["perm1"]
+    assert record.status == ItemStatus.PENDING
+    assert record.attempt_count == 0
+    assert record.next_retry_at is None
+    assert record.error is None
+    # Already-completed download stage is preserved so a retry doesn't
+    # redownload media that's still on disk.
+    assert record.last_completed_stage == ItemStage.DOWNLOADED
+
+
+def test_reset_for_retry_ignores_content_id_not_in_failed_permanent_status(tmp_path):
+    settings = make_settings(tmp_path)
+    qm = QueueManager(settings)
+    now = datetime.now(UTC)
+
+    from reel_pipeline.models import StateRecord
+
+    still_failing = StateRecord(
+        content_id="stillfailing", url="https://youtube.com/1", normalized_url="https://youtube.com/1",
+        source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED,
+        added_at=now, updated_at=now, attempt_count=2,
+    )
+    qm.save_state({"stillfailing": still_failing})
+
+    reset_ids = qm.reset_for_retry(content_id="stillfailing")
+
+    assert reset_ids == []
+    record = qm.load_state()["stillfailing"]
+    assert record.status == ItemStatus.FAILED
+    assert record.attempt_count == 2
+
+
+def test_reset_for_retry_all_failed_permanent_resets_only_those(tmp_path):
+    settings = make_settings(tmp_path)
+    qm = QueueManager(settings)
+    now = datetime.now(UTC)
+
+    from reel_pipeline.models import StateRecord
+
+    perm_a = StateRecord(
+        content_id="perma", url="https://youtube.com/a", normalized_url="https://youtube.com/a",
+        source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED_PERMANENT,
+        added_at=now, updated_at=now, attempt_count=5,
+    )
+    perm_b = StateRecord(
+        content_id="permb", url="https://youtube.com/b", normalized_url="https://youtube.com/b",
+        source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED_PERMANENT,
+        added_at=now, updated_at=now, attempt_count=5,
+    )
+    still_failing = StateRecord(
+        content_id="stillfailing", url="https://youtube.com/c", normalized_url="https://youtube.com/c",
+        source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED,
+        added_at=now, updated_at=now, attempt_count=1,
+    )
+    qm.save_state({"perma": perm_a, "permb": perm_b, "stillfailing": still_failing})
+
+    reset_ids = qm.reset_for_retry(all_failed_permanent=True)
+
+    assert set(reset_ids) == {"perma", "permb"}
+    state = qm.load_state()
+    assert state["perma"].status == ItemStatus.PENDING
+    assert state["permb"].status == ItemStatus.PENDING
+    assert state["stillfailing"].status == ItemStatus.FAILED
+
+
 def test_sync_registers_new_pending_item_and_drains_queue_file(tmp_path):
     settings = make_settings(tmp_path)
     qm = QueueManager(settings)

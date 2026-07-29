@@ -233,6 +233,44 @@ class QueueManager:
         self.queue_file.write_text(remaining, encoding="utf-8")
         return newly_registered
 
+    def reset_for_retry(
+        self, content_id: str | None = None, all_failed_permanent: bool = False
+    ) -> list[str]:
+        """Reset FAILED_PERMANENT record(s) back to PENDING with a clean retry
+        slate (attempt_count/next_retry_at/error cleared) so the next
+        run_once() picks them up via get_actionable_items(). Deliberately only
+        touches records currently in FAILED_PERMANENT status - this is a
+        give-up recovery mechanism, not a generic force-reprocess, so a
+        content_id that's DONE, still FAILED (mid-backoff), etc. is left
+        untouched. `last_completed_stage` is preserved so a retry still skips
+        already-completed stages per the checkpoint/resume logic in worker.py.
+        """
+
+        def mutate(state: dict[str, StateRecord]) -> list[str]:
+            if all_failed_permanent:
+                targets = [
+                    record
+                    for record in state.values()
+                    if record.status is ItemStatus.FAILED_PERMANENT
+                ]
+            elif content_id is not None:
+                record = state.get(content_id)
+                targets = (
+                    [record]
+                    if record is not None and record.status is ItemStatus.FAILED_PERMANENT
+                    else []
+                )
+            else:
+                targets = []
+            for target in targets:
+                target.status = ItemStatus.PENDING
+                target.attempt_count = 0
+                target.next_retry_at = None
+                target.error = None
+            return [target.content_id for target in targets]
+
+        return self._locked_mutate(mutate)
+
     def get_actionable_items(self) -> list[StateRecord]:
         """All records not yet in a terminal status - includes crash-interrupted
         items, and FAILED items whose retry backoff has elapsed. Excludes
