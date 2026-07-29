@@ -110,3 +110,14 @@ maintenance:
   # needs-attention.txt lines older than this are dropped - the item is still
   # tracked in state.json either way, this only trims the human-readable log.
   needs_attention_retention_days: 30
+
+# Retry policy for items that fail processing (download/transcribe/enrich/write
+# errors - not validation/blocked-domain rejections, which never retry).
+# Exponential backoff: after each failure, the item waits backoff_schedule_minutes[N]
+# minutes before the next run_once() will pick it up again. After max_attempts
+# failures, the item's status becomes failed_permanent and stops being retried
+# automatically - it's still visible in state.json/needs-attention.txt for
+# manual review.
+retry:
+  backoff_schedule_minutes: [1, 5, 30, 120, 480]
+  max_attempts: 5

@@ -107,6 +107,16 @@ class MaintenanceConfig(BaseModel):
     needs_attention_retention_days: int = 30
 
 
+class RetryConfig(BaseModel):
+    # Exponential backoff in minutes, indexed by (attempt_count - 1); clamped to
+    # the last entry once attempt_count exceeds the schedule's length (only
+    # possible if max_attempts > len(backoff_schedule_minutes)).
+    backoff_schedule_minutes: list[int] = Field(default_factory=lambda: [1, 5, 30, 120, 480])
+    # After this many failed attempts, an item's status becomes FAILED_PERMANENT
+    # instead of FAILED, so run_once() stops retrying it automatically.
+    max_attempts: int = 5
+
+
 class Settings(BaseModel):
     """Root configuration object used throughout the pipeline."""
 
@@ -125,6 +135,7 @@ class Settings(BaseModel):
     text_capture: TextCaptureConfig = Field(default_factory=TextCaptureConfig)
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
+    retry: RetryConfig = Field(default_factory=RetryConfig)
 
     # Secrets - never sourced from settings.yaml, only environment variables.
     webhook_secret: str | None = None
@@ -336,6 +347,7 @@ def load_settings(
         text_capture=TextCaptureConfig(**raw.get("text_capture", {})),
         webhook=WebhookConfig(**raw.get("webhook", {})),
         maintenance=MaintenanceConfig(**raw.get("maintenance", {})),
+        retry=RetryConfig(**raw.get("retry", {})),
         webhook_secret=env.get("REEL_WEBHOOK_SECRET") or None,
         anthropic_api_key=env.get("ANTHROPIC_API_KEY") or None,
         openai_api_key=env.get("OPENAI_API_KEY") or None,

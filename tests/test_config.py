@@ -146,3 +146,23 @@ def test_loads_text_capture_defaults_from_settings_yaml():
     assert "notion.so" in settings.text_capture.allowed_domains
     assert "notion.site" in settings.text_capture.allowed_domains
     assert settings.enrich_text_capture_prompt.name == "enrich_text_capture.md"
+
+
+def test_loads_retry_defaults_from_settings_yaml():
+    settings = load_settings(config_path=DEFAULT_SETTINGS_PATH, env={})
+
+    assert settings.retry.max_attempts == 5
+    assert settings.retry.backoff_schedule_minutes == [1, 5, 30, 120, 480]
+
+
+def test_retry_config_overridable_from_yaml(tmp_path):
+    config_path = tmp_path / "settings.yaml"
+    config_path.write_text(
+        "retry:\n  max_attempts: 3\n  backoff_schedule_minutes: [2, 10]\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_path=config_path, env={})
+
+    assert settings.retry.max_attempts == 3
+    assert settings.retry.backoff_schedule_minutes == [2, 10]
