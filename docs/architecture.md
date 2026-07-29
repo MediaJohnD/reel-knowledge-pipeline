@@ -21,9 +21,9 @@ WorkerPipeline.run_once(), for each actionable state.json record:
                     VIDEO -> Transcriber.transcribe(media_paths[0])      -> TranscriptResult
                     IMAGE -> ImageDescriber.describe(media_paths)        -> TranscriptResult (vision-model description)
     -> Enricher.enrich(transcript)     -> EnrichmentResult (LLM + config/prompts/enrich_transcript.md)
-    -> obsidian_writer.write_note()    -> data/notes/<content_id>-<slug>.md   (or REEL_VAULT_DIR)
+    -> obsidian_writer.write_note()    -> data/notes/<slug>.md   (or REEL_VAULT_DIR)
     -> SkillWriter.generate()          -> data/generated_skills/<slug>/SKILL.md, only if high_signal
-  state.json record updated to DONE (or FAILED, with reason appended to needs-attention.txt)
+  state.json record updated to DONE (or FAILED/FAILED_PERMANENT, with reason appended to needs-attention.txt)
 ```
 
 Video and image posts converge back into the same `TranscriptResult` shape
@@ -87,9 +87,38 @@ or webhook - converges on `state.json` before any processing begins, so:
 - A crash mid-processing leaves an accurate `status` (e.g. `transcribing`)
   in `state.json`; the next `run-once` picks it back up via
   `QueueManager.get_actionable_items()`, which returns every record not yet
-  `done` or `blocked`.
+  `done`, `blocked`, or `failed_permanent`.
 - `queue.txt` itself is drained (consumed lines removed) once its content is
   durably represented in `state.json` or `needs-attention.txt`.
+
+### Retries and resumability
+
+- A stage failure increments `attempt_count` and schedules the next attempt
+  via `retry.backoff_schedule_minutes` in `config/settings.yaml` (exponential
+  backoff, capped at `retry.max_attempts`). Once attempts are exhausted the
+  item becomes `failed_permanent` and stops being retried automatically -
+  `uv run python -m reel_pipeline.cli retry <content_id>` (or
+  `--all-failed-permanent`) resets it once the underlying cause is fixed.
+- Each pipeline stage (download, transcribe/describe, enrich) records
+  `last_completed_stage` and caches its output artifact under
+  `data/tmp/<content_id>/` (the downloaded media file(s), plus
+  `transcript.json`/`enrichment.json`). A crash mid-pipeline resumes from the
+  most-advanced cached artifact still present on disk instead of redoing
+  already-finished work - falling back one stage at a time if an expected
+  artifact is missing rather than trusting the stage marker blindly. This
+  cache is cleaned up alongside the rest of `data/tmp/<content_id>/` once the
+  item succeeds.
+- Two independent file locks guard `state.json`: a coarse, whole-pass lock
+  (`state.run_once.lock`) so two `run_once()` calls never interleave and
+  double-process the same item, and a fine-grained per-mutation lock
+  (`state.lock`) around every individual read-modify-write, so webhook
+  registration (`add_url()`) is never blocked waiting behind an in-progress
+  backlog pass. See `docs/superpowers/specs/2026-07-29-state-reliability-design.md`
+  for the full design and the tradeoffs considered.
+- `state.json` is fully reparsed and rewritten on every mutation - an
+  intentional, monitored tradeoff at this project's scale (see
+  `maintenance.state_size_warning_threshold` in `config/settings.yaml`), not
+  a scalability guarantee for large backlogs.
 
 ## Safety guardrails (see `docs/runbook.md` for details)
 

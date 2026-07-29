@@ -154,6 +154,46 @@ call / API key and are not exercised by the automated test suite.
 - [ ] A real public GitHub repo and a real public Notion page each produce a
       working Obsidian note end-to-end. **(manual)**
 
+## 13. Reliability: retries, resumability, and recovery
+
+- [ ] A transient stage failure increments `attempt_count` and schedules
+      `next_retry_at` per `retry.backoff_schedule_minutes`; the item is
+      excluded from `get_actionable_items()` until that time elapses.
+      Automated: `test_failed_item_gets_backoff_and_attempt_count_increment`,
+      `test_get_actionable_items_excludes_failed_item_whose_backoff_has_not_elapsed`.
+- [ ] After `retry.max_attempts` failures, status becomes `failed_permanent`
+      and a needs-attention line is logged even if the error text repeats.
+      Automated: exercised via `tests/test_worker_flow.py`'s backoff tests;
+      `tests/test_webhook_server.py::test_healthz_counts_failed_permanent_as_failed_and_excludes_it_from_queue_depth`.
+- [ ] `uv run python -m reel_pipeline.cli retry <content_id>` (and
+      `--all-failed-permanent`) resets only `failed_permanent` records back
+      to `pending` with a clean attempt/backoff slate, leaving other statuses
+      untouched. Automated: `tests/test_cli.py`,
+      `tests/test_queue_manager.py`'s `test_reset_for_retry_*` tests.
+- [ ] A crash after a completed download, transcription, or enrichment stage
+      resumes from the corresponding cached artifact instead of redoing that
+      work, and falls back one stage at a time if an expected artifact is
+      missing. Automated:
+      `test_resuming_a_crash_interrupted_item_does_not_redownload_if_media_still_on_disk`,
+      `test_resuming_a_crash_interrupted_item_does_not_retranscribe_if_transcript_cached`,
+      `test_resuming_a_crash_interrupted_item_does_not_reenrich_if_enrichment_cached`,
+      `test_missing_cached_transcript_falls_back_to_redownload_not_just_retranscribe`.
+- [ ] Two concurrent `run_once()` calls never interleave (one whole-pass
+      lock), while `add_url()` (webhook registration) is never blocked
+      waiting behind an in-progress backlog pass (separate per-mutation
+      lock). Automated: `test_concurrent_run_once_calls_never_interleave`,
+      `test_add_url_is_not_blocked_by_an_in_progress_run_once`.
+- [ ] Resubmitting a URL that's `failed_permanent`, or `failed` and still
+      waiting out its backoff, does not schedule a no-op background
+      `run_once()`, and the response is honest about why. Automated:
+      `test_webhook_rejects_resubmission_of_a_failed_permanent_url`,
+      `test_webhook_resubmission_of_a_failed_item_still_in_backoff_does_not_schedule_a_run`,
+      `test_webhook_resubmission_of_a_failed_item_past_backoff_schedules_a_run`.
+- [ ] Once `state.json`'s item count reaches `maintenance.state_size_warning_threshold`,
+      `run-once` logs a warning each pass. Automated:
+      `test_run_once_warns_when_state_size_crosses_configured_threshold`,
+      `test_run_once_does_not_warn_when_state_size_is_below_threshold`.
+
 ## Full verification log
 
 See the final delivery summary for the actual `pytest` / `ruff` / `pyright`

@@ -338,8 +338,37 @@ device/browser, not just iOS.
 | `TranscriptionError: faster-whisper is not installed` | Run `uv sync --extra local-whisper`, or switch `REEL_TRANSCRIPTION_BACKEND=openai` |
 | Note not appearing where expected | Check `REEL_VAULT_DIR` / `paths.vault_dir` in `config/settings.yaml` |
 | Item stuck retrying every run | Check its `error` field in `data/inbox/state.json` and `needs-attention.txt` |
+| Item's `status` is `failed_permanent` and it never gets retried | Expected once `retry.max_attempts` is exhausted - fix the underlying cause, then run `uv run python -m reel_pipeline.cli retry <content_id>` (or `--all-failed-permanent`) |
+| `state.json has grown large enough that its per-mutation full-rewrite cost may start to matter` in the logs | Informational, not an error - see "Known limitations" below |
 | Webhook unreachable from phone | Confirm both devices show "Connected"/online in Tailscale, and `REEL_WEBHOOK_HOST` is set to this machine's Tailscale IP |
 | `Exception in callback _ProactorBasePipeTransport._call_connection_lost()` / `ConnectionResetError: [WinError 10054]` in webhook logs | **Known-fixed**: this was cosmetic ERROR-level noise from asyncio's default Windows `ProactorEventLoop` when a client (iOS Shortcut, web form) disconnects right after its request completes. `serve_webhook()` in `src/reel_pipeline/cli.py` now switches to `WindowsSelectorEventLoopPolicy` on Windows before starting uvicorn, which doesn't have this bug. If you still see it, confirm you're on the current `cli.py`. |
+
+## Known limitations
+
+- **`state.json` doesn't scale past a few hundred items without a monitored
+  cost.** It's fully reparsed and rewritten on every single stage
+  transition - an O(n) cost per mutation, O(n^2) over a full backlog pass.
+  This is a deliberate tradeoff for this project's original "handful of
+  reels" scale (keeps `state.json` a plain, greppable, human-readable file -
+  see `CLAUDE.md`), not an oversight. `maintenance.state_size_warning_threshold`
+  (default 500 items) turns this into a *monitored* deferral: once item count
+  reaches it, `run-once` logs a warning each pass. If you hit this, the real
+  fix is a SQLite/WAL migration (evaluated and deferred - see
+  `docs/superpowers/specs/2026-07-29-state-reliability-design.md`'s
+  "Deferred" section for what that would look like and why it wasn't done
+  by default).
+- **Stage-level caching lives in `data/tmp/`, not `state.json` itself.** A
+  crash mid-pipeline resumes from the most-advanced cached artifact
+  (downloaded media, `transcript.json`, `enrichment.json`) as long as
+  `data/tmp/<content_id>/` hasn't been cleared since. If it has (e.g. the
+  `maintenance.tmp_retention_days` sweep reclaimed it, or you deleted it
+  manually), the pipeline falls back to redoing that missing stage - it
+  never crashes or silently skips work, it just redoes more than a fresher
+  cache would have needed to.
+- **No cross-machine/cross-process coordination beyond file locks.** The
+  locking model assumes every `run-once`/`serve-webhook` process shares the
+  same local filesystem (`state.json`'s directory) - it isn't designed for a
+  distributed deployment across multiple machines.
 
 ## Where things live
 
