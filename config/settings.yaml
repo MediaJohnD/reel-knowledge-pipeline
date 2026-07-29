@@ -35,7 +35,7 @@ llm:
 
 enrichment:
   # Model name meaning depends on llm.provider above - an Ollama model tag here,
-  # or an Anthropic model id (e.g. claude-sonnet-4-5) if provider is "anthropic".
+  # or an Anthropic model id (e.g. claude-sonnet-5) if provider is "anthropic".
   model: qwen2.5:14b
   max_tokens: 4096
 

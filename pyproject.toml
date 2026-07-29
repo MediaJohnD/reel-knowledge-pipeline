@@ -32,6 +32,10 @@ dev = [
     "respx>=0.21",
     "ruff>=0.6",
     "pyright>=1.1",
+    # Starlette 1.0's TestClient prefers httpx2 over httpx; without it every
+    # webhook_server test emits a StarletteDeprecationWarning (harmless today,
+    # but httpx support is expected to be removed in a future Starlette release).
+    "httpx2>=2.9",
 ]
 
 [project.scripts]

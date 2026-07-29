@@ -62,18 +62,23 @@ class TextFetchError(RuntimeError):
     """Raised when fetching or extracting text content fails."""
 
 
-def _parse_github_path(url: str) -> tuple[str, str, str | None]:
-    """Returns (owner, repo, file_path). file_path is None for a repo-root URL,
-    or the path portion after "blob/<ref>/" for a specific-file URL.
+def _parse_github_path(url: str) -> tuple[str, str, str | None, str | None]:
+    """Returns (owner, repo, ref, file_path). ref and file_path are both None for
+    a repo-root URL. For a "blob/<ref>/<path>" URL, ref is the single path segment
+    right after "blob/" - this doesn't disambiguate refs that themselves contain
+    slashes (e.g. "feature/foo"), which GitHub's own URL scheme is ambiguous
+    about without an extra API call; the common single-segment branch/tag case
+    is handled correctly.
     """
     parts = [p for p in urlparse(url).path.split("/") if p]
     if len(parts) < 2:
         raise TextFetchError(f"could not parse a GitHub owner/repo from {url!r}")
     owner, repo = parts[0], parts[1]
     if len(parts) > 3 and parts[2] == "blob":
+        ref = parts[3]
         file_path = "/".join(parts[4:])
-        return owner, repo, file_path or None
-    return owner, repo, None
+        return owner, repo, ref, file_path or None
+    return owner, repo, None, None
 
 
 class GitHubFetcher:
@@ -82,15 +87,16 @@ class GitHubFetcher:
         self._client = client
 
     def fetch(self, url: str, content_id: str) -> TranscriptResult:
-        owner, repo, file_path = _parse_github_path(url)
+        owner, repo, ref, file_path = _parse_github_path(url)
         owned_client = self._client or httpx.Client(timeout=30.0)
         owns_client = self._client is None
         try:
             metadata = self._get_json(owned_client, f"{_GITHUB_API}/repos/{owner}/{repo}")
             if file_path:
-                content = self._get_file_content(
-                    owned_client, f"{_GITHUB_API}/repos/{owner}/{repo}/contents/{file_path}"
-                )
+                contents_url = f"{_GITHUB_API}/repos/{owner}/{repo}/contents/{file_path}"
+                if ref:
+                    contents_url += f"?ref={ref}"
+                content = self._get_file_content(owned_client, contents_url)
                 heading = f"# {owner}/{repo} - {file_path}"
             else:
                 content = self._get_file_content(

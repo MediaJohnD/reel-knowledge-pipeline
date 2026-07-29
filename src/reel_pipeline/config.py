@@ -62,14 +62,14 @@ class LlmConfig(BaseModel):
 
 class EnrichmentConfig(BaseModel):
     # Model name meaning depends on llm.provider: an Anthropic model id (e.g.
-    # "claude-sonnet-4-5") when provider is "anthropic", or a locally-pulled
+    # "claude-sonnet-5") when provider is "anthropic", or a locally-pulled
     # Ollama model tag (e.g. "qwen2.5:14b") when provider is "ollama".
-    model: str = "claude-sonnet-4-5"
+    model: str = "claude-sonnet-5"
     max_tokens: int = 4096
 
 
 class SkillWriterConfig(BaseModel):
-    model: str = "claude-sonnet-4-5"
+    model: str = "claude-sonnet-5"
     max_tokens: int = 2048
     enabled: bool = True
 

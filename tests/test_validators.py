@@ -38,6 +38,19 @@ def make_settings(tmp_path, allowed, blocked=None) -> Settings:
     )
 
 
+def test_validate_url_accepts_uppercase_scheme(tmp_path):
+    """Regression test: validate_url checked the raw parsed scheme against a
+    lowercase-only set, so a legitimate uppercase-scheme URL (e.g. from a client
+    that uppercases it) was rejected even though normalize_url already lowercases
+    the scheme for the accepted case.
+    """
+    settings = make_settings(tmp_path, allowed=["youtube.com"])
+
+    result = validate_url("HTTPS://youtube.com/watch?v=abc123", settings)
+
+    assert result.ok
+
+
 def test_subdomain_allow_entry_permits_only_that_subdomain(tmp_path):
     settings = make_settings(tmp_path, allowed=["drive.google.com"])
 

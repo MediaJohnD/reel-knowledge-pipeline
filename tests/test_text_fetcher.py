@@ -122,6 +122,37 @@ def test_github_fetcher_fetches_specific_file_not_readme(tmp_path):
 
 
 @respx.mock
+def test_github_fetcher_fetches_file_at_requested_ref_not_default_branch(tmp_path):
+    """Regression test: the ref segment of a "blob/<ref>/<path>" URL used to be
+    discarded, so a URL pinned to a tag/branch silently fetched the file from
+    the repo's default branch instead.
+    """
+    settings = Settings(project_root=tmp_path)
+    respx.get("https://api.github.com/repos/owner/repo").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "full_name": "owner/repo",
+                "description": "A tool that does things.",
+                "default_branch": "main",
+                "stargazers_count": 1,
+                "language": None,
+                "topics": [],
+            },
+        )
+    )
+    respx.get(
+        "https://api.github.com/repos/owner/repo/contents/docs/guide.md", params={"ref": "v2.0"}
+    ).mock(return_value=httpx.Response(200, json=_readme_response("# Guide\n\nv2.0 content.")))
+
+    result = GitHubFetcher(settings).fetch(
+        "https://github.com/owner/repo/blob/v2.0/docs/guide.md", "cid-ref"
+    )
+
+    assert "v2.0 content." in result.text
+
+
+@respx.mock
 def test_github_fetcher_raises_clear_error_on_404(tmp_path):
     settings = Settings(project_root=tmp_path)
     respx.get("https://api.github.com/repos/owner/private-repo").mock(

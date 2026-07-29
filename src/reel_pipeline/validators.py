@@ -96,7 +96,7 @@ def validate_url(url: str, settings: Settings) -> ValidationResult:
         return ValidationResult(ok=False, normalized_url="", content_id="", reason="empty URL")
 
     parsed = urlparse(stripped)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
         return ValidationResult(
             ok=False,
             normalized_url="",

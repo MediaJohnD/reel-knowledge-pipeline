@@ -32,7 +32,7 @@ skill generation:
   `config/prompts/enrich_transcript.md`.
 - **`anthropic`** - hosted Claude API. Set `ANTHROPIC_API_KEY` in `.env` and
   set `enrichment.model`/`skill_writer.model` to a Claude model id (e.g.
-  `claude-sonnet-4-5`).
+  `claude-sonnet-5`).
 
 Switch by editing `llm.provider` in `config/settings.yaml` (or override with
 `REEL_LLM_PROVIDER`/`REEL_OLLAMA_HOST` in `.env` without touching the file).

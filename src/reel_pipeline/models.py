@@ -29,14 +29,6 @@ class QueueSource(StrEnum):
     WEBHOOK = "webhook"
 
 
-class QueueItem(BaseModel):
-    """A single URL pulled from the queue file or webhook, before dedup/state lookup."""
-
-    url: str
-    source: QueueSource
-    submitted_at: datetime
-
-
 class StateRecord(BaseModel):
     """Persisted record for one content item, keyed by content_id in state.json."""
 
