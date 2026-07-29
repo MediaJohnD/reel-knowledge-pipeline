@@ -987,3 +987,55 @@ def test_add_url_is_not_blocked_by_an_in_progress_run_once(tmp_path):
     # SlowFakeDownloader sleeps 0.2s; add_url() must return well under that,
     # proving it never waited for the whole run_once() pass to finish.
     assert elapsed < 0.15
+
+
+def test_run_once_warns_when_state_size_crosses_configured_threshold(tmp_path, caplog):
+    """Regression test: state.json's O(n^2) full-rewrite-per-mutation cost was a
+    silent deferral - nothing would ever tell an operator their backlog had
+    outgrown this project's "handful of reels" assumption. run_once() now
+    logs a warning once item count reaches maintenance.state_size_warning_threshold.
+    """
+    import logging
+
+    settings = Settings(
+        project_root=tmp_path,
+        download=DownloadConfig(allowed_domains=["youtube.com"], blocked_domains=[]),
+        maintenance=MaintenanceConfig(state_size_warning_threshold=2),
+    )
+    qm = QueueManager(settings)
+    now = datetime.now(UTC)
+    from reel_pipeline.models import StateRecord
+
+    qm.save_state(
+        {
+            "a": StateRecord(
+                content_id="a", url="https://youtube.com/a", normalized_url="https://youtube.com/a",
+                source=QueueSource.QUEUE_FILE, status=ItemStatus.DONE, added_at=now, updated_at=now,
+            ),
+            "b": StateRecord(
+                content_id="b", url="https://youtube.com/b", normalized_url="https://youtube.com/b",
+                source=QueueSource.QUEUE_FILE, status=ItemStatus.DONE, added_at=now, updated_at=now,
+            ),
+        }
+    )
+    pipeline = build_pipeline(settings, FakeDownloader())
+
+    with caplog.at_level(logging.WARNING):
+        pipeline.run_once()
+
+    assert any("state.json" in record.message for record in caplog.records)
+
+
+def test_run_once_does_not_warn_when_state_size_is_below_threshold(tmp_path, caplog):
+    import logging
+
+    settings = make_settings(tmp_path)  # default threshold (500), well above 1 item
+    pipeline = build_pipeline(settings, FakeDownloader())
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=belowthreshold1\n", encoding="utf-8"
+    )
+
+    with caplog.at_level(logging.WARNING):
+        pipeline.run_once()
+
+    assert not any("state.json" in record.message for record in caplog.records)

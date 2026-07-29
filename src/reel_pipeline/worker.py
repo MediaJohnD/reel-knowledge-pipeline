@@ -473,6 +473,32 @@ class WorkerPipeline:
                 logger, 30, "tmp cleanup failed", content_id=content_id, error=str(exc)
             )
 
+    def _warn_if_state_size_exceeds_threshold(self) -> None:
+        """state.json is fully reparsed and rewritten on every mutation, an O(n)
+        cost per stage transition (O(n^2) over a full backlog pass) - a
+        deliberate tradeoff at this project's original "handful of reels"
+        scale (see docs/superpowers/specs/2026-07-29-state-reliability-design.md's
+        "Deferred" section). This turns that into a monitored deferral: once
+        item count reaches maintenance.state_size_warning_threshold, log a
+        warning each run_once() pass so growth past that original assumption
+        is visible instead of just slowly degrading. threshold <= 0 disables
+        the check entirely.
+        """
+        threshold = self.settings.maintenance.state_size_warning_threshold
+        if threshold <= 0:
+            return
+        item_count = len(self.queue_manager.load_state())
+        if item_count >= threshold:
+            log_context(
+                logger,
+                30,
+                "state.json has grown large enough that its per-mutation "
+                "full-rewrite cost may start to matter - see "
+                "maintenance.state_size_warning_threshold in config/settings.yaml",
+                item_count=item_count,
+                threshold=threshold,
+            )
+
     def _sweep_stale_tmp_dirs(self) -> None:
         """Reclaim data/tmp/<content_id>/ dirs left behind by items that never
         reached success (e.g. permanently-failing items) - _cleanup_tmp_dir only
@@ -528,6 +554,7 @@ class WorkerPipeline:
             self.settings.maintenance.needs_attention_retention_days
         )
         self.queue_manager.sync_queue_file_into_state()
+        self._warn_if_state_size_exceeds_threshold()
         actionable = self.queue_manager.get_actionable_items()
 
         summary = RunSummary()

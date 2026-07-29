@@ -105,6 +105,17 @@ class MaintenanceConfig(BaseModel):
     # queue check. Set either to 0 to disable that sweep entirely.
     tmp_retention_days: int = 30
     needs_attention_retention_days: int = 30
+    # state.json is fully reparsed and rewritten on every single mutation
+    # (O(n) per stage transition, so O(n^2) over a full backlog pass) - a
+    # deliberate, documented tradeoff at this project's "handful of reels"
+    # scale (see docs/superpowers/specs/2026-07-29-state-reliability-design.md's
+    # "Deferred" section: a SQLite/WAL migration would fix it but costs
+    # state.json's human-readability). This threshold turns that into a
+    # *monitored* deferral instead of a silent one - once item count reaches
+    # it, run_once() logs a warning so growth beyond this project's original
+    # assumptions gets noticed instead of just slowly degrading. Set to 0 to
+    # disable the check.
+    state_size_warning_threshold: int = 500
 
 
 class RetryConfig(BaseModel):

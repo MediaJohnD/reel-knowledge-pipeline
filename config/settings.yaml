@@ -110,6 +110,11 @@ maintenance:
   # needs-attention.txt lines older than this are dropped - the item is still
   # tracked in state.json either way, this only trims the human-readable log.
   needs_attention_retention_days: 30
+  # state.json is fully rewritten on every mutation (O(n) per stage transition).
+  # Once item count reaches this, run-once logs a warning so growth past this
+  # project's "handful of reels" scale gets noticed rather than just slowly
+  # degrading. Set to 0 to disable. See docs/runbook.md's "known limitations".
+  state_size_warning_threshold: 500
 
 # Retry policy for items that fail processing (download/transcribe/enrich/write
 # errors - not validation/blocked-domain rejections, which never retry).
