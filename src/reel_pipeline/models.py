@@ -19,7 +19,25 @@ class ItemStatus(StrEnum):
     WRITING_NOTE = "writing_note"
     DONE = "done"
     FAILED = "failed"
+    # Distinct from FAILED: attempt_count has hit retry.max_attempts, so
+    # get_actionable_items() stops retrying it. Distinct from BLOCKED (a policy
+    # decision made before any processing was attempted) so the reason a
+    # never-succeeding item stopped being retried is clear at a glance.
+    FAILED_PERMANENT = "failed_permanent"
     BLOCKED = "blocked"
+
+
+class ItemStage(StrEnum):
+    """Durably-completed pipeline stage, used to resume a crash-interrupted item
+    without redoing already-finished work. Distinct from ItemStatus, which
+    describes what's currently happening (or last happened); this describes
+    what's confirmed finished and safe to skip on retry.
+    """
+
+    DOWNLOADED = "downloaded"
+    TRANSCRIBED = "transcribed"
+    ENRICHED = "enriched"
+    NOTE_WRITTEN = "note_written"
 
 
 class QueueSource(StrEnum):
@@ -43,6 +61,15 @@ class StateRecord(BaseModel):
     error: str | None = None
     note_path: str | None = None
     skill_path: str | None = None
+    # Reliability fields - see docs/superpowers/specs/2026-07-29-state-reliability-design.md.
+    # All default so pre-existing state.json records (written before this change)
+    # deserialize unchanged.
+    attempt_count: int = 0
+    next_retry_at: datetime | None = None
+    last_completed_stage: ItemStage | None = None
+    # Set only by an optional-stage (skill generation) failure - never changes
+    # `status` away from DONE, since the required stages already succeeded.
+    skill_error: str | None = None
 
 
 class MediaType(StrEnum):

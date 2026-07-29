@@ -123,6 +123,31 @@ def test_get_actionable_items_excludes_done_and_blocked_but_includes_crash_inter
     assert actionable_ids == {"crashed1"}
 
 
+def test_state_record_new_reliability_fields_have_safe_defaults(tmp_path):
+    """Regression test: existing state.json files on disk predate attempt_count/
+    next_retry_at/last_completed_stage/skill_error - they must deserialize with
+    safe defaults, not raise a validation error.
+    """
+    settings = make_settings(tmp_path)
+    qm = QueueManager(settings)
+    qm.state_file.write_text(
+        '{"items": {"legacy1": {'
+        '"content_id": "legacy1", "url": "https://youtube.com/1", '
+        '"normalized_url": "https://youtube.com/1", "source": "queue_file", '
+        '"status": "pending", "added_at": "2026-01-01T00:00:00+00:00", '
+        '"updated_at": "2026-01-01T00:00:00+00:00"}}}',
+        encoding="utf-8",
+    )
+
+    state = qm.load_state()
+
+    record = state["legacy1"]
+    assert record.attempt_count == 0
+    assert record.next_retry_at is None
+    assert record.last_completed_stage is None
+    assert record.skill_error is None
+
+
 def test_prune_needs_attention_drops_lines_older_than_retention(tmp_path):
     settings = make_settings(tmp_path)
     qm = QueueManager(settings)
