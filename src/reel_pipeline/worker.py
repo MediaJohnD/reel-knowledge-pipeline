@@ -178,13 +178,12 @@ class WorkerPipeline:
                 enrichment=enrichment,
             )
             note_path = write_note(self.settings, content_item)
-            skill_path = self.skill_writer.generate(content_item)
+            record.last_completed_stage = ItemStage.NOTE_WRITTEN
 
             previous_note_path = record.note_path
             previous_skill_path = record.skill_path
             record.status = ItemStatus.DONE
             record.note_path = str(note_path)
-            record.skill_path = str(skill_path) if skill_path else None
             record.error = None
             record.attempt_count = 0
             record.next_retry_at = None
@@ -195,6 +194,26 @@ class WorkerPipeline:
                 content_id=record.content_id,
                 note_path=str(note_path),
             )
+
+            # Skill generation is optional and independent of the note's success -
+            # its failure must never mark an already-written note as FAILED (that
+            # would re-run the whole pipeline next pass for something that already
+            # succeeded). See docs/superpowers/specs/2026-07-29-state-reliability-design.md.
+            try:
+                skill_path = self.skill_writer.generate(content_item)
+                record.skill_path = str(skill_path) if skill_path else None
+                record.skill_error = None
+            except Exception as exc:  # noqa: BLE001 - must never fail the whole item
+                record.skill_path = None
+                record.skill_error = str(exc)
+                log_context(
+                    logger,
+                    30,
+                    "skill generation failed",
+                    content_id=record.content_id,
+                    error=str(exc),
+                )
+
             self._cleanup_tmp_dir(record.content_id)
             self._cleanup_stale_note(previous_note_path, record.note_path)
             self._cleanup_stale_skill(previous_skill_path, record.skill_path)

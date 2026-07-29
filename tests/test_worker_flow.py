@@ -666,3 +666,42 @@ def test_concurrent_run_once_calls_never_interleave(tmp_path):
     # sync_queue_file_into_state() runs against an already-drained queue.txt).
     total_done = results["a"].done + results["b"].done
     assert total_done == 2
+
+
+def test_skill_generation_failure_does_not_undo_a_successful_note(tmp_path):
+    """Regression test: a skill_writer.generate() exception used to be caught by
+    the same try/except as the whole pipeline, marking an already-written note
+    as FAILED - causing the entire pipeline to re-run on the next pass even
+    though the note had already succeeded.
+    """
+    settings = make_settings(tmp_path)
+
+    class FailingSkillWriter:
+        def generate(self, item):
+            raise RuntimeError("simulated skill generation failure")
+
+    pipeline = WorkerPipeline(
+        settings=settings,
+        queue_manager=QueueManager(settings),
+        downloader=FakeDownloader(),
+        transcriber=FakeTranscriber(),
+        image_describer=FakeImageDescriber(),
+        text_fetcher=FakeTextFetcher(),
+        enricher=FakeEnricher(),
+        skill_writer=FailingSkillWriter(),
+    )
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=skillfail1\n", encoding="utf-8"
+    )
+
+    summary = pipeline.run_once()
+
+    assert summary.done == 1
+    assert summary.failed == 0
+    (record,) = pipeline.queue_manager.load_state().values()
+    assert record.status == ItemStatus.DONE
+    assert record.note_path is not None
+    assert Path(record.note_path).exists()
+    assert record.skill_path is None
+    assert record.skill_error is not None
+    assert "simulated skill generation failure" in record.skill_error
