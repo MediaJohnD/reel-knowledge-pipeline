@@ -375,6 +375,7 @@ def test_successful_processing_cleans_up_tmp_dir(tmp_path):
 
 def test_repeated_identical_failure_does_not_duplicate_needs_attention_lines(tmp_path):
     settings = make_settings(tmp_path)
+    settings.retry.backoff_schedule_minutes = [0, 0]  # retry immediately available in this test
     pipeline = build_pipeline(settings, FailingDownloader())
     pipeline.queue_manager.queue_file.write_text(
         "https://www.youtube.com/watch?v=fail-repeat\n", encoding="utf-8"
