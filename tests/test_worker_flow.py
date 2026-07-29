@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from reel_pipeline.config import DownloadConfig, MaintenanceConfig, Settings, TextCaptureConfig
@@ -76,6 +77,23 @@ class FakeDownloaderWithRealTmpFile:
 class FailingDownloader:
     def download(self, url: str, content_id: str) -> DownloadResult:
         raise RuntimeError("simulated download failure")
+
+
+class FailNTimesThenSucceedDownloader:
+    def __init__(self, fail_count: int):
+        self.fail_count = fail_count
+        self.calls = 0
+
+    def download(self, url: str, content_id: str) -> DownloadResult:
+        self.calls += 1
+        if self.calls <= self.fail_count:
+            raise RuntimeError(f"simulated failure #{self.calls}")
+        return DownloadResult(
+            content_id=content_id,
+            media_type=MediaType.VIDEO,
+            media_paths=[f"/fake/{content_id}.mp3"],
+            platform="youtube",
+        )
 
 
 class FakeTranscriber:
@@ -179,6 +197,60 @@ def build_pipeline(
         enricher=FakeEnricher(),
         skill_writer=FakeSkillWriter(settings),
     )
+
+
+def test_failed_item_gets_backoff_and_attempt_count_increment(tmp_path):
+    settings = make_settings(tmp_path)
+    pipeline = build_pipeline(settings, FailingDownloader())
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=backoff1\n", encoding="utf-8"
+    )
+
+    before = datetime.now(UTC)
+    pipeline.run_once()
+
+    (record,) = pipeline.queue_manager.load_state().values()
+    assert record.status == ItemStatus.FAILED
+    assert record.attempt_count == 1
+    assert record.next_retry_at is not None
+    assert record.next_retry_at > before + timedelta(seconds=30)  # first backoff step is 1 minute
+
+
+def test_item_becomes_failed_permanent_after_max_attempts(tmp_path):
+    settings = make_settings(tmp_path)
+    settings.retry.max_attempts = 2
+    settings.retry.backoff_schedule_minutes = [0, 0]  # no actual waiting needed for this test
+    pipeline = build_pipeline(settings, FailingDownloader())
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=permfail1\n", encoding="utf-8"
+    )
+
+    pipeline.run_once()  # attempt 1 -> FAILED
+    pipeline.run_once()  # attempt 2 -> FAILED_PERMANENT
+
+    (record,) = pipeline.queue_manager.load_state().values()
+    assert record.status == ItemStatus.FAILED_PERMANENT
+    assert record.attempt_count == 2
+
+    third = pipeline.run_once()
+    assert third.processed == 0  # get_actionable_items() no longer returns it
+
+
+def test_successful_retry_resets_attempt_count(tmp_path):
+    settings = make_settings(tmp_path)
+    settings.retry.backoff_schedule_minutes = [0, 0, 0, 0, 0]
+    downloader = FailNTimesThenSucceedDownloader(fail_count=1)
+    pipeline = build_pipeline(settings, downloader)
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=retry1\n", encoding="utf-8"
+    )
+
+    pipeline.run_once()  # fails once
+    pipeline.run_once()  # succeeds (next_retry_at already elapsed at 0-minute backoff)
+
+    (record,) = pipeline.queue_manager.load_state().values()
+    assert record.status == ItemStatus.DONE
+    assert record.attempt_count == 0
 
 
 def test_happy_path_produces_note_and_skill_and_marks_done(tmp_path):
@@ -319,6 +391,7 @@ def test_repeated_identical_failure_does_not_duplicate_needs_attention_lines(tmp
 
 def test_needs_attention_gets_new_line_when_error_reason_changes(tmp_path):
     settings = make_settings(tmp_path)
+    settings.retry.backoff_schedule_minutes = [0, 0]  # retry immediately available in this test
 
     class FlakyDownloader:
         def __init__(self):

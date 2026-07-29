@@ -234,10 +234,17 @@ class QueueManager:
         return newly_registered
 
     def get_actionable_items(self) -> list[StateRecord]:
-        """All records not yet in a terminal status - includes crash-interrupted items."""
+        """All records not yet in a terminal status - includes crash-interrupted
+        items, and FAILED items whose retry backoff has elapsed. Excludes
+        DONE/BLOCKED/FAILED_PERMANENT (all terminal) and FAILED items still
+        waiting out their next_retry_at.
+        """
         state = self.load_state()
+        now = datetime.now(UTC)
         return [
             record
             for record in state.values()
-            if record.status not in (ItemStatus.DONE, ItemStatus.BLOCKED)
+            if record.status
+            not in (ItemStatus.DONE, ItemStatus.BLOCKED, ItemStatus.FAILED_PERMANENT)
+            and (record.next_retry_at is None or record.next_retry_at <= now)
         ]

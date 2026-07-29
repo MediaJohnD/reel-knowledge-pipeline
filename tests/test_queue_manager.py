@@ -25,6 +25,48 @@ def make_settings_with_text_capture(tmp_path) -> Settings:
     )
 
 
+def test_get_actionable_items_excludes_failed_permanent(tmp_path):
+    settings = make_settings(tmp_path)
+    qm = QueueManager(settings)
+    now = datetime.now(UTC)
+
+    from reel_pipeline.models import StateRecord
+
+    permanent = StateRecord(
+        content_id="perm1", url="https://youtube.com/1", normalized_url="https://youtube.com/1",
+        source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED_PERMANENT,
+        added_at=now, updated_at=now,
+    )
+    qm.save_state({"perm1": permanent})
+
+    assert qm.get_actionable_items() == []
+
+
+def test_get_actionable_items_excludes_failed_item_whose_backoff_has_not_elapsed(tmp_path):
+    settings = make_settings(tmp_path)
+    qm = QueueManager(settings)
+    now = datetime.now(UTC)
+
+    from reel_pipeline.models import StateRecord
+
+    waiting = StateRecord(
+        content_id="wait1", url="https://youtube.com/1", normalized_url="https://youtube.com/1",
+        source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED,
+        added_at=now, updated_at=now, attempt_count=1,
+        next_retry_at=now + timedelta(minutes=5),
+    )
+    ready = StateRecord(
+        content_id="ready1", url="https://youtube.com/2", normalized_url="https://youtube.com/2",
+        source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED,
+        added_at=now, updated_at=now, attempt_count=1,
+        next_retry_at=now - timedelta(minutes=1),
+    )
+    qm.save_state({"wait1": waiting, "ready1": ready})
+
+    actionable_ids = {r.content_id for r in qm.get_actionable_items()}
+    assert actionable_ids == {"ready1"}
+
+
 def test_sync_registers_new_pending_item_and_drains_queue_file(tmp_path):
     settings = make_settings(tmp_path)
     qm = QueueManager(settings)

@@ -26,7 +26,7 @@ from __future__ import annotations
 import shutil
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
@@ -165,6 +165,8 @@ class WorkerPipeline:
             record.note_path = str(note_path)
             record.skill_path = str(skill_path) if skill_path else None
             record.error = None
+            record.attempt_count = 0
+            record.next_retry_at = None
             log_context(
                 logger,
                 20,
@@ -179,7 +181,17 @@ class WorkerPipeline:
         except Exception as exc:  # noqa: BLE001 - any stage failure must be recorded, not raised
             new_error = str(exc)
             previous_error = record.error
-            record.status = ItemStatus.FAILED
+            record.attempt_count += 1
+            schedule = self.settings.retry.backoff_schedule_minutes
+            if record.attempt_count >= self.settings.retry.max_attempts:
+                record.status = ItemStatus.FAILED_PERMANENT
+                record.next_retry_at = None
+            else:
+                record.status = ItemStatus.FAILED
+                backoff_index = min(record.attempt_count, len(schedule)) - 1
+                record.next_retry_at = datetime.now(UTC) + timedelta(
+                    minutes=schedule[backoff_index]
+                )
             record.error = new_error
             # Only log a fresh needs-attention line when this is a new failure (first
             # occurrence, or the error changed) - not on every identical retry, which
@@ -188,7 +200,13 @@ class WorkerPipeline:
                 reason = f"processing failed: {new_error}"
                 self.queue_manager.append_needs_attention(record.url, reason)
             log_context(
-                logger, 40, "processing failed", content_id=record.content_id, error=new_error
+                logger,
+                40,
+                "processing failed",
+                content_id=record.content_id,
+                error=new_error,
+                attempt_count=record.attempt_count,
+                status=record.status.value,
             )
 
         self.queue_manager.update_record(record)
