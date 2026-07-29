@@ -291,3 +291,28 @@ def test_yt_dlp_downloader_passes_cookies_from_browser_when_configured(tmp_path,
 
     assert captured_opts[0]["cookiesfrombrowser"] == ("chrome",)
     assert "cookiefile" not in captured_opts[0]
+
+
+def test_yt_dlp_downloader_clears_stale_files_from_a_previous_failed_attempt(tmp_path, monkeypatch):
+    """Regression test: a retry after a failed download attempt used to write
+    into the same out_dir without clearing it first, so a stale partial file
+    from the earlier failed attempt could be picked up as if it were this
+    attempt's output.
+    """
+    settings = Settings(project_root=tmp_path)
+    out_dir = settings.tmp_dir / "content123"
+    out_dir.mkdir(parents=True)
+    stale_file = out_dir / "audio.wav"  # wrong extension - simulates a partial leftover
+    stale_file.write_bytes(b"stale partial data from a failed attempt")
+
+    def extract_info_impl(url):
+        # Simulate yt-dlp producing this attempt's real output file.
+        (out_dir / "audio.mp3").write_bytes(b"real audio from this attempt")
+        return {"extractor_key": "Fake", "title": "Fake Title", "duration": 12.0}
+
+    _install_fake_yt_dlp(monkeypatch, extract_info_impl=extract_info_impl)
+
+    result = YtDlpDownloader(settings).download("https://www.youtube.com/watch?v=x", "content123")
+
+    assert not stale_file.exists()
+    assert result.media_paths == [str(out_dir / "audio.mp3")]

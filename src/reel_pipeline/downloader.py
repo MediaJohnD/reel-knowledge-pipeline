@@ -40,6 +40,7 @@ for non-Instagram URLs.)
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from typing import Protocol
 from urllib.parse import parse_qs, urlparse
@@ -71,7 +72,13 @@ class YtDlpDownloader:
         from yt_dlp.utils import DownloadError as YtDlpDownloadError
 
         out_dir = self.settings.tmp_dir / content_id
-        out_dir.mkdir(parents=True, exist_ok=True)
+        # Clear any stale/partial files from a previous failed attempt at this same
+        # content_id - download() is only ever called again for an item whose
+        # cached result Task 5's resumability check found incomplete or missing,
+        # so anything already here is leftover junk, never data worth keeping.
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+        out_dir.mkdir(parents=True)
         output_template = str(out_dir / "audio.%(ext)s")
 
         ydl_opts: dict = {
@@ -158,7 +165,9 @@ class GalleryDlDownloader:
         cookie_kind, cookie_value = self.settings.require_instagram_cookies()
 
         out_dir = self.settings.tmp_dir / content_id
-        out_dir.mkdir(parents=True, exist_ok=True)
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+        out_dir.mkdir(parents=True)
 
         command = ["gallery-dl", "--dest", str(out_dir), "--quiet"]
         if cookie_kind == "file":
