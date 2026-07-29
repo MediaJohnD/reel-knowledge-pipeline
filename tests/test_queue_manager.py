@@ -222,3 +222,43 @@ def test_unmatched_domain_still_rejected_with_text_capture_configured(tmp_path):
     registered = qm.sync_queue_file_into_state()
 
     assert registered[0].status == ItemStatus.BLOCKED
+
+
+def test_add_url_waits_for_a_concurrently_held_state_lock_instead_of_racing(tmp_path):
+    """Regression test: add_url() used to do an unlocked load-modify-save, so a
+    webhook arriving while another process held the state.json lock could read a
+    stale snapshot and clobber that process's write. Now it must wait for the
+    lock (briefly) instead of proceeding unguarded.
+    """
+    import threading
+    import time
+
+    from filelock import FileLock
+
+    settings = make_settings(tmp_path)
+    qm = QueueManager(settings)
+    qm.queue_file.write_text("https://www.youtube.com/watch?v=held1\n", encoding="utf-8")
+    qm.sync_queue_file_into_state()  # ensure state.json exists on disk
+
+    lock_path = qm.state_file.with_suffix(".lock")
+    held = threading.Event()
+    release = threading.Event()
+
+    def hold_lock():
+        with FileLock(str(lock_path), timeout=5):
+            held.set()
+            release.wait(timeout=5)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    held.wait(timeout=5)
+
+    start = time.monotonic()
+    release_soon = threading.Timer(0.3, release.set)
+    release_soon.start()
+    qm.add_url("https://www.youtube.com/watch?v=new1", source=QueueSource.WEBHOOK)
+    elapsed = time.monotonic() - start
+
+    holder.join(timeout=5)
+    assert elapsed >= 0.25  # actually waited for the externally-held lock
+    assert len(qm.load_state()) == 2

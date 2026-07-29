@@ -18,11 +18,25 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import TypeVar
+
+from filelock import FileLock
+from filelock import Timeout as FileLockTimeout
 
 from reel_pipeline.config import Settings
 from reel_pipeline.models import ItemStatus, QueueSource, StateRecord
 from reel_pipeline.validators import classify_url_kind, validate_url
+
+_T = TypeVar("_T")
+
+
+class StateLockTimeout(RuntimeError):
+    """Raised when a state.json mutation can't acquire its lock within the
+    timeout - another process is holding it far longer than a single
+    read-modify-write should ever take, which likely means it's stuck.
+    """
 
 
 class QueueManager:
@@ -53,11 +67,35 @@ class QueueManager:
         tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
         os.replace(tmp_path, self.state_file)
 
+    def _locked_mutate(self, mutate_fn: Callable[[dict[str, StateRecord]], _T]) -> _T:
+        """Acquire the cross-process state.json lock briefly, load current state,
+        call mutate_fn(state) to modify it in place, save, and return mutate_fn's
+        result. Every state.json mutation (update_record, add_url,
+        sync_queue_file_into_state) goes through this, so two processes'
+        mutations serialize on the smallest possible critical section instead of
+        one holding the lock for an entire run_once() pass - see worker.py's
+        run_once() docstring for the corruption this prevents, and the design
+        doc's "Locking model" section for why this is scoped this tightly.
+        """
+        lock_path = self.state_file.with_suffix(".lock")
+        try:
+            with FileLock(str(lock_path), timeout=5):
+                state = self.load_state()
+                result = mutate_fn(state)
+                self.save_state(state)
+                return result
+        except FileLockTimeout as exc:
+            raise StateLockTimeout(
+                f"Could not acquire the state.json lock ({lock_path}) within 5s - "
+                "another process appears to be stuck mid-mutation."
+            ) from exc
+
     def update_record(self, record: StateRecord) -> None:
-        state = self.load_state()
-        record.updated_at = datetime.now(UTC)
-        state[record.content_id] = record
-        self.save_state(state)
+        def mutate(state: dict[str, StateRecord]) -> None:
+            record.updated_at = datetime.now(UTC)
+            state[record.content_id] = record
+
+        self._locked_mutate(mutate)
 
     # -- needs-attention.txt ------------------------------------------------------
 
@@ -99,10 +137,11 @@ class QueueManager:
 
     def add_url(self, url: str, source: QueueSource) -> StateRecord:
         """Validate and register a single URL directly into state.json (webhook path)."""
-        state = self.load_state()
-        record = self._register(url, source, state)
-        self.save_state(state)
-        return record
+
+        def mutate(state: dict[str, StateRecord]) -> StateRecord:
+            return self._register(url, source, state)
+
+        return self._locked_mutate(mutate)
 
     def _register(
         self, url: str, source: QueueSource, state: dict[str, StateRecord]
@@ -173,23 +212,23 @@ class QueueManager:
     def sync_queue_file_into_state(self) -> list[StateRecord]:
         """Drain queue.txt into state.json, returning newly-registered records."""
         lines = self.queue_file.read_text(encoding="utf-8").splitlines()
-        state = self.load_state()
         newly_registered: list[StateRecord] = []
         kept_lines: list[str] = []
 
-        for line in lines:
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                kept_lines.append(line)
-                continue
-            before = set(state.keys())
-            record = self._register(stripped, QueueSource.QUEUE_FILE, state)
-            if record.content_id not in before:
-                newly_registered.append(record)
-            # Line is consumed either way: state.json (or needs-attention.txt for
-            # blocked/invalid URLs) is now the durable record of this URL.
+        def mutate(state: dict[str, StateRecord]) -> None:
+            for line in lines:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    kept_lines.append(line)
+                    continue
+                before = set(state.keys())
+                record = self._register(stripped, QueueSource.QUEUE_FILE, state)
+                if record.content_id not in before:
+                    newly_registered.append(record)
+                # Line is consumed either way: state.json (or needs-attention.txt
+                # for blocked/invalid URLs) is now the durable record of this URL.
 
-        self.save_state(state)
+        self._locked_mutate(mutate)
         remaining = "\n".join(kept_lines) + ("\n" if kept_lines else "")
         self.queue_file.write_text(remaining, encoding="utf-8")
         return newly_registered

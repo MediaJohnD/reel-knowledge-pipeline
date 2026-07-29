@@ -5,16 +5,20 @@ Every stage updates state.json before moving to the next, so a crash mid-item
 leaves an accurate `status` behind and the next run_once() will pick the item
 back up via QueueManager.get_actionable_items() (restart-safe, idempotent).
 
-run_once() is guarded by a cross-process file lock (see RunOnceLockError
-below). webhook_server.py's threading.Lock only prevents overlapping
-webhook-triggered runs *within that one long-lived process* - it does
-nothing for a manually-invoked `run-once` CLI call racing against the
-webhook server, or two manual CLI calls racing against each other. Without
-this, concurrent run_once() calls read/mutate/write state.json independently
-via QueueManager.load_state()/save_state(), and the loser's write silently
-clobbers the winner's - observed in practice as a StateRecord field (e.g.
-content_kind) reverting to its default value, or an item being processed
-twice.
+run_once() is guarded by its own cross-process file lock (see RunOnceLockError
+below), held for the entire pass so two run_once() calls (a concurrent CLI
+invocation, or the webhook server's own background run) never process the
+same item twice. webhook_server.py's threading.Lock only prevents overlapping
+webhook-triggered runs *within that one long-lived process* - it does nothing
+for a manually-invoked `run-once` CLI call racing against the webhook server,
+or two manual CLI calls racing against each other; run_once()'s own lock
+covers all of those cases.
+
+Separately, every individual state.json read-modify-write (add_url,
+update_record, sync_queue_file_into_state) goes through
+QueueManager._locked_mutate(), which uses a *different* lock file so that
+webhook registration (add_url()) is never blocked waiting behind an
+in-progress backlog pass - see queue_manager.py.
 """
 
 from __future__ import annotations
@@ -282,22 +286,29 @@ class WorkerPipeline:
                 log_context(logger, 30, "stale tmp sweep failed", path=str(child), error=str(exc))
 
     def run_once(self) -> RunSummary:
-        """Acquires a cross-process lock on state.json before doing any work, so
+        """Acquires a lock (distinct from QueueManager's per-mutation state.json
+        lock - see queue_manager.py's _locked_mutate()) before doing any work, so
         this run_once() can't interleave with another one in a different
         process (a concurrent CLI invocation, or the webhook server's own
         background run) - see this module's docstring for what goes wrong
-        without it. Blocks up to 10 minutes for the lock (a full pass over a
-        large backlog can legitimately take a while); past that, something is
-        very likely stuck rather than just busy, so this raises instead of
-        blocking forever.
+        without it. This lock is deliberately a *different file* than the
+        per-mutation one: run_once() holds this one for the whole pass while
+        internally calling update_record() (via process_item()), which briefly
+        acquires the per-mutation lock on every stage transition - using the
+        same lock file for both would self-deadlock. Blocks up to 10 minutes
+        for the lock (a full pass over a large backlog can legitimately take a
+        while); past that, something is very likely stuck rather than just
+        busy, so this raises instead of blocking forever. add_url() (webhook
+        registration) never touches this lock, only the per-mutation one, so
+        it's never blocked by an in-progress backlog pass.
         """
-        lock_path = self.settings.state_file.with_suffix(".lock")
+        lock_path = self.settings.state_file.with_suffix(".run_once.lock")
         try:
             with FileLock(str(lock_path), timeout=600):
                 return self._run_once_locked()
         except FileLockTimeout as exc:
             raise RunOnceLockError(
-                f"Could not acquire the state.json lock ({lock_path}) within 600s - "
+                f"Could not acquire the run_once() lock ({lock_path}) within 600s - "
                 "another run_once() (this process, another CLI invocation, or the "
                 "webhook server) appears to be stuck rather than just busy."
             ) from exc
