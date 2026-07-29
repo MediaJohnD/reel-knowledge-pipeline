@@ -705,3 +705,129 @@ def test_skill_generation_failure_does_not_undo_a_successful_note(tmp_path):
     assert record.skill_path is None
     assert record.skill_error is not None
     assert "simulated skill generation failure" in record.skill_error
+
+
+def test_note_success_is_persisted_before_skill_generation_runs(tmp_path):
+    """Regression test for Important #1: write_note() success must be durable in
+    state.json BEFORE skill_writer.generate() is attempted, so a crash during the
+    slowest/most kill-prone remaining step (skill generation) doesn't lose an
+    already-completed note-writing success. Uses a spy on update_record() plus a
+    skill_writer that raises, to prove ordering: the DONE-status write must have
+    already happened by the time generate() runs.
+    """
+    settings = make_settings(tmp_path)
+
+    calls: list[str] = []
+
+    class ExplodingSkillWriter:
+        def generate(self, item):
+            calls.append("generate")
+            raise RuntimeError("boom during skill generation")
+
+    queue_manager = QueueManager(settings)
+    original_update_record = queue_manager.update_record
+
+    def spying_update_record(record):
+        if record.status == ItemStatus.DONE:
+            calls.append("update_record(DONE)")
+        return original_update_record(record)
+
+    queue_manager.update_record = spying_update_record  # type: ignore[method-assign]
+
+    pipeline = WorkerPipeline(
+        settings=settings,
+        queue_manager=queue_manager,
+        downloader=FakeDownloader(),
+        transcriber=FakeTranscriber(),
+        image_describer=FakeImageDescriber(),
+        text_fetcher=FakeTextFetcher(),
+        enricher=FakeEnricher(),
+        skill_writer=ExplodingSkillWriter(),
+    )
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=persistfirst1\n", encoding="utf-8"
+    )
+
+    pipeline.run_once()
+
+    assert "update_record(DONE)" in calls
+    assert "generate" in calls
+    assert calls.index("update_record(DONE)") < calls.index("generate")
+
+    (record,) = pipeline.queue_manager.load_state().values()
+    assert record.status == ItemStatus.DONE
+    assert record.note_path is not None
+
+
+def test_transition_to_failed_permanent_appends_needs_attention_even_with_same_error(tmp_path):
+    """Regression test for Important #4: the FAILED -> FAILED_PERMANENT transition
+    must always append a needs-attention line, even when the error message is
+    identical on every attempt (the overwhelmingly common shape of a permanent
+    failure) - otherwise the moment the pipeline gives up on an item never
+    reaches the human-readable log.
+    """
+    settings = make_settings(tmp_path)
+    settings.retry.max_attempts = 2
+    settings.retry.backoff_schedule_minutes = [0, 0]
+    pipeline = build_pipeline(settings, FailingDownloader())
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=givingup1\n", encoding="utf-8"
+    )
+
+    pipeline.run_once()  # attempt 1 -> FAILED, same error logged (first occurrence)
+    pipeline.run_once()  # attempt 2 -> FAILED_PERMANENT, same error text as attempt 1
+
+    (record,) = pipeline.queue_manager.load_state().values()
+    assert record.status == ItemStatus.FAILED_PERMANENT
+
+    needs_attention = pipeline.queue_manager.needs_attention_file.read_text(encoding="utf-8")
+    lines = [line for line in needs_attention.splitlines() if line.strip()]
+    giving_up_lines = [line for line in lines if "giving up" in line]
+    assert len(giving_up_lines) == 1
+    assert "2 attempts" in giving_up_lines[0]
+
+
+def test_add_url_is_not_blocked_by_an_in_progress_run_once(tmp_path):
+    """Regression test proving the headline property Task 3 was built for: add_url()
+    (webhook registration) must stay fast even while a run_once() pass is actively
+    running and holding the separate run_once.lock - it only waits on the much
+    briefer per-mutation state.json lock. Without this, every webhook POST would
+    block for the duration of a whole backlog pass whenever one happened to be
+    running, defeating the purpose of running the worker in the background.
+    """
+    settings = make_settings(tmp_path)
+    shared_downloader = SlowFakeDownloader()
+
+    def build():
+        return WorkerPipeline(
+            settings=settings,
+            queue_manager=QueueManager(settings),
+            downloader=shared_downloader,
+            transcriber=FakeTranscriber(),
+            image_describer=FakeImageDescriber(),
+            text_fetcher=FakeTextFetcher(),
+            enricher=FakeEnricher(),
+            skill_writer=FakeSkillWriter(settings),
+        )
+
+    pipeline = build()
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=slowrun1\n", encoding="utf-8"
+    )
+
+    run_once_thread = threading.Thread(target=pipeline.run_once)
+    run_once_thread.start()
+    time.sleep(0.05)  # give run_once() time to acquire its lock and start downloading
+
+    add_url_qm = QueueManager(settings)
+    start = time.monotonic()
+    add_url_qm.add_url(
+        "https://www.youtube.com/watch?v=addedwhilebusy1", source=QueueSource.WEBHOOK
+    )
+    elapsed = time.monotonic() - start
+
+    run_once_thread.join(timeout=10)
+
+    # SlowFakeDownloader sleeps 0.2s; add_url() must return well under that,
+    # proving it never waited for the whole run_once() pass to finish.
+    assert elapsed < 0.15

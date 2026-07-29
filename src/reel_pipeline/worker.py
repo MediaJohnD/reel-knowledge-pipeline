@@ -194,6 +194,14 @@ class WorkerPipeline:
                 content_id=record.content_id,
                 note_path=str(note_path),
             )
+            # Persist the DONE status now, before attempting skill generation - the
+            # slowest, most kill-prone remaining step. Without this, a crash (hard
+            # kill, OOM, power loss) during skill generation would leave state.json
+            # showing the pre-DONE status, causing the next run_once() to redo the
+            # entire pipeline (download/transcribe/enrich/write) for an item whose
+            # note already exists on disk. See finding Important #1 in the state
+            # reliability final review.
+            self.queue_manager.update_record(record)
 
             # Skill generation is optional and independent of the note's success -
             # its failure must never mark an already-written note as FAILED (that
@@ -233,10 +241,21 @@ class WorkerPipeline:
                     minutes=schedule[backoff_index]
                 )
             record.error = new_error
-            # Only log a fresh needs-attention line when this is a new failure (first
+            # Log a fresh needs-attention line when this is a new failure (first
             # occurrence, or the error changed) - not on every identical retry, which
             # would otherwise grow needs-attention.txt by one line per run-once forever.
-            if new_error != previous_error:
+            # Also always log once on the FAILED -> FAILED_PERMANENT transition, even
+            # if the error text is identical to the previous attempt (the overwhelmingly
+            # common case) - otherwise the moment the pipeline gives up on an item never
+            # reaches the human-readable log at all.
+            just_gave_up = record.status is ItemStatus.FAILED_PERMANENT
+            if just_gave_up:
+                reason = (
+                    f"giving up after {record.attempt_count} attempts (permanent failure): "
+                    f"{new_error}"
+                )
+                self.queue_manager.append_needs_attention(record.url, reason)
+            elif new_error != previous_error:
                 reason = f"processing failed: {new_error}"
                 self.queue_manager.append_needs_attention(record.url, reason)
             log_context(
