@@ -551,6 +551,48 @@ def test_reprocessing_with_a_new_title_removes_the_stale_note_and_skill(tmp_path
     assert second_record.note_path != str(first_note_path)
 
 
+def test_resuming_a_crash_interrupted_item_does_not_redownload_if_media_still_on_disk(tmp_path):
+    """Regression test: process_item() used to always call downloader.download()
+    regardless of the record's last_completed_stage, so a crash after a
+    successful download (e.g. during transcription) re-downloaded on the next
+    run_once() - discarding already-completed, possibly-costly work.
+    """
+    settings = make_settings(tmp_path)
+    downloader = FakeDownloaderWithRealTmpFile(settings)
+    pipeline = build_pipeline(settings, downloader)
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=resume1\n", encoding="utf-8"
+    )
+    pipeline.queue_manager.sync_queue_file_into_state()
+    (record,) = pipeline.queue_manager.load_state().values()
+
+    # Simulate a crash right after a successful download: the media file exists
+    # on disk and last_completed_stage reflects it, but status never advanced
+    # past DOWNLOADING (the crash happened before the next update_record() call).
+    from reel_pipeline.models import ItemStage
+
+    media_path = settings.tmp_dir / record.content_id / "audio.mp3"
+    media_path.parent.mkdir(parents=True, exist_ok=True)
+    media_path.write_bytes(b"pre-existing audio from a completed download")
+    record.status = ItemStatus.DOWNLOADING
+    record.last_completed_stage = ItemStage.DOWNLOADED
+    pipeline.queue_manager.update_record(record)
+
+    class CountingDownloader:
+        def __init__(self):
+            self.calls = 0
+
+        def download(self, url, content_id):
+            self.calls += 1
+            raise AssertionError("download() should not be called - media already on disk")
+
+    pipeline.downloader = CountingDownloader()
+
+    result = pipeline.process_item(record)
+
+    assert result.status == ItemStatus.DONE
+
+
 class SlowFakeDownloader:
     """Sleeps mid-download and tracks concurrent entries - lets a test prove
     two run_once() calls never overlap inside the locked section, regardless

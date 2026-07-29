@@ -40,7 +40,9 @@ from reel_pipeline.image_describer import ImageDescriber, get_image_describer
 from reel_pipeline.logging_setup import get_logger, log_context
 from reel_pipeline.models import (
     ContentItem,
+    DownloadResult,
     EnrichmentResult,
+    ItemStage,
     ItemStatus,
     MediaType,
     StateRecord,
@@ -114,12 +116,31 @@ class WorkerPipeline:
                 record.status = ItemStatus.TRANSCRIBING
                 self.queue_manager.update_record(record)
             else:
-                record.status = ItemStatus.DOWNLOADING
-                self.queue_manager.update_record(record)
-                download_result = self.downloader.download(record.url, record.content_id)
-                log_context(
-                    logger, 20, "downloaded", content_id=record.content_id, url=record.url
-                )
+                cached_result = self._cached_download_result(record.content_id)
+                if (
+                    record.last_completed_stage
+                    in (
+                        ItemStage.DOWNLOADED,
+                        ItemStage.TRANSCRIBED,
+                        ItemStage.ENRICHED,
+                    )
+                    and cached_result is not None
+                ):
+                    download_result = cached_result
+                    log_context(
+                        logger,
+                        20,
+                        "reusing cached download from a previous attempt",
+                        content_id=record.content_id,
+                    )
+                else:
+                    record.status = ItemStatus.DOWNLOADING
+                    self.queue_manager.update_record(record)
+                    download_result = self.downloader.download(record.url, record.content_id)
+                    record.last_completed_stage = ItemStage.DOWNLOADED
+                    log_context(
+                        logger, 20, "downloaded", content_id=record.content_id, url=record.url
+                    )
 
                 record.status = ItemStatus.TRANSCRIBING
                 self.queue_manager.update_record(record)
@@ -211,6 +232,40 @@ class WorkerPipeline:
 
         self.queue_manager.update_record(record)
         return record
+
+    def _cached_download_result(self, content_id: str) -> DownloadResult | None:
+        """Returns a DownloadResult reconstructed from files still present in
+        data/tmp/<content_id>/, or None if the directory is empty/missing (e.g.
+        _sweep_stale_tmp_dirs() already reclaimed it, or this is a fresh item).
+        Only media_paths/media_type are reconstructable this way - platform/
+        source_title/duration_seconds are lost on resume, which is fine since
+        nothing downstream of the download stage consumes them.
+        """
+        tmp_dir = self.settings.tmp_dir / content_id
+        if not tmp_dir.is_dir():
+            return None
+        files = sorted(p for p in tmp_dir.rglob("*") if p.is_file())
+        if not files:
+            return None
+        video_suffixes = (".mp3", ".mp4", ".mov", ".webm", ".mkv", ".m4a", ".wav")
+        image_suffixes = (".jpg", ".jpeg", ".png", ".webp")
+        videos = [p for p in files if p.suffix.lower() in video_suffixes]
+        if videos:
+            return DownloadResult(
+                content_id=content_id,
+                media_type=MediaType.VIDEO,
+                media_paths=[str(p) for p in videos],
+                platform="cached",
+            )
+        images = [p for p in files if p.suffix.lower() in image_suffixes]
+        if images:
+            return DownloadResult(
+                content_id=content_id,
+                media_type=MediaType.IMAGE,
+                media_paths=[str(p) for p in images],
+                platform="cached",
+            )
+        return None
 
     def _transcribe_media_paths(
         self, media_paths: list[Path], content_id: str
