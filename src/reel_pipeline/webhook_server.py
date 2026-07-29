@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hmac
 import threading
+from datetime import UTC, datetime
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
@@ -232,14 +233,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # background run_once() for it would be a guaranteed no-op, and reporting
         # accepted=True would falsely tell the caller their re-submission (the
         # natural recovery action for a permanently-failed URL) did something.
-        if record.status.value not in ("done", "blocked", "failed_permanent"):
+        #
+        # A FAILED record still waiting out its retry backoff (next_retry_at in
+        # the future) is the same situation, just temporary: get_actionable_items()
+        # filters it out too until the backoff elapses, so scheduling a
+        # background run_once() now would be an equally guaranteed no-op. The
+        # resubmission is still accepted=True (the item isn't dead, unlike
+        # failed_permanent) but `reason` says so instead of silently doing nothing.
+        still_in_backoff = (
+            record.status is ItemStatus.FAILED
+            and record.next_retry_at is not None
+            and record.next_retry_at > datetime.now(UTC)
+        )
+        if record.status.value not in ("done", "blocked", "failed_permanent") and not still_in_backoff:
             background_tasks.add_task(_run_worker_in_background, settings)
+
+        reason = record.error
+        if still_in_backoff:
+            reason = (
+                f"still waiting on retry backoff until {record.next_retry_at.isoformat()} "
+                f"(last error: {record.error})"
+            )
 
         return WebhookResponse(
             accepted=record.status.value not in ("blocked", "failed_permanent"),
             content_id=record.content_id,
             status=record.status.value,
-            reason=record.error,
+            reason=reason,
         )
 
     return app

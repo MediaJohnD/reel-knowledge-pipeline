@@ -205,3 +205,80 @@ def test_webhook_rejects_resubmission_of_a_failed_permanent_url(tmp_path, monkey
     assert body["accepted"] is False
     assert body["status"] == "failed_permanent"
     assert scheduled == []  # no background run_once() scheduled for a dead end
+
+
+def test_webhook_resubmission_of_a_failed_item_still_in_backoff_does_not_schedule_a_run(
+    tmp_path, monkeypatch
+):
+    """A FAILED item whose next_retry_at hasn't elapsed yet is filtered out by
+    get_actionable_items(), so scheduling a background run_once() for it is a
+    guaranteed no-op. The resubmission is still accepted (the item isn't
+    dead, unlike failed_permanent) but no wasted background task should run.
+    """
+    from datetime import timedelta
+
+    settings = make_settings(tmp_path)
+    url = "https://www.youtube.com/watch?v=backoffweb1"
+    qm = QueueManager(settings)
+    record = qm.add_url(url, source=QueueSource.QUEUE_FILE)
+    record.status = ItemStatus.FAILED
+    record.error = "transient failure"
+    record.attempt_count = 1
+    record.next_retry_at = datetime.now(UTC) + timedelta(minutes=30)
+    qm.update_record(record)
+
+    scheduled = []
+    monkeypatch.setattr(
+        webhook_server, "_run_worker_in_background", lambda settings: scheduled.append(True)
+    )
+
+    client = TestClient(create_app(settings))
+    response = client.post(
+        "/webhook",
+        json={"url": url},
+        headers={"X-Webhook-Secret": "test-secret-123"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["accepted"] is True
+    assert body["status"] == "failed"
+    assert "backoff" in (body["reason"] or "").lower()
+    assert scheduled == []  # no-op background run avoided
+
+
+def test_webhook_resubmission_of_a_failed_item_past_backoff_schedules_a_run(
+    tmp_path, monkeypatch
+):
+    """Once next_retry_at has elapsed, get_actionable_items() would pick the
+    item up anyway - a resubmission arriving after that point should still
+    schedule a background run_once() rather than making the caller wait for
+    the next unrelated trigger.
+    """
+    from datetime import timedelta
+
+    settings = make_settings(tmp_path)
+    url = "https://www.youtube.com/watch?v=backoffweb2"
+    qm = QueueManager(settings)
+    record = qm.add_url(url, source=QueueSource.QUEUE_FILE)
+    record.status = ItemStatus.FAILED
+    record.error = "transient failure"
+    record.attempt_count = 1
+    record.next_retry_at = datetime.now(UTC) - timedelta(minutes=1)
+    qm.update_record(record)
+
+    scheduled = []
+    monkeypatch.setattr(
+        webhook_server, "_run_worker_in_background", lambda settings: scheduled.append(True)
+    )
+
+    client = TestClient(create_app(settings))
+    response = client.post(
+        "/webhook",
+        json={"url": url},
+        headers={"X-Webhook-Secret": "test-secret-123"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] is True
+    assert scheduled == [True]
