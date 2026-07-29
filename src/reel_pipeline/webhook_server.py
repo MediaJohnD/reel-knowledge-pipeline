@@ -178,9 +178,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # otherwise look identical to "healthy" from this endpoint alone.
         state = QueueManager(settings).load_state()
         records = state.values()
-        failed_count = sum(1 for r in records if r.status is ItemStatus.FAILED)
+        # FAILED_PERMANENT items must count toward failed_count (they're a failure,
+        # just one the pipeline has stopped retrying) and must NOT count toward
+        # queue_depth - they're terminal, like DONE/BLOCKED, not still-in-progress.
+        # Without this, exhausted-retry items would silently under-report as
+        # "failed" while permanently inflating queue_depth, since they can never
+        # become DONE/BLOCKED and thus never drain.
+        failed_count = sum(
+            1 for r in records if r.status in (ItemStatus.FAILED, ItemStatus.FAILED_PERMANENT)
+        )
         queue_depth = sum(
-            1 for r in records if r.status not in (ItemStatus.DONE, ItemStatus.BLOCKED)
+            1
+            for r in records
+            if r.status not in (ItemStatus.DONE, ItemStatus.BLOCKED, ItemStatus.FAILED_PERMANENT)
         )
         done_times = [r.updated_at for r in records if r.status is ItemStatus.DONE]
         last_success_at = max(done_times).isoformat() if done_times else None
@@ -217,11 +227,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             status=record.status.value,
         )
 
-        if record.status.value not in ("done", "blocked"):
+        # done/blocked/failed_permanent are all terminal - get_actionable_items()
+        # filters failed_permanent out just like done/blocked, so scheduling a
+        # background run_once() for it would be a guaranteed no-op, and reporting
+        # accepted=True would falsely tell the caller their re-submission (the
+        # natural recovery action for a permanently-failed URL) did something.
+        if record.status.value not in ("done", "blocked", "failed_permanent"):
             background_tasks.add_task(_run_worker_in_background, settings)
 
         return WebhookResponse(
-            accepted=record.status.value != "blocked",
+            accepted=record.status.value not in ("blocked", "failed_permanent"),
             content_id=record.content_id,
             status=record.status.value,
             reason=record.error,

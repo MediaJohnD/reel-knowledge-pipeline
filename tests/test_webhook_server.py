@@ -65,6 +65,40 @@ def test_healthz_reports_queue_depth_failed_count_and_last_success(tmp_path):
     assert body["last_success_at"] == now.isoformat()
 
 
+def test_healthz_counts_failed_permanent_as_failed_and_excludes_it_from_queue_depth(tmp_path):
+    """Regression test for Important #2: FAILED_PERMANENT items must be counted
+    in failed_count (they are a failure, just one the pipeline stopped retrying)
+    and must NOT inflate queue_depth (they're terminal, like DONE/BLOCKED, and
+    will never drain since get_actionable_items() filters them out forever).
+    """
+    settings = make_settings(tmp_path)
+    qm = QueueManager(settings)
+    now = datetime.now(UTC)
+    qm.save_state(
+        {
+            "permfail1": StateRecord(
+                content_id="permfail1", url="https://youtube.com/4",
+                normalized_url="https://youtube.com/4",
+                source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED_PERMANENT,
+                added_at=now, updated_at=now,
+            ),
+            "pending1": StateRecord(
+                content_id="pending1", url="https://youtube.com/3",
+                normalized_url="https://youtube.com/3",
+                source=QueueSource.QUEUE_FILE, status=ItemStatus.PENDING,
+                added_at=now, updated_at=now,
+            ),
+        }
+    )
+    client = TestClient(create_app(settings))
+
+    response = client.get("/healthz")
+
+    body = response.json()
+    assert body["failed_count"] == 1  # permfail1
+    assert body["queue_depth"] == 1  # pending1 only - permfail1 is terminal
+
+
 def test_index_serves_form_page_without_embedding_secret(tmp_path):
     client = TestClient(create_app(make_settings(tmp_path)))
 
@@ -138,3 +172,36 @@ def test_concurrent_background_triggers_never_run_worker_concurrently(tmp_path, 
 
     assert max_concurrent == 1  # never ran two run_once() calls at the same time
     assert run_count == 2  # but t2's trigger still caused a drain pass, not silently lost
+
+
+def test_webhook_rejects_resubmission_of_a_failed_permanent_url(tmp_path, monkeypatch):
+    """Regression test for Important #3: re-submitting a URL that's already
+    FAILED_PERMANENT must report accepted=False (not falsely claim success) and
+    must NOT schedule a background run_once() (get_actionable_items() filters
+    failed_permanent out, so it would be a guaranteed no-op).
+    """
+    settings = make_settings(tmp_path)
+    url = "https://www.youtube.com/watch?v=permfailweb1"
+    qm = QueueManager(settings)
+    record = qm.add_url(url, source=QueueSource.QUEUE_FILE)
+    record.status = ItemStatus.FAILED_PERMANENT
+    record.error = "simulated permanent failure"
+    qm.update_record(record)
+
+    scheduled = []
+    monkeypatch.setattr(
+        webhook_server, "_run_worker_in_background", lambda settings: scheduled.append(True)
+    )
+
+    client = TestClient(create_app(settings))
+    response = client.post(
+        "/webhook",
+        json={"url": url},
+        headers={"X-Webhook-Secret": "test-secret-123"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["accepted"] is False
+    assert body["status"] == "failed_permanent"
+    assert scheduled == []  # no background run_once() scheduled for a dead end
