@@ -593,6 +593,162 @@ def test_resuming_a_crash_interrupted_item_does_not_redownload_if_media_still_on
     assert result.status == ItemStatus.DONE
 
 
+def test_resuming_a_crash_interrupted_item_does_not_retranscribe_if_transcript_cached(tmp_path):
+    """Regression test: a crash after a successful transcription (e.g. during
+    enrichment) used to redo transcription on the next run_once() even though
+    last_completed_stage was never actually advanced past DOWNLOADED - there
+    was no cached transcript artifact to resume from. Now the transcript is
+    cached alongside the download, so a resume from TRANSCRIBED skips both
+    the download and the transcription call.
+    """
+    settings = make_settings(tmp_path)
+    downloader = FakeDownloaderWithRealTmpFile(settings)
+    pipeline = build_pipeline(settings, downloader)
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=resumetranscribed1\n", encoding="utf-8"
+    )
+    pipeline.queue_manager.sync_queue_file_into_state()
+    (record,) = pipeline.queue_manager.load_state().values()
+
+    from reel_pipeline.models import ItemStage, TranscriptResult
+
+    tmp_dir = settings.tmp_dir / record.content_id
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_dir / "transcript.json").write_text(
+        TranscriptResult(
+            content_id=record.content_id,
+            text="Cached transcript from a completed prior attempt.",
+            backend="fake",
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    record.status = ItemStatus.TRANSCRIBING
+    record.last_completed_stage = ItemStage.TRANSCRIBED
+    pipeline.queue_manager.update_record(record)
+
+    class CountingTranscriber:
+        def __init__(self):
+            self.calls = 0
+
+        def transcribe(self, media_path, content_id):
+            self.calls += 1
+            raise AssertionError("transcribe() should not be called - transcript already cached")
+
+    class CountingDownloader:
+        def download(self, url, content_id):
+            raise AssertionError("download() should not be called - transcript already cached")
+
+    pipeline.downloader = CountingDownloader()
+    pipeline.transcriber = CountingTranscriber()
+
+    result = pipeline.process_item(record)
+
+    assert result.status == ItemStatus.DONE
+
+
+def test_resuming_a_crash_interrupted_item_does_not_reenrich_if_enrichment_cached(tmp_path):
+    """Same rationale as the transcript-caching test, one stage further: a
+    crash after a successful enrichment (e.g. during note writing) should not
+    redo the LLM enrichment call on the next run_once().
+    """
+    settings = make_settings(tmp_path)
+    downloader = FakeDownloaderWithRealTmpFile(settings)
+    pipeline = build_pipeline(settings, downloader)
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=resumeenriched1\n", encoding="utf-8"
+    )
+    pipeline.queue_manager.sync_queue_file_into_state()
+    (record,) = pipeline.queue_manager.load_state().values()
+
+    from reel_pipeline.models import EnrichmentResult, ItemStage, TranscriptResult
+
+    tmp_dir = settings.tmp_dir / record.content_id
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_dir / "transcript.json").write_text(
+        TranscriptResult(
+            content_id=record.content_id,
+            text="Cached transcript from a completed prior attempt.",
+            backend="fake",
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    (tmp_dir / "enrichment.json").write_text(
+        EnrichmentResult(
+            title="Cached Title",
+            summary="Cached summary.",
+            tags=["cached"],
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    record.status = ItemStatus.ENRICHING
+    record.last_completed_stage = ItemStage.ENRICHED
+    pipeline.queue_manager.update_record(record)
+
+    class CountingEnricher:
+        def enrich(self, transcript, source_url):
+            raise AssertionError("enrich() should not be called - enrichment already cached")
+
+    class CountingDownloader:
+        def download(self, url, content_id):
+            raise AssertionError("download() should not be called - enrichment already cached")
+
+    class CountingTranscriber:
+        def transcribe(self, media_path, content_id):
+            raise AssertionError("transcribe() should not be called - enrichment already cached")
+
+    pipeline.downloader = CountingDownloader()
+    pipeline.transcriber = CountingTranscriber()
+    pipeline.enricher = CountingEnricher()
+
+    result = pipeline.process_item(record)
+
+    assert result.status == ItemStatus.DONE
+    (final_record,) = pipeline.queue_manager.load_state().values()
+    assert final_record.note_path is not None
+    assert "Cached Title" in Path(final_record.note_path).read_text(encoding="utf-8")
+
+
+def test_missing_cached_transcript_falls_back_to_redownload_not_just_retranscribe(tmp_path):
+    """If last_completed_stage says TRANSCRIBED but the transcript cache file is
+    gone (e.g. data/tmp/ was cleaned) and the download cache is also gone,
+    process_item must fall all the way back to redownloading - trusting the
+    stage marker alone without a matching artifact would crash instead.
+    """
+    settings = make_settings(tmp_path)
+
+    class OneShotDownloader:
+        def __init__(self):
+            self.calls = 0
+
+        def download(self, url, content_id):
+            self.calls += 1
+            return DownloadResult(
+                content_id=content_id,
+                media_type=MediaType.VIDEO,
+                media_paths=[f"/fake/{content_id}.mp3"],
+                platform="youtube",
+            )
+
+    downloader = OneShotDownloader()
+    pipeline = build_pipeline(settings, downloader)
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=fallback1\n", encoding="utf-8"
+    )
+    pipeline.queue_manager.sync_queue_file_into_state()
+    (record,) = pipeline.queue_manager.load_state().values()
+
+    from reel_pipeline.models import ItemStage
+
+    record.status = ItemStatus.TRANSCRIBING
+    record.last_completed_stage = ItemStage.TRANSCRIBED
+    pipeline.queue_manager.update_record(record)
+
+    result = pipeline.process_item(record)
+
+    assert result.status == ItemStatus.DONE
+    assert downloader.calls == 1
+
+
 class SlowFakeDownloader:
     """Sleeps mid-download and tracks concurrent entries - lets a test prove
     two run_once() calls never overlap inside the locked section, regardless

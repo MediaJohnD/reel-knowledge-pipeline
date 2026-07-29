@@ -245,11 +245,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             and record.next_retry_at is not None
             and record.next_retry_at > datetime.now(UTC)
         )
-        if record.status.value not in ("done", "blocked", "failed_permanent") and not still_in_backoff:
+        now_actionable = (
+            record.status.value not in ("done", "blocked", "failed_permanent")
+            and not still_in_backoff
+        )
+        if now_actionable:
             background_tasks.add_task(_run_worker_in_background, settings)
 
         reason = record.error
-        if still_in_backoff:
+        if still_in_backoff and record.next_retry_at is not None:
             reason = (
                 f"still waiting on retry backoff until {record.next_retry_at.isoformat()} "
                 f"(last error: {record.error})"

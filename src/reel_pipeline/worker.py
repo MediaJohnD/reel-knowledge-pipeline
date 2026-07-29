@@ -106,17 +106,60 @@ class WorkerPipeline:
 
     def process_item(self, record: StateRecord) -> StateRecord:
         try:
-            if record.content_kind == "text":
+            transcript: TranscriptResult | None = None
+            enrichment: EnrichmentResult | None = None
+            download_result: DownloadResult | None = None
+
+            cached_transcript = (
+                self._cached_transcript_result(record.content_id)
+                if record.last_completed_stage is not None
+                else None
+            )
+            cached_enrichment = (
+                self._cached_enrichment_result(record.content_id)
+                if record.last_completed_stage is not None
+                else None
+            )
+
+            if (
+                record.last_completed_stage is ItemStage.ENRICHED
+                and cached_transcript is not None
+                and cached_enrichment is not None
+            ):
+                transcript = cached_transcript
+                enrichment = cached_enrichment
+                log_context(
+                    logger,
+                    20,
+                    "reusing cached enrichment from a previous attempt",
+                    content_id=record.content_id,
+                )
+            elif (
+                record.last_completed_stage in (ItemStage.TRANSCRIBED, ItemStage.ENRICHED)
+                and cached_transcript is not None
+            ):
+                transcript = cached_transcript
+                log_context(
+                    logger,
+                    20,
+                    "reusing cached transcript from a previous attempt",
+                    content_id=record.content_id,
+                )
+            elif record.content_kind == "text":
                 record.status = ItemStatus.DOWNLOADING
                 self.queue_manager.update_record(record)
                 transcript = self.text_fetcher.fetch(record.url, record.content_id)
                 log_context(
                     logger, 20, "text captured", content_id=record.content_id, url=record.url
                 )
-                record.status = ItemStatus.TRANSCRIBING
-                self.queue_manager.update_record(record)
+                self._write_transcript_cache(record.content_id, transcript)
+                record.last_completed_stage = ItemStage.TRANSCRIBED
             else:
-                cached_result = self._cached_download_result(record.content_id)
+                cached_download = (
+                    self._cached_download_result(record.content_id)
+                    if record.last_completed_stage is not None
+                    else None
+                )
                 if (
                     record.last_completed_stage
                     in (
@@ -124,9 +167,9 @@ class WorkerPipeline:
                         ItemStage.TRANSCRIBED,
                         ItemStage.ENRICHED,
                     )
-                    and cached_result is not None
+                    and cached_download is not None
                 ):
-                    download_result = cached_result
+                    download_result = cached_download
                     log_context(
                         logger,
                         20,
@@ -142,6 +185,10 @@ class WorkerPipeline:
                         logger, 20, "downloaded", content_id=record.content_id, url=record.url
                     )
 
+            if transcript is None:
+                # transcript is only still None here via the media (non-text) branch
+                # above, which always assigns download_result before falling through.
+                assert download_result is not None
                 record.status = ItemStatus.TRANSCRIBING
                 self.queue_manager.update_record(record)
                 media_paths = [Path(p) for p in download_result.media_paths]
@@ -149,6 +196,8 @@ class WorkerPipeline:
                     transcript = self.image_describer.describe(media_paths, record.content_id)
                 else:
                     transcript = self._transcribe_media_paths(media_paths, record.content_id)
+                self._write_transcript_cache(record.content_id, transcript)
+                record.last_completed_stage = ItemStage.TRANSCRIBED
                 log_context(
                     logger,
                     20,
@@ -157,16 +206,19 @@ class WorkerPipeline:
                     media_type=download_result.media_type.value,
                 )
 
-            record.status = ItemStatus.ENRICHING
-            self.queue_manager.update_record(record)
-            enrichment = self.enricher.enrich(transcript, record.url)
-            log_context(
-                logger,
-                20,
-                "enriched",
-                content_id=record.content_id,
-                high_signal=enrichment.high_signal,
-            )
+            if enrichment is None:
+                record.status = ItemStatus.ENRICHING
+                self.queue_manager.update_record(record)
+                enrichment = self.enricher.enrich(transcript, record.url)
+                self._write_enrichment_cache(record.content_id, enrichment)
+                record.last_completed_stage = ItemStage.ENRICHED
+                log_context(
+                    logger,
+                    20,
+                    "enriched",
+                    content_id=record.content_id,
+                    high_signal=enrichment.high_signal,
+                )
 
             record.status = ItemStatus.WRITING_NOTE
             self.queue_manager.update_record(record)
@@ -311,6 +363,44 @@ class WorkerPipeline:
                 platform="cached",
             )
         return None
+
+    def _cached_transcript_result(self, content_id: str) -> TranscriptResult | None:
+        """Returns a TranscriptResult cached under data/tmp/<content_id>/ by a
+        previous attempt, or None if missing/unreadable. Mirrors
+        _cached_download_result's "trust but verify" pattern: last_completed_stage
+        alone is never enough - the artifact must actually still be present.
+        """
+        path = self.settings.tmp_dir / content_id / "transcript.json"
+        if not path.is_file():
+            return None
+        try:
+            return TranscriptResult.model_validate_json(path.read_text(encoding="utf-8"))
+        except ValueError:
+            return None
+
+    def _write_transcript_cache(self, content_id: str, transcript: TranscriptResult) -> None:
+        tmp_dir = self.settings.tmp_dir / content_id
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        (tmp_dir / "transcript.json").write_text(
+            transcript.model_dump_json(), encoding="utf-8"
+        )
+
+    def _cached_enrichment_result(self, content_id: str) -> EnrichmentResult | None:
+        """Same rationale as _cached_transcript_result, for the enrichment stage."""
+        path = self.settings.tmp_dir / content_id / "enrichment.json"
+        if not path.is_file():
+            return None
+        try:
+            return EnrichmentResult.model_validate_json(path.read_text(encoding="utf-8"))
+        except ValueError:
+            return None
+
+    def _write_enrichment_cache(self, content_id: str, enrichment: EnrichmentResult) -> None:
+        tmp_dir = self.settings.tmp_dir / content_id
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        (tmp_dir / "enrichment.json").write_text(
+            enrichment.model_dump_json(), encoding="utf-8"
+        )
 
     def _transcribe_media_paths(
         self, media_paths: list[Path], content_id: str
