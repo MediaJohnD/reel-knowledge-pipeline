@@ -123,7 +123,8 @@ re-runs the same CLI command.
    `REEL_VAULT_DIR`) is created/overwritten, and `status` becomes `done`.
 5. On failure at any stage: `status` becomes `failed`, the error is recorded
    in `state.json`, and a line is appended to `needs-attention.txt`. The item
-   stays actionable, so the **next** `run-once` will retry it automatically.
+   stays actionable and is retried on a capped exponential backoff schedule -
+   see the retry behavior note below for details.
 
 ## Guardrails you should know about
 
@@ -140,10 +141,15 @@ re-runs the same CLI command.
   still applies before raising the volume.
 - **Never commit `.env`** (or any cookies file). Only `.env.example`
   (placeholders) is versioned.
-- **Retries are unbounded.** A `failed` item is retried on every subsequent
-  `run-once` until it succeeds or you manually edit `state.json`. For
-  persistent failures (e.g. a permanently dead URL), remove its entry from
-  `state.json` or fix the underlying cause.
+- **Retries are capped with exponential backoff.** A `failed` item is retried
+  on subsequent `run-once` passes only after its backoff delay has elapsed,
+  following `config/settings.yaml`'s `retry.backoff_schedule_minutes` (default
+  `[1, 5, 30, 120, 480]` minutes, indexed by attempt number). After
+  `retry.max_attempts` failed attempts (default `5`), the item's status
+  becomes `failed_permanent` and `run-once` stops picking it up automatically.
+  To retry a `failed_permanent` item, fix the underlying cause and manually
+  reset its status (or remove its entry) in `state.json`. Tune either setting
+  in `config/settings.yaml`'s `retry:` block.
 - **`needs-attention.txt` only gets a new line when a failure is new** (first
   occurrence, or the error message changed) - repeated retries of the same
   failure don't add duplicate lines.

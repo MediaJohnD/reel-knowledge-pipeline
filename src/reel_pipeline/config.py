@@ -110,8 +110,14 @@ class MaintenanceConfig(BaseModel):
 class RetryConfig(BaseModel):
     # Exponential backoff in minutes, indexed by (attempt_count - 1); clamped to
     # the last entry once attempt_count exceeds the schedule's length (only
-    # possible if max_attempts > len(backoff_schedule_minutes)).
-    backoff_schedule_minutes: list[int] = Field(default_factory=lambda: [1, 5, 30, 120, 480])
+    # possible if max_attempts > len(backoff_schedule_minutes)). min_length=1 is
+    # required: worker.py computes schedule[min(attempt_count, len(schedule)) - 1],
+    # which would raise IndexError on an empty list - inside the exception handler
+    # itself, aborting the whole run_once() pass instead of just failing the one
+    # item. Catch the misconfiguration at config-load time instead.
+    backoff_schedule_minutes: list[int] = Field(
+        default_factory=lambda: [1, 5, 30, 120, 480], min_length=1
+    )
     # After this many failed attempts, an item's status becomes FAILED_PERMANENT
     # instead of FAILED, so run_once() stops retrying it automatically.
     max_attempts: int = 5
