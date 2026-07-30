@@ -31,6 +31,15 @@ def test_normalize_url_strips_mibextid_gclid_and_mailchimp_params():
     )
 
 
+def test_normalize_url_strips_youtube_share_id():
+    """Regression test: the same YouTube video, shared twice with different
+    iOS share-sheet 'is' identifiers, produced two different content_ids for
+    identical content and was ingested as two duplicate notes."""
+    assert normalize_url("https://youtu.be/vJEy3nP2_C8?is=1BPVF-kZhr8DII5d") == normalize_url(
+        "https://youtu.be/vJEy3nP2_C8?is=91J3tJQZAnXszpcn"
+    )
+
+
 def make_settings(tmp_path, allowed, blocked=None) -> Settings:
     return Settings(
         project_root=tmp_path,

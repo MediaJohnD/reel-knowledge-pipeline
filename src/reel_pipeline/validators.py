@@ -37,6 +37,7 @@ _STRIP_QUERY_PARAMS = {
     "gclid",
     "mc_cid",
     "mc_eid",
+    "is",
 }
 
 
