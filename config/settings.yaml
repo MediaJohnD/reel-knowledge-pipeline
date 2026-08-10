@@ -22,35 +22,44 @@ transcription:
   local_model_size: base
   openai_model: whisper-1
 
-# LLM used for enrichment and skill generation. "ollama" runs fully locally (no
-# API key, no cost) against an already-running Ollama instance with the model
-# below already pulled (`ollama pull qwen2.5:14b`). Switch to "anthropic" (and
-# set ANTHROPIC_API_KEY in .env) for hosted Claude instead.
+# LLM used for enrichment and skill generation. "cerebras" is free (1M tokens/day)
+# and far faster than local Ollama inference - switched here 2026-08-09 because
+# qwen3:14b enrichment on this machine's GPU was the pipeline's actual bottleneck.
+# Model is gpt-oss-120b (OpenAI open-weight, non-Chinese-origin - see CLAUDE.md's
+# Chinese provider blocklist; Cerebras itself is a US company but also hosts
+# Chinese-origin models like Qwen3-235B, which this deliberately avoids).
+# "ollama" runs fully locally (no API key, no cost, slower) against an
+# already-running Ollama instance with the model already pulled. Switch to
+# "anthropic" (set ANTHROPIC_API_KEY) for hosted Claude instead.
 llm:
-  provider: ollama # anthropic | ollama
+  provider: cerebras # anthropic | ollama | groq | gemini | cerebras
   ollama_host: http://localhost:11434
   # Ollama defaults to a 4096-token context regardless of the model's real
   # capacity; long transcripts or multi-image carousels can exceed that.
   ollama_num_ctx: 16384
 
 enrichment:
-  # Model name meaning depends on llm.provider above - an Ollama model tag here,
-  # or an Anthropic model id (e.g. claude-sonnet-5) if provider is "anthropic".
-  model: qwen2.5:14b
+  # Model name meaning depends on llm.provider above - a Cerebras/Groq model id
+  # here, an Ollama model tag, an Anthropic model id, or a Gemini model id.
+  model: gpt-oss-120b
   max_tokens: 4096
 
 skill_writer:
-  model: qwen2.5:14b
+  model: gpt-oss-120b
   max_tokens: 2048
   enabled: true
 
 # Photo posts / carousels (no video) are described by a vision-capable model
 # instead of transcribed. Must support image input - check `ollama list` for a
-# "vision" capability tag, or any current Claude model if llm.provider is
-# "anthropic".
+# "vision" capability tag, or any current Claude model if provider is "anthropic".
+# provider pinned to "ollama" explicitly: llm.provider above is "cerebras" for
+# text enrichment, but Cerebras has no vision path (see llm_client.describe_images) -
+# without this override, photo/carousel posts would fail with "vision-incapable
+# llm provider" instead of using the local vision model that's already working.
 image_description:
   model: mistral-small3.1
   max_tokens: 1024
+  provider: ollama
 
 # Platforms the downloader will attempt. Anything not matched here is rejected up
 # front rather than attempted. Instagram is handled by gallery-dl (downloader.py's
@@ -88,13 +97,17 @@ download:
 
 # Non-media knowledge sources - routed to TextFetcher (fetch + extract text)
 # instead of Downloader (yt-dlp/gallery-dl). Public links only - no OAuth/API
-# keys. See docs/runbook.md's "GitHub and Notion text capture" section and
-# docs/superpowers/specs/2026-07-16-text-capture-ingestion-design.md.
+# keys, no JS execution (not browser automation). As of 2026-08-10 this is a
+# catch-all: any http(s) URL not matched by download.allowed_domains above
+# routes here by default (see validators.classify_url_kind()) - the point is
+# to capture whatever knowledge/topic the user finds interesting, not just an
+# enumerated platform list. blocked_domains is the escape hatch for the rare
+# domain that should be excluded. See docs/runbook.md's "GitHub and Notion
+# text capture" section and
+# docs/superpowers/specs/2026-07-16-text-capture-ingestion-design.md for the
+# original (now superseded) scoped-allow-list design.
 text_capture:
-  allowed_domains:
-    - github.com
-    - notion.so
-    - notion.site
+  blocked_domains: []
 
 webhook:
   host: 127.0.0.1

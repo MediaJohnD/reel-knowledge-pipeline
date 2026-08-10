@@ -51,7 +51,7 @@ class TranscriptionConfig(BaseModel):
 
 
 class LlmConfig(BaseModel):
-    provider: str = "anthropic"  # "anthropic" | "ollama" | "groq" | "gemini"
+    provider: str = "anthropic"  # "anthropic" | "ollama" | "groq" | "gemini" | "cerebras"
     ollama_host: str = "http://localhost:11434"
     # Ollama defaults every request to a 4096-token context window regardless of
     # the model's actual capacity, silently truncating (or, for vision requests,
@@ -80,6 +80,12 @@ class ImageDescriptionConfig(BaseModel):
     # Claude model (all support image input) when llm.provider is "anthropic".
     model: str = "mistral-small3.1"
     max_tokens: int = 1024
+    # Vision only works on "ollama" or "anthropic" (describe_images() in
+    # llm_client.py) - Groq/Gemini/Cerebras have no vision path wired in here.
+    # Defaults to null, meaning "use llm.provider" - only set this when
+    # llm.provider is switched to something vision-incapable (e.g. cerebras)
+    # so image/carousel posts keep working on ollama instead of erroring.
+    provider: str | None = None
 
 
 class DownloadConfig(BaseModel):
@@ -88,10 +94,10 @@ class DownloadConfig(BaseModel):
 
 
 class TextCaptureConfig(BaseModel):
-    # Domains routed to TextFetcher instead of Downloader - see validators.classify_url_kind().
-    # Kept deliberately separate from download.allowed_domains: these aren't media
-    # platforms, and mixing the two lists would make classify_url_kind() ambiguous.
-    allowed_domains: list[str] = Field(default_factory=list)
+    # Any http(s) URL not matched by download.allowed_domains routes to
+    # TextFetcher by default (see validators.classify_url_kind()) - this list is
+    # only for explicitly excluding a domain from that catch-all.
+    blocked_domains: list[str] = Field(default_factory=list)
 
 
 class WebhookConfig(BaseModel):
@@ -160,6 +166,7 @@ class Settings(BaseModel):
     openai_api_key: str | None = None
     groq_api_key: str | None = None
     gemini_api_key: str | None = None
+    cerebras_api_key: str | None = None
 
     # Instagram requires an authenticated session to download reliably (see
     # docs/runbook.md). Treated like a secret - a cookies file/browser choice is as
@@ -261,6 +268,14 @@ class Settings(BaseModel):
                 "before running enrichment or skill generation with llm.provider: gemini."
             )
         return self.gemini_api_key
+
+    def require_cerebras_api_key(self) -> str:
+        if not self.cerebras_api_key:
+            raise RuntimeError(
+                "CEREBRAS_API_KEY is not set. Set it in your environment or .env "
+                "before running enrichment or skill generation with llm.provider: cerebras."
+            )
+        return self.cerebras_api_key
 
     def require_instagram_cookies(self) -> tuple[str, str]:
         """Returns (kind, value): ("file", path) or ("browser", browser_name)."""
@@ -370,6 +385,7 @@ def load_settings(
         openai_api_key=env.get("OPENAI_API_KEY") or None,
         groq_api_key=env.get("GROQ_API_KEY") or None,
         gemini_api_key=env.get("GEMINI_API_KEY") or None,
+        cerebras_api_key=env.get("CEREBRAS_API_KEY") or None,
         instagram_cookies_file=env.get("REEL_INSTAGRAM_COOKIES_FILE") or None,
         instagram_cookies_browser=env.get("REEL_INSTAGRAM_COOKIES_BROWSER") or None,
         ytdlp_cookies_file=env.get("REEL_YTDLP_COOKIES_FILE") or None,

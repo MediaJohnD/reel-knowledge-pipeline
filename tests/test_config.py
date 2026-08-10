@@ -142,9 +142,7 @@ def test_resolved_paths_are_absolute_under_project_root(tmp_path):
 def test_loads_text_capture_defaults_from_settings_yaml():
     settings = load_settings(config_path=DEFAULT_SETTINGS_PATH, env={})
 
-    assert "github.com" in settings.text_capture.allowed_domains
-    assert "notion.so" in settings.text_capture.allowed_domains
-    assert "notion.site" in settings.text_capture.allowed_domains
+    assert settings.text_capture.blocked_domains == []
     assert settings.enrich_text_capture_prompt.name == "enrich_text_capture.md"
 
 

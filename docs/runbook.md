@@ -268,23 +268,37 @@ can fix. If LinkedIn support matters enough to unblock, the options are
 tracking/contributing to yt-dlp's own group-post support, or capturing that
 one post manually.
 
-## GitHub and Notion text capture
+## Text capture (GitHub, and any other non-media URL)
 
-GitHub repo/file links and public Notion pages are captured as text instead
-of downloaded as media - no setup needed, since both use public-only access:
+Any URL that isn't a recognized media platform (`download.allowed_domains`)
+is captured as text instead of downloaded as media - no setup needed, since
+this only ever does an unauthenticated, no-JS HTTP GET:
 
 - **GitHub**: uses GitHub's public REST API, unauthenticated (60 requests/hour,
   2 calls per URL - comfortably enough for personal sharing volume). Works for
   any public repo, either the repo root or a link to one specific file
   (`.../blob/<branch>/<path>`).
-- **Notion**: fetches the public share-page URL directly and extracts the main
-  text content. Only works for pages actually shared as "public" (Notion's
-  "Share to web" toggle) - a private/workspace-only page will fail with a
-  clear "not public" error rather than silently producing an empty note.
+- **Notion** (`notion.so`/`notion.site`/`notion.com`): calls Notion's own
+  internal JSON API directly (the same API its web client uses) instead of
+  fetching HTML - Notion's frontend ships zero content server-side for any
+  page, so a plain HTTP GET can never work here regardless of the page being
+  public. Works for any public page whose share link includes a page id
+  (the standard `.../Some-Title-<id>` shape); a bare custom-subdomain root
+  link with no id in the path isn't supported yet. Unofficial/undocumented
+  API - could break if Notion changes it. See
+  `docs/superpowers/specs/2026-08-10-notion-api-text-capture-design.md`.
+- **Everything else** (Google Docs, Airtable, blog posts, GitHub Pages,
+  personal knowledge links, ...): fetches the page directly and extracts the
+  main text content with `trafilatura`. Only works for pages that actually
+  render their content server-side - a client-rendered app shell (common on
+  Airtable and similar SPA-heavy sites) or a private/login-gated page fails
+  with a clear "produced no usable text" error rather than silently producing
+  an empty or boilerplate note.
 
-Neither requires any environment variable or credential. Airtable links are
-not supported (see `docs/architecture.md`'s Safety guardrails section for why)
-and continue to route to `needs-attention.txt`.
+None of this requires an environment variable or credential. As of 2026-08-10
+this is a catch-all by default (see `CLAUDE.md`'s 2026-08-10 entry) -
+`text_capture.blocked_domains` in `config/settings.yaml` is the escape hatch
+for excluding a specific domain.
 
 ## Remote ingestion via Tailscale + iOS Shortcut
 

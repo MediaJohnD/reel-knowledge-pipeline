@@ -6,7 +6,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from reel_pipeline.config import DownloadConfig, MaintenanceConfig, Settings, TextCaptureConfig
+from reel_pipeline.config import DownloadConfig, MaintenanceConfig, Settings
 from reel_pipeline.models import (
     DownloadResult,
     EnrichmentResult,
@@ -456,7 +456,6 @@ def test_text_capture_item_routes_to_text_fetcher_not_downloader(tmp_path):
     settings = Settings(
         project_root=tmp_path,
         download=DownloadConfig(allowed_domains=["youtube.com"]),
-        text_capture=TextCaptureConfig(allowed_domains=["github.com"]),
     )
     # FailingDownloader (defined earlier in this file) raises on any call - if the
     # worker mistakenly routed this text item through Downloader, the item would

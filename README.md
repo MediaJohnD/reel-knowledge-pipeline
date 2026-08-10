@@ -174,10 +174,12 @@ docs/                    architecture, runbook, acceptance tests
   anonymously. See `docs/runbook.md`'s per-platform setup sections before
   enabling any of these, and reconsider the tradeoff before raising volume if
   you fork this for a different use case.
-- **Text capture is separate from media download.** GitHub repos/files and
-  public Notion pages are fetched via a plain HTTP GET + public REST API (no
-  OAuth, no API keys, no browser automation), governed by its own
-  `text_capture.allowed_domains` list.
+- **Text capture is separate from media download, and open by default.** Any
+  URL that isn't a media platform is fetched as plain text via a public REST
+  API (GitHub) or a plain HTTP GET + `trafilatura` extraction (everything
+  else) — no OAuth, no API keys, no browser automation, no JS execution.
+  `text_capture.blocked_domains` is the escape hatch for excluding a specific
+  domain from that default.
 - **Secrets never live in config.** `config/settings.yaml` is safe to commit
   and never contains a secret; everything sensitive (webhook secret, LLM API
   keys, cookie file paths) is read from the environment via `.env` (never

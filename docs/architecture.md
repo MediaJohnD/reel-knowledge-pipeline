@@ -41,7 +41,7 @@ identical regardless of which branch produced the text.
 | `downloader.py` | Media download - dispatches Instagram to gallery-dl (cookie-authenticated), everything else (YouTube, Facebook, LinkedIn, TikTok, X, Vimeo, Google Drive) to yt-dlp, optionally cookie-authenticated. Detects photo-only posts and returns `media_type=IMAGE` with all carousel image paths |
 | `transcriber.py` | Pluggable transcription backends (local faster-whisper / OpenAI API) - video/audio only |
 | `image_describer.py` | Turns photo posts/carousels into a text description via a vision-capable LLM (`config/prompts/describe_image_post.md`), producing the same `TranscriptResult` shape as `transcriber.py` |
-| `text_fetcher.py` | Text-content capture for non-media sources - GitHub (public REST API: repo metadata + README, or a specific file for a `blob/` URL) and public Notion pages (plain HTTP GET + `trafilatura` extraction, no JS execution). Produces the same `TranscriptResult` shape `transcriber.py`/`image_describer.py` do |
+| `text_fetcher.py` | Text-content capture for non-media sources - GitHub (public REST API: repo metadata + README, or a specific file for a `blob/` URL), Notion (its own internal JSON API, `loadPageChunk` - see below), everything else via plain HTTP GET + `trafilatura` extraction (no JS execution). Produces the same `TranscriptResult` shape `transcriber.py`/`image_describer.py` do |
 | `enricher.py` | Calls an LLM (via `llm_client.py`) with `config/prompts/enrich_transcript.md`, parses `EnrichmentResult` |
 | `obsidian_writer.py` | Deterministic markdown note writer |
 | `skill_writer.py` | Conditional `SKILL.md` generator for high-signal content |
@@ -140,13 +140,24 @@ or webhook - converges on `state.json` before any processing begins, so:
   properties (Docs, Sheets, Photos, Search). YouTube/TikTok/X/Vimeo stay
   anonymous. See `docs/runbook.md` and the research note in the Obsidian vault
   (`20-Resources/Tools/`).
-- GitHub and public Notion pages are captured as text via a separate,
-  public-links-only path (`text_capture.allowed_domains`, disjoint from
-  `download.allowed_domains`) - no OAuth, no API keys, no browser automation.
-  Airtable was evaluated and excluded: its public share views are JS-rendered
-  React apps, which would require actual browser automation to scrape - a
-  hard no per this file's first guardrail above. See
-  `docs/superpowers/specs/2026-07-16-text-capture-ingestion-design.md`.
+- Any URL not matched by `download.allowed_domains` is captured as text via a
+  separate, public-links-only path (GitHub's REST API for `github.com`,
+  Notion's own internal JSON API for `notion.so`/`notion.site`/`notion.com`,
+  plain HTTP GET + `trafilatura` extraction for everything else) - no OAuth,
+  no API keys, no browser automation, no JS execution. As of 2026-08-10 this
+  is a catch-all (`classify_url_kind()` in `validators.py`), not an
+  enumerated allow-list - see `CLAUDE.md`'s 2026-08-10 entry for why. Notion
+  specifically needed its own fetcher (`NotionFetcher`) rather than the
+  generic path: Notion's frontend ships zero content in server-sent HTML for
+  any page, so `trafilatura` can never extract anything from it regardless of
+  domain policy - see `CLAUDE.md`'s Notion entry and
+  `docs/superpowers/specs/2026-08-10-notion-api-text-capture-design.md`. A
+  page that's a JS-rendered app shell with no server-side content and no
+  equivalent API to call directly still fails cleanly with a clear error
+  rather than falling back to browser automation - a hard no per this file's
+  first guardrail above. See
+  `docs/superpowers/specs/2026-07-16-text-capture-ingestion-design.md` for the
+  original scoped-allow-list design this superseded.
 - Secrets (`ANTHROPIC_API_KEY`, `REEL_WEBHOOK_SECRET`, `OPENAI_API_KEY`,
   Instagram/yt-dlp cookies) are only ever read from the environment / `.env` -
   never from `config/settings.yaml`, never hardcoded.

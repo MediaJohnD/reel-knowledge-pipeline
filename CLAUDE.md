@@ -37,16 +37,42 @@ The system supports:
   Facebook/LinkedIn. `validate_url` in `validators.py` matches `allowed_domains` against the
   full host, not a reduced two-label domain, specifically so a subdomain entry like this one
   doesn't accidentally open the whole parent domain.
-- Text-capture ingestion (GitHub repos/files, public Notion pages) is enabled as of
-  2026-07-16, scoped to `github.com`, `notion.so`, and `notion.site` in
-  `text_capture.allowed_domains` - a separate allow-list from `download.allowed_domains`,
-  since these aren't media platforms and go through `text_fetcher.py` (GitHub's public
-  REST API, plain HTTP GET + `trafilatura` extraction for Notion) instead of
-  yt-dlp/gallery-dl. Public links only - no OAuth or API keys, matching the project's
-  no-account-automation posture. Airtable was explicitly evaluated and excluded: its
-  public share views require JS execution to render real content, which conflicts with
-  the no-browser-automation rule above. See
-  `docs/superpowers/specs/2026-07-16-text-capture-ingestion-design.md`.
+- Text-capture ingestion (`text_fetcher.py`: GitHub's public REST API, or plain HTTP GET +
+  `trafilatura` extraction for everything else) was introduced 2026-07-16 as a scoped
+  allow-list (`github.com`, `notion.so`, `notion.site`), then broadened piece by piece as
+  specific public-doc hosts (`docs.google.com`, `airtable.com`, `findarepo.com`,
+  `thefounderos.com`) turned out to have the same low-risk profile - a plain unauthenticated
+  GET with no JS execution, same as any RSS reader. As of 2026-08-10, at the project owner's
+  explicit direction (personal knowledge/ADHD-management vault - "not just Reels and YouTube
+  Shorts... any knowledge or topics I find interesting"), text-capture is a **catch-all**:
+  `classify_url_kind()` in `validators.py` routes any http(s) URL not matched by
+  `download.allowed_domains` to the text-capture path by default, unless it's listed in
+  `text_capture.blocked_domains` (empty by default). This does not touch the media
+  (yt-dlp/gallery-dl) allow-list above, which stays scoped - only the no-auth, no-JS text
+  path was opened up, since per-domain enumeration there was pure friction with no real
+  safety benefit (the risk profile is identical for every domain: an outbound GET to a URL
+  the user themself submitted). See
+  `docs/superpowers/specs/2026-07-16-text-capture-ingestion-design.md` for the original
+  (now superseded) scoped-allow-list rationale.
+- Notion pages (`notion.so`/`notion.site`/`notion.com`) get a dedicated `NotionFetcher` as
+  of 2026-08-10, instead of falling through to the generic HTML fetcher. Reason: Notion's
+  current frontend ships zero page content in the server-sent HTML for *any* page, public
+  or private - confirmed by direct inspection, not an assumption - so `trafilatura` can
+  never extract anything from a Notion URL no matter how permissive the domain policy is.
+  `NotionFetcher` instead calls Notion's own internal JSON API (`POST
+  https://app.notion.com/api/v3/loadPageChunk`) directly over plain HTTP - the same API
+  call Notion's own web client makes, just called without rendering a page around it. No
+  browser, no JS execution, no credentials for public pages; this does **not** touch the
+  "no browser automation, ever" guardrail above (a headless-browser fallback was
+  considered and explicitly rejected in favor of this - see
+  `docs/superpowers/specs/2026-08-10-notion-api-text-capture-design.md`). The endpoint is
+  unofficial/undocumented (reverse-engineered by the open-source community, e.g.
+  `react-notion-x`) and could change or break without notice - an accepted tradeoff,
+  since Notion has no official public read API for pages the requester doesn't own.
+  Known v1 gaps, documented rather than silently wrong: no pagination past the first
+  100-block chunk, linked-database rows aren't expanded (noted by title only), and a bare
+  custom-subdomain root URL with no page id in the path (as opposed to the standard
+  `.../Some-Title-<id>` share-link shape) isn't resolvable.
 - Any `download.blocked_domains` entries are still enforced up front - blocked URLs route
   to `data/inbox/needs-attention.txt`, never downloaded.
 - Treat any other third-party account automation as out of scope unless explicitly requested.

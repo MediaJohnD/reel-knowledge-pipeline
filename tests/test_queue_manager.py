@@ -21,7 +21,7 @@ def make_settings_with_text_capture(tmp_path) -> Settings:
     return Settings(
         project_root=tmp_path,
         download=DownloadConfig(allowed_domains=["youtube.com"], blocked_domains=["instagram.com"]),
-        text_capture=TextCaptureConfig(allowed_domains=["github.com"]),
+        text_capture=TextCaptureConfig(blocked_domains=["evil.example.com"]),
     )
 
 
@@ -397,10 +397,25 @@ def test_youtube_url_registers_with_media_content_kind(tmp_path):
     assert registered[0].content_kind == "media"
 
 
-def test_unmatched_domain_still_rejected_with_text_capture_configured(tmp_path):
+def test_unenumerated_domain_registers_as_text_by_default(tmp_path):
+    """2026-08-10 catch-all policy: an arbitrary knowledge-source domain is
+    text-capture by default, not rejected, as long as it isn't explicitly
+    blocked - see CLAUDE.md's 2026-08-10 entry.
+    """
     settings = make_settings_with_text_capture(tmp_path)
     qm = QueueManager(settings)
     qm.queue_file.write_text("https://airtable.com/base/abc\n", encoding="utf-8")
+
+    registered = qm.sync_queue_file_into_state()
+
+    assert registered[0].status == ItemStatus.PENDING
+    assert registered[0].content_kind == "text"
+
+
+def test_blocked_text_capture_domain_still_rejected(tmp_path):
+    settings = make_settings_with_text_capture(tmp_path)
+    qm = QueueManager(settings)
+    qm.queue_file.write_text("https://evil.example.com/base/abc\n", encoding="utf-8")
 
     registered = qm.sync_queue_file_into_state()
 

@@ -9,6 +9,7 @@ that content_id reaches a terminal state in state.json.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -149,19 +150,42 @@ def _matches_any(host: str, domains: list[str]) -> bool:
 def classify_url_kind(url: str, settings: Settings) -> Literal["media", "text"] | None:
     """Which pipeline a URL belongs in, checked before any download/fetch attempt.
 
-    Returns None if the host matches neither allow-list - the caller (QueueManager)
-    falls through to today's existing "not in the configured allow-list" rejection.
-    The two allow-lists are expected to stay disjoint (no domain in both) since the
-    platforms don't overlap in practice; "media" wins as a defensive tie-break if
-    that assumption is ever violated, so behavior stays deterministic either way.
+    "media" (yt-dlp/gallery-dl) stays allow-list gated - it's the higher-risk
+    path this project's no-browser-automation posture is protecting. "text"
+    (plain HTTP GET + trafilatura, no JS, no auth) is the catch-all default for
+    everything else: any knowledge/topic URL the user submits, not just an
+    enumerated set of platforms - see CLAUDE.md's 2026-08-10 entry. Excluded
+    from that catch-all: settings.text_capture.blocked_domains, malformed URLs
+    (this function is also reached for URLs validate_url() already rejected
+    for other reasons - it must not silently launder those into "text"), and
+    hosts that are a literal loopback/private/link-local IP, which the old
+    allow-list made unreachable but the catch-all otherwise would not (e.g.
+    "http://127.0.0.1:11434/" hitting this machine's own Ollama).
+    # ponytail: literal-IP check only - a hostname that *resolves* to a
+    # private address (DNS rebinding) isn't caught without an actual DNS
+    # lookup here. Single-user tool ingesting URLs the owner themselves
+    # submits, so accepted as a real but low-priority gap; revisit if this
+    # pipeline ever takes URLs from an untrusted submitter.
     """
     parsed = urlparse(url.strip())
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+        return None
     host = parsed.netloc.split(":")[0].lower()
     if host.startswith("www."):
         host = host[len("www.") :]
 
     if _matches_any(host, settings.download.allowed_domains):
         return "media"
-    if _matches_any(host, settings.text_capture.allowed_domains):
-        return "text"
-    return None
+    if _matches_any(host, settings.text_capture.blocked_domains):
+        return None
+    if host == "localhost" or _is_private_or_local_ip(host):
+        return None
+    return "text"
+
+
+def _is_private_or_local_ip(host: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast

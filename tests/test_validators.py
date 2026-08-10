@@ -82,31 +82,61 @@ def test_bare_domain_allow_entry_permits_all_subdomains(tmp_path):
 
 def test_classify_url_kind_media_domain(tmp_path):
     settings = make_settings(tmp_path, allowed=["youtube.com"])
-    settings.text_capture.allowed_domains = ["github.com"]
 
     assert classify_url_kind("https://youtube.com/watch?v=abc", settings) == "media"
 
 
 def test_classify_url_kind_text_domain(tmp_path):
     settings = make_settings(tmp_path, allowed=["youtube.com"])
-    settings.text_capture.allowed_domains = ["github.com"]
 
     assert classify_url_kind("https://github.com/owner/repo", settings) == "text"
 
 
-def test_classify_url_kind_unmatched_domain_returns_none(tmp_path):
+def test_classify_url_kind_unenumerated_domain_defaults_to_text(tmp_path):
+    """As of 2026-08-10, text-capture is a catch-all: any domain not matched
+    to the media allow-list (and not explicitly blocked) is text by default -
+    not just an enumerated platform list. See CLAUDE.md's 2026-08-10 entry.
+    """
     settings = make_settings(tmp_path, allowed=["youtube.com"])
-    settings.text_capture.allowed_domains = ["github.com"]
+
+    assert classify_url_kind("https://airtable.com/base/abc", settings) == "text"
+
+
+def test_classify_url_kind_blocked_text_domain_returns_none(tmp_path):
+    settings = make_settings(tmp_path, allowed=["youtube.com"])
+    settings.text_capture.blocked_domains = ["airtable.com"]
 
     assert classify_url_kind("https://airtable.com/base/abc", settings) is None
 
 
+def test_classify_url_kind_rejects_malformed_url_instead_of_defaulting_to_text(tmp_path):
+    """The catch-all default must not launder a non-http(s)/no-host URL
+    (that validate_url() already rejected) into "text".
+    """
+    settings = make_settings(tmp_path, allowed=["youtube.com"])
+
+    assert classify_url_kind("not a url", settings) is None
+    assert classify_url_kind("ftp://example.com/file", settings) is None
+
+
+def test_classify_url_kind_rejects_loopback_and_private_ip_targets(tmp_path):
+    """The catch-all default must not turn into an SSRF vector against this
+    machine's own services (e.g. Ollama on 127.0.0.1) or the local network.
+    """
+    settings = make_settings(tmp_path, allowed=["youtube.com"])
+
+    assert classify_url_kind("http://127.0.0.1:11434/", settings) is None
+    assert classify_url_kind("http://localhost:11434/", settings) is None
+    assert classify_url_kind("http://192.168.1.1/admin", settings) is None
+    assert classify_url_kind("http://169.254.169.254/latest/meta-data/", settings) is None
+
+
 def test_classify_url_kind_prefers_media_on_overlap(tmp_path):
     """Documented tie-break (see validators.py) for the defensive case where a
-    domain is misconfigured into both lists - should not happen in practice
-    since the platforms don't overlap, but the precedence must be deterministic.
+    domain is misconfigured into both media and text-capture-blocked lists -
+    should not happen in practice, but the precedence must be deterministic.
     """
     settings = make_settings(tmp_path, allowed=["example.com"])
-    settings.text_capture.allowed_domains = ["example.com"]
+    settings.text_capture.blocked_domains = ["example.com"]
 
     assert classify_url_kind("https://example.com/x", settings) == "media"
