@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Protocol
 from urllib.parse import parse_qs, urlparse
 
@@ -138,6 +139,62 @@ _VIDEO_SUFFIXES = (".mp4", ".mov", ".webm", ".mkv")
 _IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
 
 
+def _video_has_audio_stream(path: Path) -> bool:
+    """Instagram sometimes serves what displays as a static photo as a
+    silent .mp4 (a "motion photo"/near-static clip) rather than a real jpg -
+    downloader.py used to classify any .mp4 as MediaType.VIDEO purely by file
+    extension, sending these to Transcriber, which then fails outright
+    ("no audio track") since faster-whisper has nothing to transcribe. ffprobe
+    (ships alongside ffmpeg, already a documented required system dependency
+    for yt-dlp's audio postprocessing - see docs/runbook.md) tells us up
+    front whether a stream actually exists to transcribe.
+    """
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed argv, no shell, path is our own download
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a",
+                "-show_entries",
+                "stream=index",
+                "-of",
+                "csv=p=0",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # ffprobe missing/broken - fall back to today's behavior (assume it's
+        # a real video) rather than silently misrouting on a probe failure.
+        return True
+    return result.returncode == 0 and result.stdout.strip() != ""
+
+
+def _extract_first_frame(video_path: Path) -> Path:
+    """Extracts a single representative frame from a silent video so it can
+    go through the vision (image-description) path instead of transcription.
+    Raises DownloadError on failure rather than silently dropping the item.
+    """
+    frame_path = video_path.with_suffix(".frame.jpg")
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed argv, no shell, path is our own download
+            ["ffmpeg", "-y", "-i", str(video_path), "-frames:v", "1", str(frame_path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DownloadError(f"ffmpeg failed to extract a frame from {video_path}: {exc}") from exc
+    if result.returncode != 0 or not frame_path.exists():
+        detail = result.stderr.strip()
+        raise DownloadError(f"ffmpeg failed to extract a frame from {video_path}: {detail}")
+    return frame_path
+
+
 def _parse_img_index(url: str) -> int | None:
     """Instagram URLs that deep-link into one item of a carousel carry a 0-based
     "?img_index=N" query param - e.g. a URL pointing at the 8th of 9 clips. Returns
@@ -197,7 +254,18 @@ class GalleryDlDownloader:
             raise DownloadError(f"gallery-dl failed to download {url!r}: {detail}")
 
         all_files = sorted(p for p in out_dir.rglob("*") if p.is_file())
-        videos = [p for p in all_files if p.suffix.lower() in _VIDEO_SUFFIXES]
+        all_videos = [p for p in all_files if p.suffix.lower() in _VIDEO_SUFFIXES]
+        images = [p for p in all_files if p.suffix.lower() in _IMAGE_SUFFIXES]
+
+        videos = [p for p in all_videos if _video_has_audio_stream(p)]
+        silent_videos = [p for p in all_videos if p not in videos]
+        if silent_videos:
+            # A silent "video" (no audio track) has nothing for Transcriber to
+            # transcribe - it's effectively a photo, so route it through the
+            # vision path like any other image instead (see
+            # _video_has_audio_stream's docstring for why this happens).
+            images += [_extract_first_frame(p) for p in silent_videos]
+
         if videos:
             # Keep every downloaded video, not just the first - a multi-video carousel
             # (no img_index, or a range that still matched several files) used to have
@@ -211,9 +279,9 @@ class GalleryDlDownloader:
                 platform="instagram",
             )
 
-        images = [p for p in all_files if p.suffix.lower() in _IMAGE_SUFFIXES]
         if images:
-            # A photo post or multi-image carousel, in gallery-dl's download order.
+            # A photo post or multi-image carousel, in gallery-dl's download
+            # order (silent-video frames extracted above are appended after).
             return DownloadResult(
                 content_id=content_id,
                 media_type=MediaType.IMAGE,

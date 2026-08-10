@@ -114,10 +114,14 @@ def test_gallery_dl_downloader_detects_video_over_images(tmp_path, monkeypatch):
     out_dir = settings.tmp_dir / content_id
 
     def fake_run(command, **kwargs):
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "post_1.jpg").write_bytes(b"fake-jpg")
-        (out_dir / "post.mp4").write_bytes(b"fake-mp4")
-        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "gallery-dl":
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "post_1.jpg").write_bytes(b"fake-jpg")
+            (out_dir / "post.mp4").write_bytes(b"fake-mp4")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "ffprobe":
+            return subprocess.CompletedProcess(command, 0, stdout="0\n", stderr="")
+        pytest.fail(f"unexpected subprocess call in this test: {command}")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
@@ -152,17 +156,90 @@ def test_gallery_dl_downloader_detects_image_carousel(tmp_path, monkeypatch):
     ]
 
 
+def test_gallery_dl_downloader_routes_silent_video_to_image_path(tmp_path, monkeypatch):
+    """A "photo" post Instagram actually serves as a silent .mp4 (a
+    "motion photo") used to be classified as MediaType.VIDEO purely by file
+    extension, sending it to Transcriber, which then fails outright since
+    faster-whisper has nothing to transcribe. It should be treated as an
+    image instead: a frame extracted and routed through the vision path.
+    """
+    settings = Settings(project_root=tmp_path, instagram_cookies_browser="chrome")
+    content_id = "cid-silent-video"
+    out_dir = settings.tmp_dir / content_id
+    frame_path = out_dir / "post.frame.jpg"
+
+    def fake_run(command, **kwargs):
+        if command[0] == "gallery-dl":
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "post.mp4").write_bytes(b"fake-silent-mp4")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "ffprobe":
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "ffmpeg":
+            frame_path.write_bytes(b"fake-extracted-frame")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        pytest.fail(f"unexpected subprocess call in this test: {command}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = GalleryDlDownloader(settings).download("https://www.instagram.com/p/abc/", content_id)
+
+    assert result.media_type is MediaType.IMAGE
+    assert result.media_paths == [str(frame_path)]
+
+
+def test_gallery_dl_downloader_ignores_silent_video_when_a_real_video_exists(
+    tmp_path, monkeypatch
+):
+    """A carousel with both a real (audio) video and a silent one keeps the
+    binary VIDEO-vs-IMAGE split today's design already has - the whole post
+    is VIDEO, using only the real video path. See _video_has_audio_stream's
+    docstring for why a silent "video" shouldn't count as one on its own.
+    """
+    settings = Settings(project_root=tmp_path, instagram_cookies_browser="chrome")
+    content_id = "cid-mixed-video"
+    out_dir = settings.tmp_dir / content_id
+
+    def fake_run(command, **kwargs):
+        if command[0] == "gallery-dl":
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "post_1.mp4").write_bytes(b"fake-real-mp4")
+            (out_dir / "post_2.mp4").write_bytes(b"fake-silent-mp4")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "ffprobe":
+            has_audio = "post_1.mp4" in command[-1]
+            return subprocess.CompletedProcess(
+                command, 0, stdout="0\n" if has_audio else "", stderr=""
+            )
+        if command[0] == "ffmpeg":
+            frame_path = out_dir / "post_2.frame.jpg"
+            frame_path.write_bytes(b"fake-frame")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        pytest.fail(f"unexpected subprocess call in this test: {command}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = GalleryDlDownloader(settings).download("https://www.instagram.com/p/abc/", content_id)
+
+    assert result.media_type is MediaType.VIDEO
+    assert result.media_paths == [str(out_dir / "post_1.mp4")]
+
+
 def test_gallery_dl_downloader_keeps_all_videos_in_multi_video_carousel(tmp_path, monkeypatch):
     settings = Settings(project_root=tmp_path, instagram_cookies_browser="chrome")
     content_id = "cid-multi-video"
     out_dir = settings.tmp_dir / content_id
 
     def fake_run(command, **kwargs):
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "post_1.mp4").write_bytes(b"fake-mp4-1")
-        (out_dir / "post_2.mp4").write_bytes(b"fake-mp4-2")
-        (out_dir / "post_3.mp4").write_bytes(b"fake-mp4-3")
-        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "gallery-dl":
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "post_1.mp4").write_bytes(b"fake-mp4-1")
+            (out_dir / "post_2.mp4").write_bytes(b"fake-mp4-2")
+            (out_dir / "post_3.mp4").write_bytes(b"fake-mp4-3")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "ffprobe":
+            return subprocess.CompletedProcess(command, 0, stdout="0\n", stderr="")
+        pytest.fail(f"unexpected subprocess call in this test: {command}")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
@@ -183,10 +260,14 @@ def test_gallery_dl_downloader_passes_range_for_img_index(tmp_path, monkeypatch)
     captured_command = []
 
     def fake_run(command, **kwargs):
-        captured_command.extend(command)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "post_8.mp4").write_bytes(b"fake-mp4")
-        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "gallery-dl":
+            captured_command.extend(command)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "post_8.mp4").write_bytes(b"fake-mp4")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "ffprobe":
+            return subprocess.CompletedProcess(command, 0, stdout="0\n", stderr="")
+        pytest.fail(f"unexpected subprocess call in this test: {command}")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
@@ -206,10 +287,14 @@ def test_gallery_dl_downloader_omits_range_without_img_index(tmp_path, monkeypat
     captured_command = []
 
     def fake_run(command, **kwargs):
-        captured_command.extend(command)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "post_1.mp4").write_bytes(b"fake-mp4")
-        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "gallery-dl":
+            captured_command.extend(command)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "post_1.mp4").write_bytes(b"fake-mp4")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if command[0] == "ffprobe":
+            return subprocess.CompletedProcess(command, 0, stdout="0\n", stderr="")
+        pytest.fail(f"unexpected subprocess call in this test: {command}")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
