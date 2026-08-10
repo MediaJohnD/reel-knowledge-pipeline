@@ -14,8 +14,8 @@ dependencies = [
     "fastapi>=0.111",
     "uvicorn>=0.30",
     "yt-dlp>=2024.8.6",
-    "gallery-dl>=1.30",
-    "trafilatura>=1.12",
+    "gallery-dl>=1.32.9",
+    "trafilatura>=2.2.0",
     "filelock>=3.13",
 ]
 
@@ -30,7 +30,7 @@ dev = [
     "pytest>=8.0",
     "pytest-mock>=3.14",
     "respx>=0.21",
-    "ruff>=0.6",
+    "ruff>=0.16.2",
     "pyright>=1.1",
     # Starlette 1.0's TestClient prefers httpx2 over httpx; without it every
     # webhook_server test emits a StarletteDeprecationWarning (harmless today,
