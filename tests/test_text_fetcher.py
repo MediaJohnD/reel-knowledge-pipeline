@@ -9,11 +9,25 @@ import respx
 from reel_pipeline.config import Settings
 from reel_pipeline.text_fetcher import (
     DispatchingTextFetcher,
+    GenericHtmlFetcher,
     GitHubFetcher,
     NotionFetcher,
     TextFetchError,
     get_text_fetcher,
 )
+
+
+def _notion_block(block_id, block_type, title=None, content=None):
+    value = {"id": block_id, "type": block_type}
+    if title is not None:
+        value["properties"] = {"title": title}
+    if content is not None:
+        value["content"] = content
+    return {"value": {"value": value}}
+
+
+def _notion_load_page_chunk_response(blocks: dict) -> dict:
+    return {"cursor": {"stack": []}, "recordMap": {"block": blocks}}
 
 
 def _readme_response(content: str) -> dict:
@@ -213,12 +227,14 @@ def test_notion_fetcher_extracts_main_text(tmp_path):
         return_value=httpx.Response(200, text=_NOTION_PAGE_HTML)
     )
 
-    result = NotionFetcher(settings).fetch("https://www.notion.so/Project-Notes-abc123", "cid5")
+    result = GenericHtmlFetcher(settings).fetch(
+        "https://www.notion.so/Project-Notes-abc123", "cid5"
+    )
 
     assert "onboarding process" in result.text
     assert "clone the repo" in result.text
     assert result.content_kind == "text"
-    assert result.backend == "notion-fetch"
+    assert result.backend == "html-fetch"
 
 
 @respx.mock
@@ -229,7 +245,7 @@ def test_notion_fetcher_raises_clear_error_when_extraction_is_empty(tmp_path):
     )
 
     with pytest.raises(TextFetchError, match="not public|empty|login"):
-        NotionFetcher(settings).fetch("https://www.notion.so/Private-Page-xyz", "cid6")
+        GenericHtmlFetcher(settings).fetch("https://www.notion.so/Private-Page-xyz", "cid6")
 
 
 @respx.mock
@@ -245,7 +261,7 @@ def test_notion_fetcher_raises_clear_error_for_js_rendered_app_shell(tmp_path):
     )
 
     with pytest.raises(TextFetchError, match="client-side"):
-        NotionFetcher(settings).fetch("https://roadmap.notion.site/", "cid-js-shell")
+        GenericHtmlFetcher(settings).fetch("https://roadmap.notion.site/", "cid-js-shell")
 
 
 @respx.mock
@@ -254,7 +270,133 @@ def test_notion_fetcher_raises_clear_error_on_http_failure(tmp_path):
     respx.get("https://www.notion.so/Missing-Page").mock(return_value=httpx.Response(404))
 
     with pytest.raises(TextFetchError, match="404"):
-        NotionFetcher(settings).fetch("https://www.notion.so/Missing-Page", "cid7")
+        GenericHtmlFetcher(settings).fetch("https://www.notion.so/Missing-Page", "cid7")
+
+
+@respx.mock
+def test_notion_fetcher_extracts_page_title_and_block_text_in_order(tmp_path):
+    """Uses the real loadPageChunk request/response shape (double-nested
+    "value.value", the doubly-nested block wrapper Notion's API uses) - see
+    NotionFetcher's docstring for how this was confirmed against a live page.
+    """
+    settings = Settings(project_root=tmp_path)
+    page_id = "3ab66d04-debf-805d-949e-fcfb31f8837e"
+    blocks = {
+        page_id: _notion_block(
+            page_id, "page", title=[["Project Notes"]], content=["child-1", "child-2"]
+        ),
+        "child-1": _notion_block("child-1", "text", title=[["First paragraph."]]),
+        "child-2": _notion_block(
+            "child-2", "text", title=[["Second paragraph, ", None], ["bold bit", [["b"]]]]
+        ),
+    }
+    respx.post("https://app.notion.com/api/v3/loadPageChunk").mock(
+        return_value=httpx.Response(200, json=_notion_load_page_chunk_response(blocks))
+    )
+
+    result = NotionFetcher(settings).fetch(
+        f"https://www.notion.so/Project-Notes-{page_id.replace('-', '')}", "cid-notion1"
+    )
+
+    assert result.backend == "notion-api"
+    assert result.content_kind == "text"
+    lines = result.text.splitlines()
+    assert lines[0] == "# Project Notes"
+    assert "First paragraph." in result.text
+    assert "Second paragraph, bold bit" in result.text
+    # Content order is preserved (child-1 before child-2), not just presence.
+    assert result.text.index("First paragraph.") < result.text.index("Second paragraph")
+
+
+@respx.mock
+def test_notion_fetcher_skips_image_block_filename_as_noise(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    page_id = "3ab66d04-debf-805d-949e-fcfb31f8837e"
+    blocks = {
+        page_id: _notion_block(page_id, "page", title=[["Notes"]], content=["img-1", "text-1"]),
+        "img-1": _notion_block("img-1", "image", title=[["photo.jpg"]]),
+        "text-1": _notion_block("text-1", "text", title=[["Real content."]]),
+    }
+    respx.post("https://app.notion.com/api/v3/loadPageChunk").mock(
+        return_value=httpx.Response(200, json=_notion_load_page_chunk_response(blocks))
+    )
+
+    result = NotionFetcher(settings).fetch(
+        f"https://www.notion.so/Notes-{page_id.replace('-', '')}", "cid-notion2"
+    )
+
+    assert "photo.jpg" not in result.text
+    assert "Real content." in result.text
+
+
+@respx.mock
+def test_notion_fetcher_notes_linked_database_without_expanding_rows(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    page_id = "3ab66d04-debf-805d-949e-fcfb31f8837e"
+    blocks = {
+        page_id: _notion_block(page_id, "page", title=[["Notes"]], content=["db-1"]),
+        "db-1": _notion_block("db-1", "collection_view", title=[["My Database"]]),
+    }
+    respx.post("https://app.notion.com/api/v3/loadPageChunk").mock(
+        return_value=httpx.Response(200, json=_notion_load_page_chunk_response(blocks))
+    )
+
+    result = NotionFetcher(settings).fetch(
+        f"https://www.notion.so/Notes-{page_id.replace('-', '')}", "cid-notion3"
+    )
+
+    assert "linked database: My Database" in result.text
+    assert "contents not included" in result.text
+
+
+@respx.mock
+def test_notion_fetcher_ignores_cyclic_content_reference(tmp_path):
+    """A block referencing an ancestor as a child (shouldn't happen in real
+    Notion data, but defended against anyway) must not infinite-loop.
+    """
+    settings = Settings(project_root=tmp_path)
+    page_id = "3ab66d04-debf-805d-949e-fcfb31f8837e"
+    blocks = {
+        page_id: _notion_block(page_id, "page", title=[["Notes"]], content=["child-1"]),
+        "child-1": _notion_block(
+            "child-1", "text", title=[["Child text."]], content=[page_id]
+        ),
+    }
+    respx.post("https://app.notion.com/api/v3/loadPageChunk").mock(
+        return_value=httpx.Response(200, json=_notion_load_page_chunk_response(blocks))
+    )
+
+    result = NotionFetcher(settings).fetch(
+        f"https://www.notion.so/Notes-{page_id.replace('-', '')}", "cid-notion4"
+    )
+
+    assert "Child text." in result.text
+
+
+@respx.mock
+def test_notion_fetcher_raises_clear_error_when_page_not_found_or_not_public(tmp_path):
+    """A nonexistent/private page id still returns HTTP 200 with no "block"
+    key at all in recordMap - confirmed live against Notion's real API with
+    an all-zeros page id. Must not be silently treated as an empty-but-valid
+    page.
+    """
+    settings = Settings(project_root=tmp_path)
+    page_id = "00000000-0000-0000-0000-000000000000"
+    respx.post("https://app.notion.com/api/v3/loadPageChunk").mock(
+        return_value=httpx.Response(
+            200, json={"cursor": {"stack": []}, "recordMap": {"__version__": 3}}
+        )
+    )
+
+    with pytest.raises(TextFetchError, match="not found or not public"):
+        NotionFetcher(settings).fetch(f"https://www.notion.so/{page_id}", "cid-notion5")
+
+
+def test_notion_fetcher_raises_clear_error_when_no_page_id_in_url(tmp_path):
+    settings = Settings(project_root=tmp_path)
+
+    with pytest.raises(TextFetchError, match="could not find a Notion page id"):
+        NotionFetcher(settings).fetch("https://someworkspace.notion.site/", "cid-notion6")
 
 
 def test_dispatching_text_fetcher_routes_github_to_github_fetcher(tmp_path, monkeypatch):
@@ -268,7 +410,7 @@ def test_dispatching_text_fetcher_routes_github_to_github_fetcher(tmp_path, monk
         ),
     )
     monkeypatch.setattr(
-        NotionFetcher,
+        GenericHtmlFetcher,
         "fetch",
         lambda self, url, content_id: pytest.fail("Notion should not handle github.com"),
     )
@@ -289,6 +431,13 @@ def test_dispatching_text_fetcher_routes_notion_to_notion_fetcher(tmp_path, monk
         ),
     )
     monkeypatch.setattr(
+        GenericHtmlFetcher,
+        "fetch",
+        lambda self, url, content_id: pytest.fail(
+            "generic HTML fetcher should not handle notion.so - NotionFetcher should"
+        ),
+    )
+    monkeypatch.setattr(
         GitHubFetcher,
         "fetch",
         lambda self, url, content_id: pytest.fail("GitHub should not handle notion.so"),
@@ -299,11 +448,25 @@ def test_dispatching_text_fetcher_routes_notion_to_notion_fetcher(tmp_path, monk
     assert calls == [("notion", "https://www.notion.so/Some-Page-abc")]
 
 
-def test_dispatching_text_fetcher_raises_on_unrecognized_domain(tmp_path):
+def test_dispatching_text_fetcher_routes_unenumerated_domain_to_generic_html(
+    tmp_path, monkeypatch
+):
+    """2026-08-10 catch-all policy: any non-GitHub host goes through the
+    generic HTML fetcher by default, not an "unrecognized domain" rejection.
+    """
     settings = Settings(project_root=tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        GenericHtmlFetcher,
+        "fetch",
+        lambda self, url, content_id: (
+            calls.append(("generic", url)) or TranscriptResultStub(content_id)
+        ),
+    )
 
-    with pytest.raises(TextFetchError, match="unrecognized"):
-        DispatchingTextFetcher(settings).fetch("https://example.com/x", "cid10")
+    DispatchingTextFetcher(settings).fetch("https://example.com/x", "cid10")
+
+    assert calls == [("generic", "https://example.com/x")]
 
 
 def test_get_text_fetcher_returns_dispatching_instance(tmp_path):

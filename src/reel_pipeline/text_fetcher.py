@@ -1,4 +1,6 @@
-"""Text-content ingestion for non-media knowledge sources (GitHub, Notion).
+"""Text-content ingestion for non-media knowledge sources (GitHub, and any
+other URL classify_url_kind() routes here - see its docstring in
+validators.py for the catch-all policy).
 
 Produces the same TranscriptResult shape transcriber.py and image_describer.py
 already produce, so downstream enrichment and note-writing are identical
@@ -7,8 +9,8 @@ StateRecord.content_kind (set at registration time by
 validators.classify_url_kind()).
 
 Public links only - no OAuth or API keys. GitHub's public REST API needs none
-for public repos; Notion pages are fetched as plain HTTP GET requests against
-their public share URL (no JS execution - not browser automation).
+for public repos; every other page is fetched as a plain HTTP GET request
+against the URL as submitted (no JS execution - not browser automation).
 """
 
 from __future__ import annotations
@@ -156,17 +158,204 @@ class GitHubFetcher:
         return encoded
 
 
-_NOTION_APP_SHELL_MARKERS = (
+_NOTION_API_BASE = "https://app.notion.com/api/v3"
+# Matches a bare 32-hex-char run or an already-dashed UUID anywhere in a
+# Notion URL's path - every notion.so/notion.site/notion.com share link ends
+# in "...Some-Title-<id>" in one of these two forms.
+_NOTION_PAGE_ID_RE = re.compile(
+    r"([0-9a-f]{8})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{12})",
+    re.IGNORECASE,
+)
+# Rich-text "mention" placeholder characters (inline page link, inline date,
+# etc.) - the mention's real content isn't in the title array's text slot at
+# all, so these render as noise if kept; dropped rather than resolved, same
+# "good enough for LLM summarization" bar as the rest of this extraction.
+_NOTION_MENTION_PLACEHOLDERS = ("‣", "⁍")  # "‣", "⁍"
+_NOTION_COLLECTION_BLOCK_TYPES = ("collection_view", "collection_view_page")
+# These block types store a filename (not prose) in "properties.title" -
+# e.g. an image block's title is its filename ("123.jpg"), not a caption.
+# Skipped as noise rather than included verbatim.
+_NOTION_FILENAME_TITLE_BLOCK_TYPES = ("image", "file", "video", "audio", "pdf")
+
+
+def _notion_page_id_from_url(url: str) -> str | None:
+    match = _NOTION_PAGE_ID_RE.search(url)
+    if not match:
+        return None
+    return "-".join(match.groups()).lower()
+
+
+def _notion_rich_text_to_plain(rich_text: object) -> str:
+    """Flattens a Notion "rich text" property value - a list of
+    [text, optional_formatting] pairs - into plain text, dropping mention
+    placeholder characters (see _NOTION_MENTION_PLACEHOLDERS).
+    """
+    if not isinstance(rich_text, list):
+        return ""
+    parts: list[str] = []
+    for item in rich_text:
+        if not item:
+            continue
+        text = item[0]
+        if isinstance(text, str) and text not in _NOTION_MENTION_PLACEHOLDERS:
+            parts.append(text)
+    return "".join(parts)
+
+
+def _unwrap_notion_block(node: object) -> dict | None:
+    """Notion's API doubly-nests block values as {"value": {"value": {...}}}
+    for some blocks (an API change made after the fact - see
+    https://github.com/NotionX/react-notion-x/issues/682); generically
+    descend through however many "value" layers are present.
+    """
+    while isinstance(node, dict) and "value" in node:
+        node = node["value"]
+    if not isinstance(node, dict) or "id" not in node:
+        return None
+    return node
+
+
+class NotionFetcher:
+    """Fetches a public Notion page's text via Notion's own internal JSON API
+    (the same API calls Notion's web client makes) instead of a browser -
+    plain HTTP POST + JSON parsing, no JS execution, no rendering, no
+    credentials. Endpoint/payload/response shapes confirmed by live testing
+    against real public and nonexistent pages (see
+    docs/superpowers/specs/2026-08-10-notion-api-text-capture-design.md).
+
+    This is unofficial/undocumented and could change or break without
+    notice - accepted tradeoff, same spirit as GitHubFetcher using GitHub's
+    official API where one exists, but Notion has no public read API for
+    pages the requester doesn't own.
+
+    v1 known limitations (not solved now, documented rather than silently
+    wrong):
+    - No pagination: only the first 100-block chunk is fetched, so very
+      large pages may be missing tail content.
+    - Linked databases (collection_view/collection_view_page blocks) are
+      noted by title but their rows aren't fetched - that needs a separate
+      collection-query API call this version doesn't make.
+    - Bare custom-subdomain root URLs with no id in the path at all (e.g.
+      "https://someworkspace.notion.site/" linking to that workspace's home
+      page rather than one specific page) aren't resolvable - only URLs with
+      an embedded page id work. Every real-world share link observed during
+      this feature's development had one; a link to a site's bare root does
+      not, and needs a domain-to-page-id resolution step this version
+      doesn't implement.
+    """
+
+    def __init__(self, settings: Settings, client: httpx.Client | None = None):
+        self.settings = settings
+        self._client = client
+
+    def fetch(self, url: str, content_id: str) -> TranscriptResult:
+        page_id = _notion_page_id_from_url(url)
+        if page_id is None:
+            raise TextFetchError(
+                f"could not find a Notion page id in {url!r} - a bare "
+                "custom-subdomain root link (no id in the path) isn't "
+                "supported; share the specific page link instead"
+            )
+
+        owned_client = self._client or httpx.Client(timeout=30.0)
+        owns_client = self._client is None
+        try:
+            response = self._load_page_chunk(owned_client, page_id)
+        finally:
+            if owns_client:
+                owned_client.close()
+
+        blocks: dict = response.get("recordMap", {}).get("block", {})
+        root = _unwrap_notion_block(blocks.get(page_id))
+        if root is None:
+            raise TextFetchError(
+                f"Notion page {url!r} not found or not public - it may be "
+                "private, deleted, or require login"
+            )
+
+        title = _notion_rich_text_to_plain(root.get("properties", {}).get("title"))
+        lines = [f"# {title}" if title else "# (untitled Notion page)"]
+        self._walk_block_children(root, blocks, lines, visited={page_id})
+        text = "\n".join(line for line in lines if line).strip()
+
+        return TranscriptResult(
+            content_id=content_id,
+            text=text,
+            content_kind="text",
+            language=None,
+            backend="notion-api",
+            duration_seconds=None,
+        )
+
+    def _load_page_chunk(self, client: httpx.Client, page_id: str) -> dict:
+        body = {
+            "pageId": page_id,
+            "limit": 100,
+            "chunkNumber": 0,
+            "cursor": {"stack": []},
+            "verticalColumns": False,
+        }
+        try:
+            response = client.post(
+                f"{_NOTION_API_BASE}/loadPageChunk",
+                json=body,
+                headers={"Content-Type": "application/json"},
+            )
+        except httpx.HTTPError as exc:
+            raise TextFetchError(f"Notion API request failed for {page_id!r}: {exc}") from exc
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise TextFetchError(f"Notion API request failed for {page_id!r}: {exc}") from exc
+        return response.json()
+
+    def _walk_block_children(
+        self, block: dict, blocks: dict, lines: list[str], visited: set[str]
+    ) -> None:
+        for child_id in block.get("content") or []:
+            if child_id in visited:
+                continue  # defensive: guards against a cyclic content reference
+            visited.add(child_id)
+            child = _unwrap_notion_block(blocks.get(child_id))
+            if child is None:
+                continue  # not in this chunk - the v1 pagination gap above
+
+            child_title = _notion_rich_text_to_plain(
+                child.get("properties", {}).get("title")
+            )
+            if child_title and child.get("type") not in _NOTION_FILENAME_TITLE_BLOCK_TYPES:
+                lines.append(child_title)
+            if child.get("type") in _NOTION_COLLECTION_BLOCK_TYPES:
+                # Linked database - row data needs a separate collection-query
+                # API call this version doesn't make (see class docstring).
+                lines.append(
+                    f"[linked database: {child_title or 'untitled'} - contents not included]"
+                )
+
+            self._walk_block_children(child, blocks, lines, visited)
+
+
+_APP_SHELL_MARKERS = (
     "javascript must be enabled",
     "please enable javascript",
 )
 # Below this length, extracted text is more likely to be app-shell boilerplate
-# (a stray noscript/meta fragment) than real page content - real Notion pages,
+# (a stray noscript/meta fragment) than real page content - real pages,
 # even short ones, run well past this once trafilatura strips markup.
 _MIN_PLAUSIBLE_EXTRACTED_LENGTH = 60
 
 
-class NotionFetcher:
+class GenericHtmlFetcher:
+    """Plain HTTP GET + trafilatura text extraction for any public page
+    classify_url_kind() routed here as "text" (Notion share links, Google
+    Docs' /mobilebasic public view, Airtable share links, blog posts, ...).
+    No JS execution - not browser automation.
+
+    Client-rendered app shells with no server-side content (common on Notion,
+    possible on the others) raise TextFetchError rather than returning
+    boilerplate - see the app-shell heuristic below.
+    """
+
     def __init__(self, settings: Settings, client: httpx.Client | None = None):
         self.settings = settings
         self._client = client
@@ -178,29 +367,30 @@ class NotionFetcher:
             try:
                 response = owned_client.get(url)
             except httpx.HTTPError as exc:
-                raise TextFetchError(f"failed to fetch Notion page {url!r}: {exc}") from exc
+                raise TextFetchError(f"failed to fetch page {url!r}: {exc}") from exc
             if response.status_code != 200:
-                raise TextFetchError(f"Notion page {url!r} returned HTTP {response.status_code}")
+                raise TextFetchError(f"page {url!r} returned HTTP {response.status_code}")
             html = response.text
         finally:
             if owns_client:
                 owned_client.close()
 
         extracted = (trafilatura.extract(html) or "").strip()
-        # Many modern Notion pages are a client-rendered app shell with no real
-        # content in the server-sent HTML at all - trafilatura then extracts
-        # whatever stray text IS server-rendered (e.g. a <noscript> fallback
-        # message), which is non-empty but not the page's actual content. The
-        # empty-string check alone doesn't catch this; matching known app-shell
-        # boilerplate and a minimum plausible length does.
+        # Many modern pages (Notion, Docs, Airtable) are a client-rendered app
+        # shell with no real content in the server-sent HTML at all -
+        # trafilatura then extracts whatever stray text IS server-rendered
+        # (e.g. a <noscript> fallback message), which is non-empty but not
+        # the page's actual content. The empty-string check alone doesn't
+        # catch this; matching known app-shell boilerplate and a minimum
+        # plausible length does.
         too_short = len(extracted) < _MIN_PLAUSIBLE_EXTRACTED_LENGTH
         has_app_shell_marker = any(
-            marker in extracted.lower() for marker in _NOTION_APP_SHELL_MARKERS
+            marker in extracted.lower() for marker in _APP_SHELL_MARKERS
         )
         looks_like_app_shell = not extracted or too_short or has_app_shell_marker
         if looks_like_app_shell:
             raise TextFetchError(
-                f"Notion page {url!r} produced no usable text - it's rendered "
+                f"page {url!r} produced no usable text - it's rendered "
                 "client-side with no real content in the server HTML (or requires "
                 "login), rather than being genuinely empty. This pipeline cannot "
                 "fetch it without browser automation, which is against project policy."
@@ -211,7 +401,7 @@ class NotionFetcher:
             text=extracted,
             content_kind="text",
             language=None,
-            backend="notion-fetch",
+            backend="html-fetch",
             duration_seconds=None,
         )
 
@@ -221,15 +411,27 @@ class TextFetcher(Protocol):
 
 
 _GITHUB_DOMAINS = ("github.com",)
-_NOTION_DOMAINS = ("notion.so", "notion.site")
+_NOTION_DOMAINS = ("notion.so", "notion.site", "notion.com")
 
 
 class DispatchingTextFetcher:
-    """Routes each URL to the platform-appropriate concrete fetcher."""
+    """Routes each URL to the platform-appropriate concrete fetcher.
+
+    GitHub and Notion each get their own API-backed fetcher (structured data
+    via an actual API instead of scraping rendered/raw HTML); every other
+    host classify_url_kind() has already routed here as "text" goes through
+    the generic HTML fetcher - there's no second domain gate to keep in sync
+    with settings (a prior version of this class had one, which was the root
+    cause of docs.google.com/airtable.com/findarepo.com/thefounderos.com
+    being config-allowed but still rejected as "unrecognized text-capture
+    domain"; fixed 2026-08-09, then made moot by 2026-08-10's catch-all
+    text-capture policy in CLAUDE.md).
+    """
 
     def __init__(self, settings: Settings):
         self._github = GitHubFetcher(settings)
         self._notion = NotionFetcher(settings)
+        self._generic_html = GenericHtmlFetcher(settings)
 
     def fetch(self, url: str, content_id: str) -> TranscriptResult:
         host = urlparse(url).netloc.split(":")[0].lower()
@@ -239,7 +441,7 @@ class DispatchingTextFetcher:
             return self._github.fetch(url, content_id)
         if any(host == d or host.endswith(f".{d}") for d in _NOTION_DOMAINS):
             return self._notion.fetch(url, content_id)
-        raise TextFetchError(f"unrecognized text-capture domain for {url!r}")
+        return self._generic_html.fetch(url, content_id)
 
 
 def get_text_fetcher(settings: Settings) -> TextFetcher:
