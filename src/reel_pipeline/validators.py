@@ -175,12 +175,46 @@ def classify_url_kind(url: str, settings: Settings) -> Literal["media", "text"] 
         host = host[len("www.") :]
 
     if _matches_any(host, settings.download.allowed_domains):
+        if host == "drive.google.com":
+            return _classify_drive_url_kind(url)
         return "media"
     if _matches_any(host, settings.text_capture.blocked_domains):
         return None
     if host == "localhost" or _is_private_or_local_ip(host):
         return None
     return "text"
+
+
+def _classify_drive_url_kind(url: str) -> Literal["media", "text"]:
+    """drive.google.com hosts both actual video files (yt-dlp's GoogleDrive
+    extractor handles those) and arbitrary shared documents - text, PDF,
+    PPTX, etc. Unlike every other domain, the URL shape alone can't say
+    which (a real example that surfaced this: a shared .md skill file at
+    "drive.google.com/file/d/<id>/view", indistinguishable by URL from a
+    shared video). A HEAD request doesn't help either - Drive's direct-
+    download endpoint always reports "application/octet-stream" regardless
+    of the file's real type (confirmed live), and getting the real mimeType
+    needs the Drive API v3, which requires OAuth/an API key - out of scope
+    per this project's no-OAuth/no-API-key text-capture posture.
+
+    Instead this asks yt-dlp itself: a metadata-only probe (download=False,
+    no bytes fetched) that fails the same way a real download attempt would
+    if the file isn't a video (confirmed live against the real failing
+    example above - same "Bad Request" yt-dlp gives on an actual download
+    attempt). Any failure - not a video, network hiccup, anything - falls
+    through to "text" rather than "media": if it's also not text-fetchable,
+    DriveFetcher raises its own clear error, which is strictly more useful
+    than yt-dlp's opaque "Bad Request" was before this existed.
+    """
+    import yt_dlp  # type: ignore[import-untyped]
+
+    try:
+        opts = {"quiet": True, "no_warnings": True, "skip_download": True, "socket_timeout": 15}
+        with yt_dlp.YoutubeDL(opts) as ydl:  # pyright: ignore[reportArgumentType]
+            ydl.extract_info(url, download=False)
+        return "media"
+    except Exception:  # noqa: BLE001 - any probe failure means "try text instead"
+        return "text"
 
 
 def _is_private_or_local_ip(host: str) -> bool:

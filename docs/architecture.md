@@ -38,10 +38,10 @@ identical regardless of which branch produced the text.
 | `models.py` | Pydantic models shared by every stage (the enrichment output contract lives here) |
 | `validators.py` | URL normalization, deterministic `content_id` hashing, allow/block-list checks |
 | `queue_manager.py` | Reads `queue.txt`, persists `state.json`, writes `needs-attention.txt` |
-| `downloader.py` | Media download - dispatches Instagram to gallery-dl (cookie-authenticated), everything else (YouTube, Facebook, LinkedIn, TikTok, X, Vimeo, Google Drive) to yt-dlp, optionally cookie-authenticated. Detects photo-only posts and returns `media_type=IMAGE` with all carousel image paths |
+| `downloader.py` | Media download - dispatches Instagram to gallery-dl (cookie-authenticated), everything else (YouTube, Facebook, LinkedIn, TikTok, X, Vimeo, Google Drive) to yt-dlp, optionally cookie-authenticated. Detects photo-only posts and returns `media_type=IMAGE` with all carousel image paths. A downloaded ".mp4" with no audio track (Instagram sometimes serves a "photo" as a silent motion-photo clip) is probed via `ffprobe` and reclassified as `IMAGE` too - a frame is extracted via `ffmpeg` so it goes through the vision path instead of failing transcription with "no audio track" |
 | `transcriber.py` | Pluggable transcription backends (local faster-whisper / OpenAI API) - video/audio only |
 | `image_describer.py` | Turns photo posts/carousels into a text description via a vision-capable LLM (`config/prompts/describe_image_post.md`), producing the same `TranscriptResult` shape as `transcriber.py` |
-| `text_fetcher.py` | Text-content capture for non-media sources - GitHub (public REST API: repo metadata + README, or a specific file for a `blob/` URL), Notion (its own internal JSON API, `loadPageChunk` - see below), everything else via plain HTTP GET + `trafilatura` extraction (no JS execution). Produces the same `TranscriptResult` shape `transcriber.py`/`image_describer.py` do |
+| `text_fetcher.py` | Text-content capture for non-media sources - GitHub (public REST API: repo metadata + README, or a specific file for a `blob/` URL), Notion (its own internal JSON API, `loadPageChunk` - see below), Drive documents (unauthenticated direct-download endpoint - see below), everything else via plain HTTP GET + `trafilatura` extraction (no JS execution). Produces the same `TranscriptResult` shape `transcriber.py`/`image_describer.py` do |
 | `enricher.py` | Calls an LLM (via `llm_client.py`) with `config/prompts/enrich_transcript.md`, parses `EnrichmentResult` |
 | `obsidian_writer.py` | Deterministic markdown note writer |
 | `skill_writer.py` | Conditional `SKILL.md` generator for high-signal content |
@@ -155,7 +155,13 @@ or webhook - converges on `state.json` before any processing begins, so:
   page that's a JS-rendered app shell with no server-side content and no
   equivalent API to call directly still fails cleanly with a clear error
   rather than falling back to browser automation - a hard no per this file's
-  first guardrail above. See
+  first guardrail above. `drive.google.com` is a special case even among
+  these: unlike every other domain, the same URL shape covers both a video
+  file (media path, above) and an arbitrary shared document (text path,
+  here), so `classify_url_kind()` runs a live yt-dlp metadata-only probe just
+  for that one host to tell them apart before deciding - see `CLAUDE.md`'s
+  Drive entry and
+  `docs/superpowers/specs/2026-08-10-drive-text-capture-design.md`. See
   `docs/superpowers/specs/2026-07-16-text-capture-ingestion-design.md` for the
   original scoped-allow-list design this superseded.
 - Secrets (`ANTHROPIC_API_KEY`, `REEL_WEBHOOK_SECRET`, `OPENAI_API_KEY`,

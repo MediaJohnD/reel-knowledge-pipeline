@@ -196,13 +196,19 @@ class QueueManager:
         if existing is not None:
             return existing
 
+        # Every download.allowed_domains host is unambiguously "media" except
+        # drive.google.com, which hosts both video files and arbitrary shared
+        # documents - classify_url_kind() runs a cheap yt-dlp probe for that
+        # one host to tell them apart; every other host returns "media"
+        # immediately with no network call, same as hardcoding it here would.
+        content_kind = classify_url_kind(url, self.settings) or "media"
         record = StateRecord(
             content_id=result.content_id,
             url=url,
             normalized_url=result.normalized_url,
             source=source,
             status=ItemStatus.PENDING,
-            content_kind="media",
+            content_kind=content_kind,
             added_at=now,
             updated_at=now,
         )

@@ -335,6 +335,84 @@ class NotionFetcher:
             self._walk_block_children(child, blocks, lines, visited)
 
 
+_DRIVE_FILE_ID_RE = re.compile(r"(?:/file/d/|[?&]id=)([\w-]{6,})")
+
+
+def _drive_file_id_from_url(url: str) -> str | None:
+    match = _DRIVE_FILE_ID_RE.search(url)
+    return match.group(1) if match else None
+
+
+class DriveFetcher:
+    """Fetches a publicly-shared Google Drive file (not a video - see
+    validators._classify_drive_url_kind()) via Drive's unauthenticated
+    direct-download endpoint and treats the bytes as text if they decode as
+    plain text/markdown, or as HTML (trafilatura-extracted) if they look
+    like an HTML export. No OAuth, no API key, no browser - a plain GET,
+    same trust profile as GenericHtmlFetcher.
+
+    v1 known limitation, documented rather than silently wrong: binary
+    document formats (PDF, PPTX, DOCX, ...) aren't parsed - they fail with a
+    clear "binary format not supported" error rather than garbage text or a
+    silent empty note. Also not handled: Drive's "can't scan this file for
+    viruses" interstitial page that appears for files too large for that
+    scan (roughly >25MB) instead of the raw bytes - out of scope for the
+    "handful of shared items" volume this project is built for.
+    """
+
+    def __init__(self, settings: Settings, client: httpx.Client | None = None):
+        self.settings = settings
+        self._client = client
+
+    def fetch(self, url: str, content_id: str) -> TranscriptResult:
+        file_id = _drive_file_id_from_url(url)
+        if file_id is None:
+            raise TextFetchError(f"could not find a Drive file id in {url!r}")
+
+        owned_client = self._client or httpx.Client(timeout=30.0, follow_redirects=True)
+        owns_client = self._client is None
+        try:
+            try:
+                response = owned_client.get(
+                    f"https://drive.google.com/uc?export=download&id={file_id}"
+                )
+            except httpx.HTTPError as exc:
+                raise TextFetchError(f"failed to fetch Drive file {url!r}: {exc}") from exc
+        finally:
+            if owns_client:
+                owned_client.close()
+
+        if response.status_code != 200:
+            raise TextFetchError(f"Drive file {url!r} returned HTTP {response.status_code}")
+
+        try:
+            text = response.content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise TextFetchError(
+                f"Drive file {url!r} is a binary format (PDF/PPTX/DOCX/etc.) - "
+                "not supported yet, this pipeline only reads plain text/markdown/HTML "
+                "Drive files"
+            ) from exc
+
+        stripped = text.strip()
+        if stripped.lower().startswith(("<!doctype html", "<html")):
+            extracted = (trafilatura.extract(text) or "").strip()
+            if not extracted:
+                raise TextFetchError(f"Drive file {url!r} produced no usable text")
+            text = extracted
+        else:
+            text = stripped
+
+        return TranscriptResult(
+            content_id=content_id,
+            text=text,
+            content_kind="text",
+            language=None,
+            backend="drive-download",
+            duration_seconds=None,
+        )
+
+
 _APP_SHELL_MARKERS = (
     "javascript must be enabled",
     "please enable javascript",
@@ -412,25 +490,28 @@ class TextFetcher(Protocol):
 
 _GITHUB_DOMAINS = ("github.com",)
 _NOTION_DOMAINS = ("notion.so", "notion.site", "notion.com")
+_DRIVE_DOMAINS = ("drive.google.com",)
 
 
 class DispatchingTextFetcher:
     """Routes each URL to the platform-appropriate concrete fetcher.
 
-    GitHub and Notion each get their own API-backed fetcher (structured data
-    via an actual API instead of scraping rendered/raw HTML); every other
-    host classify_url_kind() has already routed here as "text" goes through
-    the generic HTML fetcher - there's no second domain gate to keep in sync
-    with settings (a prior version of this class had one, which was the root
-    cause of docs.google.com/airtable.com/findarepo.com/thefounderos.com
-    being config-allowed but still rejected as "unrecognized text-capture
-    domain"; fixed 2026-08-09, then made moot by 2026-08-10's catch-all
-    text-capture policy in CLAUDE.md).
+    GitHub, Notion, and Drive each get their own API/download-backed fetcher
+    (structured data via an actual API or direct-download endpoint instead of
+    scraping rendered/raw HTML); every other host classify_url_kind() has
+    already routed here as "text" goes through the generic HTML fetcher -
+    there's no second domain gate to keep in sync with settings (a prior
+    version of this class had one, which was the root cause of
+    docs.google.com/airtable.com/findarepo.com/thefounderos.com being
+    config-allowed but still rejected as "unrecognized text-capture domain";
+    fixed 2026-08-09, then made moot by 2026-08-10's catch-all text-capture
+    policy in CLAUDE.md).
     """
 
     def __init__(self, settings: Settings):
         self._github = GitHubFetcher(settings)
         self._notion = NotionFetcher(settings)
+        self._drive = DriveFetcher(settings)
         self._generic_html = GenericHtmlFetcher(settings)
 
     def fetch(self, url: str, content_id: str) -> TranscriptResult:
@@ -441,6 +522,8 @@ class DispatchingTextFetcher:
             return self._github.fetch(url, content_id)
         if any(host == d or host.endswith(f".{d}") for d in _NOTION_DOMAINS):
             return self._notion.fetch(url, content_id)
+        if any(host == d or host.endswith(f".{d}") for d in _DRIVE_DOMAINS):
+            return self._drive.fetch(url, content_id)
         return self._generic_html.fetch(url, content_id)
 
 

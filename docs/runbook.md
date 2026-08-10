@@ -287,6 +287,14 @@ this only ever does an unauthenticated, no-JS HTTP GET:
   link with no id in the path isn't supported yet. Unofficial/undocumented
   API - could break if Notion changes it. See
   `docs/superpowers/specs/2026-08-10-notion-api-text-capture-design.md`.
+- **Google Drive documents** (`drive.google.com/file/d/<id>/...`): a shared
+  Drive link could be a video (handled by the media/yt-dlp path, see
+  "Google Drive setup" below) or a document (text, markdown, PDF, PPT, ...) -
+  the pipeline runs a quick check to tell which before fetching either way,
+  so this needs no separate setup. Text/markdown documents work directly;
+  binary formats (PDF/PPTX/DOCX) aren't parsed yet and fail with a clear
+  error rather than garbage output. See
+  `docs/superpowers/specs/2026-08-10-drive-text-capture-design.md`.
 - **Everything else** (Google Docs, Airtable, blog posts, GitHub Pages,
   personal knowledge links, ...): fetches the page directly and extracts the
   main text content with `trafilatura`. Only works for pages that actually

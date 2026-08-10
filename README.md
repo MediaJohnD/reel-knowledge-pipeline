@@ -37,7 +37,8 @@ transcribing and summarizing it by hand.
 
 - **Multiple ingestion paths** — a plain text file (`data/inbox/queue.txt`),
   an authenticated webhook (for an iOS Shortcut, a bookmarklet, or any HTTP
-  client), or GitHub repos/public Notion pages captured as text.
+  client), or GitHub repos/Notion pages/shared Drive documents/any other
+  public URL captured as text.
 - **Video, photo posts, and carousels** — automatically detects photo-only
   posts vs. video and routes to the right extraction path; multi-clip
   carousels are transcribed per-clip and combined.

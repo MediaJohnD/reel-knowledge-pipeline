@@ -9,6 +9,7 @@ import respx
 from reel_pipeline.config import Settings
 from reel_pipeline.text_fetcher import (
     DispatchingTextFetcher,
+    DriveFetcher,
     GenericHtmlFetcher,
     GitHubFetcher,
     NotionFetcher,
@@ -399,6 +400,70 @@ def test_notion_fetcher_raises_clear_error_when_no_page_id_in_url(tmp_path):
         NotionFetcher(settings).fetch("https://someworkspace.notion.site/", "cid-notion6")
 
 
+@respx.mock
+def test_drive_fetcher_extracts_plain_text_file(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    respx.get("https://drive.google.com/uc?export=download&id=abc123").mock(
+        return_value=httpx.Response(200, text="---\nname: some-skill\n---\nBody text here.")
+    )
+
+    result = DriveFetcher(settings).fetch(
+        "https://drive.google.com/file/d/abc123/view?usp=drivesdk", "cid-drive1"
+    )
+
+    assert result.backend == "drive-download"
+    assert result.content_kind == "text"
+    assert "Body text here." in result.text
+
+
+@respx.mock
+def test_drive_fetcher_extracts_html_export_via_trafilatura(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    html = (
+        "<!doctype html><html><body><article>"
+        "<h1>Doc Title</h1><p>Real exported content here.</p>"
+        "</article></body></html>"
+    )
+    respx.get("https://drive.google.com/uc?export=download&id=abc456").mock(
+        return_value=httpx.Response(200, text=html)
+    )
+
+    result = DriveFetcher(settings).fetch(
+        "https://drive.google.com/file/d/abc456/view", "cid-drive2"
+    )
+
+    assert "Real exported content here." in result.text
+
+
+@respx.mock
+def test_drive_fetcher_raises_clear_error_on_binary_file(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    respx.get("https://drive.google.com/uc?export=download&id=abc789").mock(
+        return_value=httpx.Response(200, content=b"\x89PNG\r\n\x1a\n\x00\x01\xff\xfe")
+    )
+
+    with pytest.raises(TextFetchError, match="binary format"):
+        DriveFetcher(settings).fetch("https://drive.google.com/file/d/abc789/view", "cid-drive3")
+
+
+def test_drive_fetcher_raises_clear_error_when_no_file_id_in_url(tmp_path):
+    settings = Settings(project_root=tmp_path)
+
+    with pytest.raises(TextFetchError, match="could not find a Drive file id"):
+        DriveFetcher(settings).fetch("https://drive.google.com/drive/my-drive", "cid-drive4")
+
+
+@respx.mock
+def test_drive_fetcher_raises_clear_error_on_http_failure(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    respx.get("https://drive.google.com/uc?export=download&id=abc999").mock(
+        return_value=httpx.Response(404)
+    )
+
+    with pytest.raises(TextFetchError, match="404"):
+        DriveFetcher(settings).fetch("https://drive.google.com/file/d/abc999/view", "cid-drive5")
+
+
 def test_dispatching_text_fetcher_routes_github_to_github_fetcher(tmp_path, monkeypatch):
     settings = Settings(project_root=tmp_path)
     calls = []
@@ -467,6 +532,31 @@ def test_dispatching_text_fetcher_routes_unenumerated_domain_to_generic_html(
     DispatchingTextFetcher(settings).fetch("https://example.com/x", "cid10")
 
     assert calls == [("generic", "https://example.com/x")]
+
+
+def test_dispatching_text_fetcher_routes_drive_to_drive_fetcher(tmp_path, monkeypatch):
+    settings = Settings(project_root=tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        DriveFetcher,
+        "fetch",
+        lambda self, url, content_id: (
+            calls.append(("drive", url)) or TranscriptResultStub(content_id)
+        ),
+    )
+    monkeypatch.setattr(
+        GenericHtmlFetcher,
+        "fetch",
+        lambda self, url, content_id: pytest.fail(
+            "generic HTML fetcher should not handle drive.google.com - DriveFetcher should"
+        ),
+    )
+
+    DispatchingTextFetcher(settings).fetch(
+        "https://drive.google.com/file/d/abc123/view", "cid11"
+    )
+
+    assert calls == [("drive", "https://drive.google.com/file/d/abc123/view")]
 
 
 def test_get_text_fetcher_returns_dispatching_instance(tmp_path):

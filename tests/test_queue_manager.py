@@ -1,10 +1,37 @@
 from __future__ import annotations
 
+import sys
+import types
 from datetime import UTC, datetime, timedelta
 
 from reel_pipeline.config import DownloadConfig, Settings, TextCaptureConfig
 from reel_pipeline.models import ItemStatus, QueueSource
 from reel_pipeline.queue_manager import QueueManager
+
+
+def _install_fake_yt_dlp(monkeypatch, *, raises: bool):
+    """Same pattern as tests/test_validators.py's helper - fakes yt_dlp for
+    _classify_drive_url_kind()'s metadata-only probe.
+    """
+
+    class FakeYoutubeDL:
+        def __init__(self, opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def extract_info(self, url, download=True):
+            if raises:
+                raise RuntimeError("[GoogleDrive] Unable to download JSON metadata: 400")
+            return {"ext": "mp4"}
+
+    fake_module = types.ModuleType("yt_dlp")
+    fake_module.YoutubeDL = FakeYoutubeDL  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "yt_dlp", fake_module)
 
 
 def make_settings(tmp_path) -> Settings:
@@ -395,6 +422,41 @@ def test_youtube_url_registers_with_media_content_kind(tmp_path):
     registered = qm.sync_queue_file_into_state()
 
     assert registered[0].content_kind == "media"
+
+
+def _make_drive_settings(tmp_path) -> Settings:
+    return Settings(
+        project_root=tmp_path,
+        download=DownloadConfig(allowed_domains=["drive.google.com"]),
+    )
+
+
+def test_drive_video_url_registers_with_media_content_kind(tmp_path, monkeypatch):
+    _install_fake_yt_dlp(monkeypatch, raises=False)
+    settings = _make_drive_settings(tmp_path)
+    qm = QueueManager(settings)
+    qm.queue_file.write_text("https://drive.google.com/file/d/abc123/view\n", encoding="utf-8")
+
+    registered = qm.sync_queue_file_into_state()
+
+    assert registered[0].content_kind == "media"
+
+
+def test_drive_document_url_registers_with_text_content_kind(tmp_path, monkeypatch):
+    """A shared Drive document (not a video) - the real case that surfaced
+    this: a shared .md skill file that yt-dlp's GoogleDrive video extractor
+    couldn't handle - registers as text instead of an unfetchable "media"
+    item that would exhaust its retries and land in failed_permanent.
+    """
+    _install_fake_yt_dlp(monkeypatch, raises=True)
+    settings = _make_drive_settings(tmp_path)
+    qm = QueueManager(settings)
+    qm.queue_file.write_text("https://drive.google.com/file/d/abc123/view\n", encoding="utf-8")
+
+    registered = qm.sync_queue_file_into_state()
+
+    assert registered[0].status == ItemStatus.PENDING
+    assert registered[0].content_kind == "text"
 
 
 def test_unenumerated_domain_registers_as_text_by_default(tmp_path):

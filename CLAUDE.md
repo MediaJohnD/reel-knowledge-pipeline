@@ -36,7 +36,17 @@ The system supports:
   Drive, using yt-dlp's existing GoogleDrive extractor. Same optional cookie treatment as
   Facebook/LinkedIn. `validate_url` in `validators.py` matches `allowed_domains` against the
   full host, not a reduced two-label domain, specifically so a subdomain entry like this one
-  doesn't accidentally open the whole parent domain.
+  doesn't accidentally open the whole parent domain. As of 2026-08-10, `drive.google.com` also
+  handles shared *documents* (text, markdown, PDF, PPT, ...), not just video - a real failure
+  surfaced this: a shared `.md` skill file failed yt-dlp's video path with an opaque "400 Bad
+  Request" despite being fully public (verified via the Drive MCP's `get_file_permissions`
+  before assuming otherwise). `classify_url_kind()` in `validators.py` now runs a metadata-only
+  yt-dlp probe (`download=False`, no bytes fetched) specifically for `drive.google.com` URLs to
+  tell video from document - the only domain in this pipeline where the URL shape alone can't
+  say which. A non-video Drive URL routes to the new `DriveFetcher` (`text_fetcher.py`), which
+  fetches the file via Drive's unauthenticated direct-download endpoint - no OAuth, no API key,
+  same posture as GitHub/Notion. See
+  `docs/superpowers/specs/2026-08-10-drive-text-capture-design.md`.
 - Text-capture ingestion (`text_fetcher.py`: GitHub's public REST API, or plain HTTP GET +
   `trafilatura` extraction for everything else) was introduced 2026-07-16 as a scoped
   allow-list (`github.com`, `notion.so`, `notion.site`), then broadened piece by piece as
