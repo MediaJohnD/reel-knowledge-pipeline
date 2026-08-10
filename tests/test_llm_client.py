@@ -135,6 +135,28 @@ def test_call_llm_dispatches_to_groq(tmp_path):
     assert result == "hello from groq"
 
 
+def test_call_llm_dispatches_to_cerebras(tmp_path):
+    settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="cerebras"))
+    settings.cerebras_api_key = "csk-test"
+
+    with respx.mock:
+        respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200, json={"choices": [{"message": {"content": "hello from cerebras"}}]}
+            )
+        )
+        result = call_llm(settings, "prompt text", model="gpt-oss-120b", max_tokens=100)
+
+    assert result == "hello from cerebras"
+
+
+def test_call_llm_cerebras_requires_api_key(tmp_path):
+    settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="cerebras"))
+
+    with pytest.raises(RuntimeError, match="CEREBRAS_API_KEY"):
+        call_llm(settings, "prompt text", model="gpt-oss-120b", max_tokens=100)
+
+
 def test_call_llm_dispatches_to_gemini(tmp_path):
     settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="gemini"))
     settings.gemini_api_key = "gemini-test-key"

@@ -9,6 +9,10 @@ Dispatches by settings.llm.provider:
   (`ollama pull <model>`).
 - "groq": Groq's OpenAI-compatible chat completions API (requires GROQ_API_KEY).
 - "gemini": Google's Gemini generateContent API (requires GEMINI_API_KEY).
+- "cerebras": Cerebras' OpenAI-compatible chat completions API (requires
+  CEREBRAS_API_KEY). Free tier: 1M tokens/day. Non-Chinese-operated - see
+  CLAUDE.md's Chinese provider blocklist; stick to non-Chinese-origin models
+  (e.g. gpt-oss-120b) on this provider for the same reason.
 
 call_llm() is text-only (enrichment, skill generation). describe_images() adds
 image input for vision-capable models (image-post/carousel description) - the
@@ -35,6 +39,7 @@ from reel_pipeline.config import Settings
 _ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
 _GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+_CEREBRAS_ENDPOINT = "https://api.cerebras.ai/v1/chat/completions"
 _GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
 _DEFAULT_IMAGE_MEDIA_TYPE = "image/jpeg"
 
@@ -173,6 +178,49 @@ def _call_groq(
     return text
 
 
+def _call_cerebras(
+    settings: Settings,
+    prompt: str,
+    *,
+    model: str,
+    max_tokens: int,
+    json_mode: bool = False,
+    client: httpx.Client | None = None,
+) -> str:
+    api_key = settings.require_cerebras_api_key()
+    owned_client = client or httpx.Client(timeout=120.0)
+    owns_client = client is None
+    body: dict = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
+    try:
+        response = owned_client.post(
+            _CEREBRAS_ENDPOINT,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "content-type": "application/json",
+            },
+            json=body,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except httpx.HTTPError as exc:
+        raise LlmCallError(f"Cerebras API request failed: {exc}") from exc
+    finally:
+        if owns_client:
+            owned_client.close()
+
+    choices = payload.get("choices", [])
+    text = choices[0].get("message", {}).get("content", "") if choices else ""
+    if not text:
+        raise LlmCallError(f"Cerebras API response had no text content: {payload!r}")
+    return text
+
+
 def _call_gemini(
     settings: Settings,
     prompt: str,
@@ -262,6 +310,16 @@ def call_llm(
     if settings.llm.provider == "gemini":
         combined = f"{static_prefix}\n\n{prompt}" if static_prefix else prompt
         return _call_gemini(
+            settings,
+            combined,
+            model=model,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+            client=client,
+        )
+    if settings.llm.provider == "cerebras":
+        combined = f"{static_prefix}\n\n{prompt}" if static_prefix else prompt
+        return _call_cerebras(
             settings,
             combined,
             model=model,
@@ -394,10 +452,17 @@ def describe_images(
     max_tokens: int,
     static_prefix: str = "",
     client: httpx.Client | None = None,
+    provider: str | None = None,
 ) -> str:
+    """provider overrides settings.llm.provider for this call - only "ollama" and
+    "anthropic" support vision (Groq/Gemini/Cerebras have no vision path here), so
+    callers whose text provider is one of those pass settings.image_description.provider
+    (or default to "ollama") instead of falling through to the text provider.
+    """
     if not image_paths:
         raise ValueError("describe_images requires at least one image path")
-    if settings.llm.provider == "ollama":
+    resolved_provider = provider or settings.llm.provider
+    if resolved_provider == "ollama":
         return _call_ollama_vision(
             settings,
             prompt,
@@ -407,7 +472,7 @@ def describe_images(
             static_prefix=static_prefix,
             client=client,
         )
-    if settings.llm.provider == "anthropic":
+    if resolved_provider == "anthropic":
         return _call_claude_vision(
             settings,
             prompt,
@@ -417,4 +482,8 @@ def describe_images(
             static_prefix=static_prefix,
             client=client,
         )
-    raise ValueError(f"Unknown llm.provider: {settings.llm.provider!r}")
+    raise ValueError(
+        f"Unknown or vision-incapable llm provider: {resolved_provider!r}. "
+        "Vision only supports 'ollama' or 'anthropic' - set image_description.provider "
+        "in settings.yaml if llm.provider is 'groq'/'gemini'/'cerebras'."
+    )
