@@ -590,6 +590,58 @@ def test_resuming_a_crash_interrupted_item_does_not_redownload_if_media_still_on
     assert result.status == ItemStatus.DONE
 
 
+def test_resuming_with_a_cached_silent_video_routes_to_image_describer(tmp_path, monkeypatch):
+    """A crash-interrupted item whose cached "download" is a silent .mp4
+    (Instagram's "motion photo" case - see downloader.py) used to be
+    reconstructed as MediaType.VIDEO purely by file suffix on resume, same
+    bug as the fresh-download path this mirrors. Resuming should route it
+    through ImageDescriber instead of Transcriber, just like a fresh
+    download of the same file now does.
+    """
+    from reel_pipeline.models import ItemStage
+
+    settings = make_settings(tmp_path)
+    pipeline = build_pipeline(settings, FakeDownloaderWithRealTmpFile(settings))
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=resume-silent\n", encoding="utf-8"
+    )
+    pipeline.queue_manager.sync_queue_file_into_state()
+    (record,) = pipeline.queue_manager.load_state().values()
+
+    media_path = settings.tmp_dir / record.content_id / "post.mp4"
+    media_path.parent.mkdir(parents=True, exist_ok=True)
+    media_path.write_bytes(b"pre-existing silent video from a completed download")
+    record.status = ItemStatus.DOWNLOADING
+    record.last_completed_stage = ItemStage.DOWNLOADED
+    pipeline.queue_manager.update_record(record)
+
+    monkeypatch.setattr("reel_pipeline.worker._video_has_audio_stream", lambda p: False)
+    frame_path = media_path.with_suffix(".frame.jpg")
+    monkeypatch.setattr(
+        "reel_pipeline.worker._extract_first_frame",
+        lambda p: frame_path if frame_path.write_bytes(b"fake-frame") or True else frame_path,
+    )
+
+    describe_calls = []
+
+    class CountingImageDescriber:
+        def describe(self, media_paths, content_id):
+            describe_calls.append(media_paths)
+            from reel_pipeline.models import TranscriptResult
+
+            return TranscriptResult(content_id=content_id, text="a description", backend="stub")
+
+    pipeline.image_describer = CountingImageDescriber()
+    pipeline.transcriber.transcribe = lambda media_path, content_id: (
+        _ for _ in ()
+    ).throw(AssertionError("Transcriber should not be called for a silent video"))
+
+    result = pipeline.process_item(record)
+
+    assert result.status == ItemStatus.DONE
+    assert describe_calls == [[frame_path]]
+
+
 def test_resuming_a_crash_interrupted_item_does_not_retranscribe_if_transcript_cached(tmp_path):
     """Regression test: a crash after a successful transcription (e.g. during
     enrichment) used to redo transcription on the next run_once() even though

@@ -34,7 +34,12 @@ from filelock import FileLock
 from filelock import Timeout as FileLockTimeout
 
 from reel_pipeline.config import Settings
-from reel_pipeline.downloader import Downloader, get_downloader
+from reel_pipeline.downloader import (
+    Downloader,
+    _extract_first_frame,
+    _video_has_audio_stream,
+    get_downloader,
+)
 from reel_pipeline.enricher import Enricher
 from reel_pipeline.image_describer import ImageDescriber, get_image_describer
 from reel_pipeline.logging_setup import get_logger, log_context
@@ -344,17 +349,33 @@ class WorkerPipeline:
         files = sorted(p for p in tmp_dir.rglob("*") if p.is_file())
         if not files:
             return None
-        video_suffixes = (".mp3", ".mp4", ".mov", ".webm", ".mkv", ".m4a", ".wav")
+        # ".mp3"/".m4a"/".wav" are yt-dlp's own audio-only extraction output -
+        # always genuinely audio by construction, no ambiguity. ".mp4"/".mov"/
+        # ".webm"/".mkv" are video *containers*, which - same as a fresh
+        # gallery-dl download (see downloader._video_has_audio_stream) - can
+        # be a silent Instagram "motion photo" with nothing to transcribe.
+        # Reusing that same check here closes the same gap on the resume
+        # path: without it, resuming after a crash between download and
+        # transcribe would re-derive VIDEO for a silent clip a fresh download
+        # would now correctly call IMAGE.
+        audio_suffixes = (".mp3", ".m4a", ".wav")
+        video_container_suffixes = (".mp4", ".mov", ".webm", ".mkv")
         image_suffixes = (".jpg", ".jpeg", ".png", ".webp")
-        videos = [p for p in files if p.suffix.lower() in video_suffixes]
-        if videos:
+
+        audio_files = [p for p in files if p.suffix.lower() in audio_suffixes]
+        video_containers = [p for p in files if p.suffix.lower() in video_container_suffixes]
+        real_videos = audio_files + [p for p in video_containers if _video_has_audio_stream(p)]
+        if real_videos:
             return DownloadResult(
                 content_id=content_id,
                 media_type=MediaType.VIDEO,
-                media_paths=[str(p) for p in videos],
+                media_paths=[str(p) for p in real_videos],
                 platform="cached",
             )
+
         images = [p for p in files if p.suffix.lower() in image_suffixes]
+        silent_videos = [p for p in video_containers if p not in real_videos]
+        images += [_extract_first_frame(p) for p in silent_videos]
         if images:
             return DownloadResult(
                 content_id=content_id,
