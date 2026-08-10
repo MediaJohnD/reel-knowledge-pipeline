@@ -447,12 +447,40 @@ _BOT_CHALLENGE_MARKERS = (
     "enable javascript and cookies to continue",
     "attention required",
 )
+# A real challenge/login-wall page IS this message, at the very top - a long
+# legitimate article happening to contain an incidental phrase like "just a
+# moment" or "please log in" somewhere in its body shouldn't be misfired on.
+# Scanning only the opening slice keeps the true-positive case (found live
+# against roadmap.notion.site) while cutting that false-positive risk (found
+# by review, 2026-08-10).
+_CHALLENGE_CHECK_WINDOW = 600
 
 
 def _looks_like_app_shell(extracted: str) -> bool:
     too_short = len(extracted) < _MIN_PLAUSIBLE_EXTRACTED_LENGTH
     has_app_shell_marker = any(marker in extracted.lower() for marker in _APP_SHELL_MARKERS)
     return not extracted or too_short or has_app_shell_marker
+
+
+def _raise_if_challenge_or_login_wall(extracted: str, url: str) -> None:
+    """Shared by GenericHtmlFetcher and RenderedHtmlFetcher - a bot-detection
+    challenge or login wall can arrive via either path (e.g. a challenge page
+    served as a plain HTTP 200 that plain-GET already sees fine), not just
+    the rendered one (found by review, 2026-08-10 - the original version only
+    checked this on the rendered path).
+    """
+    prefix = extracted[:_CHALLENGE_CHECK_WINDOW].lower()
+    if any(marker in prefix for marker in _BOT_CHALLENGE_MARKERS):
+        raise TextFetchError(
+            f"page {url!r} is behind a bot-detection challenge (e.g. "
+            "Cloudflare) that headless Chromium didn't pass - this pipeline "
+            "doesn't attempt to bypass bot detection (no fingerprint "
+            "spoofing/anti-detection tooling), per project policy"
+        )
+    if any(marker in prefix for marker in _LOGIN_WALL_MARKERS):
+        raise TextFetchError(
+            f"page {url!r} requires login - no credentials are used by this pipeline"
+        )
 
 
 class RenderedHtmlFetcher:
@@ -509,7 +537,10 @@ class RenderedHtmlFetcher:
                     # plus a short bounded settle wait for post-load JS to
                     # finish rendering is what real testing showed works.
                     page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-                    page.wait_for_timeout(3000)
+                    # Bounded by timeout_ms too - a small timeout_seconds
+                    # config shouldn't be able to add an unbounded extra 3s
+                    # on top of the navigation timeout it's supposed to cap.
+                    page.wait_for_timeout(min(3000, timeout_ms))
                     html = page.content()
                 finally:
                     browser.close()
@@ -523,18 +554,7 @@ class RenderedHtmlFetcher:
             raise TextFetchError(f"failed to render {url!r}: {exc}") from exc
 
         extracted = (trafilatura.extract(html) or "").strip()
-        if any(marker in extracted.lower() for marker in _BOT_CHALLENGE_MARKERS):
-            raise TextFetchError(
-                f"page {url!r} is behind a bot-detection challenge (e.g. "
-                "Cloudflare) that headless Chromium didn't pass - this pipeline "
-                "doesn't attempt to bypass bot detection (no fingerprint "
-                "spoofing/anti-detection tooling), per project policy"
-            )
-        if any(marker in extracted.lower() for marker in _LOGIN_WALL_MARKERS):
-            raise TextFetchError(
-                f"page {url!r} requires login even with JS rendering - no "
-                "credentials are used by this pipeline"
-            )
+        _raise_if_challenge_or_login_wall(extracted, url)
         if _looks_like_app_shell(extracted):
             raise TextFetchError(
                 f"page {url!r} produced no usable text even after rendering - "
@@ -584,6 +604,11 @@ class GenericHtmlFetcher:
                 owned_client.close()
 
         extracted = (trafilatura.extract(html) or "").strip()
+        # A challenge/login-wall page can arrive as a plain HTTP 200 the
+        # plain-GET path already sees fine - checked before the app-shell
+        # escalation decision below, not only on the rendered path (found by
+        # review, 2026-08-10).
+        _raise_if_challenge_or_login_wall(extracted, url)
         # Many modern pages (Notion, Docs, Airtable) are a client-rendered app
         # shell with no real content in the server-sent HTML at all -
         # trafilatura then extracts whatever stray text IS server-rendered

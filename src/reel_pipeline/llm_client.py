@@ -271,11 +271,11 @@ def call_llm(
     static_prefix: str = "",
     client: httpx.Client | None = None,
 ) -> str:
-    """json_mode requests provider-native JSON-only output (Groq's
-    response_format, Gemini's response_mime_type) instead of relying solely on
-    enricher._extract_json's best-effort fenced-JSON parsing. Only meaningful
-    for groq/gemini; ignored by anthropic and ollama, whose JSON reliability
-    already comes from prompting alone.
+    """json_mode requests provider-native JSON-only output (Groq's and
+    Cerebras' response_format, Gemini's response_mime_type) instead of relying
+    solely on enricher._extract_json's best-effort fenced-JSON parsing. Only
+    meaningful for groq/gemini/cerebras; ignored by anthropic and ollama,
+    whose JSON reliability already comes from prompting alone.
 
     static_prefix is the shared, repeated instruction text that precedes the
     per-call variable content (source URL, transcript, etc). Anthropic gets it

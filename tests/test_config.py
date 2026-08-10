@@ -144,6 +144,22 @@ def test_loads_text_capture_defaults_from_settings_yaml():
 
     assert settings.text_capture.blocked_domains == []
     assert settings.enrich_text_capture_prompt.name == "enrich_text_capture.md"
+    assert settings.text_capture.render_fallback.enabled is True
+    assert settings.text_capture.render_fallback.timeout_seconds == 20
+
+
+def test_render_fallback_rejects_zero_timeout():
+    """Playwright treats timeout=0 as "disabled", not "instant" - a
+    0-or-negative timeout_seconds would silently defeat the whole point of
+    a bounded fallback rather than erroring loudly (found by review,
+    2026-08-10).
+    """
+    from pydantic import ValidationError
+
+    from reel_pipeline.config import RenderFallbackConfig
+
+    with pytest.raises(ValidationError):
+        RenderFallbackConfig(timeout_seconds=0)
 
 
 def test_loads_retry_defaults_from_settings_yaml():

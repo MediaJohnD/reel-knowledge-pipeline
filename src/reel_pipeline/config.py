@@ -98,7 +98,9 @@ class RenderFallbackConfig(BaseModel):
     # GenericHtmlFetcher behave exactly as it did before this feature existed
     # (raise TextFetchError on an app shell, no browser ever launched).
     enabled: bool = True
-    timeout_seconds: int = 20
+    # Playwright treats timeout=0 as "no timeout" (disabled), not "instant" -
+    # ge=1 keeps this a genuine upper bound rather than accidentally unbounded.
+    timeout_seconds: int = Field(default=20, ge=1)
 
 
 class TextCaptureConfig(BaseModel):

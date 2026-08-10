@@ -374,6 +374,50 @@ def test_generic_html_fetcher_falls_back_to_render_when_app_shell(tmp_path, monk
 
 
 @respx.mock
+def test_generic_html_fetcher_detects_bot_challenge_on_plain_get(tmp_path):
+    """A challenge page served as a plain HTTP 200 - long/non-shell enough to
+    pass the app-shell heuristic on its own - must still be rejected, not
+    silently captured as real content (found by review, 2026-08-10: the
+    original version only checked this on the *rendered* path).
+    """
+    settings = Settings(project_root=tmp_path)
+    challenge_html = (
+        "<html><body><article><p>Verification successful. Waiting for "
+        "example.com to respond. Enable JavaScript and cookies to continue "
+        "so we can confirm you are not a bot before granting access to this "
+        "page and its content.</p></article></body></html>"
+    )
+    respx.get("https://example.com/gated").mock(
+        return_value=httpx.Response(200, text=challenge_html)
+    )
+
+    with pytest.raises(TextFetchError, match="bot-detection challenge"):
+        GenericHtmlFetcher(settings).fetch("https://example.com/gated", "cid-plain-challenge")
+
+
+@respx.mock
+def test_generic_html_fetcher_does_not_flag_incidental_phrase_in_long_article(tmp_path):
+    """A challenge marker phrase appearing incidentally deep in a long
+    legitimate article must not trip the check - only the opening slice is
+    scanned (found by review, 2026-08-10: the original whole-document scan
+    risked false positives on ordinary English phrases like "just a
+    moment").
+    """
+    settings = Settings(project_root=tmp_path)
+    padding = "This article is about something else entirely. " * 30
+    html = (
+        f"<html><body><article><p>{padding}"
+        "Just a moment later, the story continues with more real content "
+        "that has nothing to do with any bot check.</p></article></body></html>"
+    )
+    respx.get("https://example.com/article").mock(return_value=httpx.Response(200, text=html))
+
+    result = GenericHtmlFetcher(settings).fetch("https://example.com/article", "cid-incidental")
+
+    assert "something else entirely" in result.text
+
+
+@respx.mock
 def test_notion_fetcher_raises_clear_error_on_http_failure(tmp_path):
     settings = Settings(project_root=tmp_path)
     respx.get("https://www.notion.so/Missing-Page").mock(return_value=httpx.Response(404))
@@ -611,20 +655,23 @@ def test_generic_html_fetcher_render_fallback_disabled_never_launches_browser(
 
 
 @pytest.mark.playwright
-def test_rendered_html_fetcher_detects_real_bot_challenge_on_roadmap_notion_site():
+def test_rendered_html_fetcher_correctly_rejects_real_unfetchable_page():
     """Opt-in, real (not mocked) Playwright render against the actual
     roadmap.notion.site failure this fallback was built for - proves the
     real thing works end to end without making every `uv run pytest` depend
     on network access or a Chromium binary. Run explicitly with
     `uv run pytest -m playwright`.
 
-    Live verification (2026-08-10) found this specific page sits behind a
-    bot-detection/verification challenge ("Verification successful. Waiting
-    for roadmap.notion.site to respond") that headless Chromium doesn't
-    pass - not a JS-rendering problem this fallback can solve, and per
-    project policy (no anti-detection tooling) this pipeline doesn't try to
-    bypass it. The correct, verified outcome is a clear TextFetchError, not
-    a silent capture of the challenge page's boilerplate text.
+    Live verification (2026-08-10) found this page returns different
+    unfetchable content on different runs - sometimes a bot-detection
+    challenge ("Verification successful. Waiting for ... to respond"),
+    sometimes a genuine "this page couldn't be found" after the JS app
+    loads - the live site's exact response is outside this pipeline's
+    control and not something a test should pin to one specific wording.
+    What must hold on every run is the actual property this fallback
+    exists for: a page it can't genuinely capture raises TextFetchError,
+    not a silent capture of unusable boilerplate as if it were real
+    content.
     """
     import tempfile
     from pathlib import Path
@@ -633,7 +680,7 @@ def test_rendered_html_fetcher_detects_real_bot_challenge_on_roadmap_notion_site
 
     with tempfile.TemporaryDirectory() as tmp:
         settings = SettingsForLiveTest(project_root=Path(tmp))
-        with pytest.raises(TextFetchError, match="bot-detection challenge"):
+        with pytest.raises(TextFetchError):
             RenderedHtmlFetcher(settings).fetch(
                 "https://roadmap.notion.site/", "cid-render-live"
             )

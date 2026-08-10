@@ -40,11 +40,15 @@ class ImageDescriptionError(RuntimeError):
 _REFUSAL_RE = re.compile(
     r"\b(?:cannot|can ?not|can't|unable to|not able to|don't have the ability to)\s+"
     r"(?:\w+\s+){0,2}"  # "directly", "actually", ...
-    r"(?:view|see|access|open|display|process|read)\s+"
+    r"(?:view|see|access|open|display|process|read|analyze|interpret|identify|look at)\s+"
     r"(?:\w+\s+){0,3}"  # "the actual", "any of the", ...
     r"(?:image|photo|picture|screenshot)s?\b",
     re.IGNORECASE,
 )
+# Vision models routinely emit typographic quotes ("can’t", "don’t") rather
+# than ASCII ones - normalized before matching so _REFUSAL_RE's ASCII-only
+# apostrophes don't silently miss them (found by review, 2026-08-10).
+_CURLY_QUOTES = str.maketrans({"’": "'", "‘": "'"})
 
 
 class LlmImageDescriber:
@@ -71,7 +75,7 @@ class LlmImageDescriber:
             raise ImageDescriptionError(str(exc)) from exc
 
         text = text.strip()
-        if _REFUSAL_RE.search(text):
+        if _REFUSAL_RE.search(text.translate(_CURLY_QUOTES)):
             raise ImageDescriptionError(
                 "the vision model refused to describe the image(s) rather than "
                 f"returning a description: {text[:200]!r}"

@@ -97,6 +97,10 @@ def test_describe_raises_clear_error_on_failure(tmp_path):
         "I can help you transcribe and describe the images, but since I cannot view "
         "the actual images, please describe them to me.",
         "I am unable to see the image you attached.",
+        # Coverage gap found by review (2026-08-10): the verb list originally
+        # missed "analyze"/"interpret"/"identify" refusals.
+        "I'm sorry, but I cannot analyze the image you've shared.",
+        "Unfortunately I am not able to interpret the photo directly.",
     ],
 )
 def test_describe_rejects_refusal_instead_of_writing_a_note(tmp_path, refusal):

@@ -1,7 +1,9 @@
 # Non-secret configuration for the reel pipeline.
 # Secrets (API keys, webhook shared secret) live in environment variables / .env - see .env.example.
-# Any value here can be overridden by an environment variable prefixed with REEL_
-# (e.g. paths.vault_dir is overridden by REEL_VAULT_DIR).
+# A handful of values here can be overridden by a matching REEL_* environment
+# variable - see config.py's _ENV_OVERRIDES for the exact, current list (e.g.
+# paths.vault_dir is overridden by REEL_VAULT_DIR). Not every value has one;
+# most settings are edited here directly.
 
 paths:
   inbox_dir: data/inbox
