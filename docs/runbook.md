@@ -128,9 +128,16 @@ re-runs the same CLI command.
 
 ## Guardrails you should know about
 
-- **No browser automation, ever.** Every platform is fetched by a CLI tool
-  (yt-dlp, gallery-dl) using cookies you explicitly configure - never a
-  Selenium/Playwright-style logged-in browser session.
+- **No *interactive* browser automation.** Every media platform is fetched by
+  a CLI tool (yt-dlp, gallery-dl) using cookies you explicitly configure -
+  never a logged-in browser session. Text-capture has one narrow, read-only
+  exception (2026-08-10): when a page's content is assembled entirely
+  client-side and plain `trafilatura` extraction fails, `text_fetcher.py`
+  falls back to loading it in headless Chromium and reading the rendered
+  text - no clicks, no forms, no cookies, no login, no anti-detection
+  tooling. Toggle it off with `text_capture.render_fallback.enabled: false`
+  in `config/settings.yaml`. Requires a one-time
+  `uv run playwright install chromium` after `uv sync`.
 - **Instagram is a deliberate, scoped exception, not the default-open case.**
   `CLAUDE.md`'s baseline guardrail is "no Instagram by default"; this project
   explicitly enables it via `gallery-dl` for low-volume, personal use with the

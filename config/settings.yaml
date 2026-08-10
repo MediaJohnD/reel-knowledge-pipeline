@@ -97,17 +97,26 @@ download:
 
 # Non-media knowledge sources - routed to TextFetcher (fetch + extract text)
 # instead of Downloader (yt-dlp/gallery-dl). Public links only - no OAuth/API
-# keys, no JS execution (not browser automation). As of 2026-08-10 this is a
-# catch-all: any http(s) URL not matched by download.allowed_domains above
-# routes here by default (see validators.classify_url_kind()) - the point is
-# to capture whatever knowledge/topic the user finds interesting, not just an
-# enumerated platform list. blocked_domains is the escape hatch for the rare
-# domain that should be excluded. See docs/runbook.md's "GitHub and Notion
-# text capture" section and
+# keys, no interaction/credentials in the browser-render fallback below. As of
+# 2026-08-10 this is a catch-all: any http(s) URL not matched by
+# download.allowed_domains above routes here by default (see
+# validators.classify_url_kind()) - the point is to capture whatever
+# knowledge/topic the user finds interesting, not just an enumerated platform
+# list. blocked_domains is the escape hatch for the rare domain that should be
+# excluded. See docs/runbook.md's "GitHub and Notion text capture" section and
 # docs/superpowers/specs/2026-07-16-text-capture-ingestion-design.md for the
 # original (now superseded) scoped-allow-list design.
 text_capture:
   blocked_domains: []
+  # Read-only headless-Chromium fallback for pages whose content is assembled
+  # entirely client-side (the plain GET above sees only a JS app shell). Only
+  # triggers after the plain-GET path already failed - most URLs never touch
+  # this. No cookies, no login, no interaction beyond "load the page and read
+  # what rendered" - see CLAUDE.md's narrowed browser-automation guardrail and
+  # docs/superpowers/specs/2026-08-10-js-rendered-text-capture-design.md.
+  render_fallback:
+    enabled: true
+    timeout_seconds: 20
 
 webhook:
   host: 127.0.0.1

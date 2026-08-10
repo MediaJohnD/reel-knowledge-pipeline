@@ -73,6 +73,8 @@ cp .env.example .env
 uv sync
 # uv sync --extra local-whisper   # add this if using the local transcription backend
 
+uv run playwright install chromium  # one-time; powers the JS-render text-capture fallback
+
 echo "https://www.youtube.com/watch?v=dQw4w9WgXcQ" >> data/inbox/queue.txt
 uv run python -m reel_pipeline.cli run-once
 ```
@@ -161,8 +163,12 @@ docs/                    architecture, runbook, acceptance tests
 
 ## Safety and scope
 
-- **No browser automation, ever.** Both downloaders (`yt-dlp`, `gallery-dl`)
-  are cookie-authenticated CLI tools, never a driven browser session.
+- **No *interactive* browser automation.** Both downloaders (`yt-dlp`,
+  `gallery-dl`) are cookie-authenticated CLI tools, never a driven browser
+  session. One narrow, read-only exception (2026-08-10): text-capture's
+  render fallback loads a JS-only page in headless Chromium to read its
+  rendered text when it's found nothing else works - no clicks, no forms, no
+  cookies, no anti-detection tooling. See `CLAUDE.md`'s "Risk posture".
 - **Allow-list enforced up front.** Only platforms in
   `download.allowed_domains` are ever attempted; anything in
   `download.blocked_domains` is routed to `needs-attention.txt` instead of

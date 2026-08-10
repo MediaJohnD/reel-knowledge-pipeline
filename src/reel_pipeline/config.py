@@ -93,11 +93,20 @@ class DownloadConfig(BaseModel):
     blocked_domains: list[str] = Field(default_factory=list)
 
 
+class RenderFallbackConfig(BaseModel):
+    # Off switch for the whole browser-render fallback - false makes
+    # GenericHtmlFetcher behave exactly as it did before this feature existed
+    # (raise TextFetchError on an app shell, no browser ever launched).
+    enabled: bool = True
+    timeout_seconds: int = 20
+
+
 class TextCaptureConfig(BaseModel):
     # Any http(s) URL not matched by download.allowed_domains routes to
     # TextFetcher by default (see validators.classify_url_kind()) - this list is
     # only for explicitly excluding a domain from that catch-all.
     blocked_domains: list[str] = Field(default_factory=list)
+    render_fallback: RenderFallbackConfig = Field(default_factory=RenderFallbackConfig)
 
 
 class WebhookConfig(BaseModel):

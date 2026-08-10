@@ -1,12 +1,24 @@
 # JS-Rendered Text Capture (Playwright fallback) — Design
 
-Status: **shelved for Notion specifically** - Notion got a better, non-browser
-fix instead (`NotionFetcher`, calling Notion's own internal JSON API - see
-`docs/superpowers/specs/2026-08-10-notion-api-text-capture-design.md`), which
-needed no change to the "no browser automation, ever" guardrail this
-document would have required. This document is kept as the answer for *other*
-JS-only sites that don't have an equivalent API to call directly, should that
-become a recurring problem - not implemented, no code written against it.
+Status: **implemented 2026-08-10**, with explicit owner sign-off for the
+narrowed guardrail (see CLAUDE.md's "Risk posture"). Notion itself still
+uses the better, non-browser fix (`NotionFetcher`, calling Notion's own
+internal JSON API - see
+`docs/superpowers/specs/2026-08-10-notion-api-text-capture-design.md`); this
+fallback is for the *other* JS-only pages `NotionFetcher` doesn't cover
+(`threads.com`, `socialsweep.ai`, and any future site with the same
+client-rendered-app-shell problem). Live-verified against real production
+failures: `threads.com` and `socialsweep.ai` both now capture real content
+(previously "produced no usable text"); `roadmap.notion.site` correctly
+raises a distinct "bot-detection challenge" error rather than capturing that
+page's Cloudflare-style verification-challenge boilerplate as if it were
+real content - a real bug caught during live testing before this shipped
+(the challenge text was long enough to clear the app-shell length heuristic
+and didn't match the login-wall markers). One implementation deviation from
+the plan below: `page.goto(..., wait_until="networkidle")` was replaced with
+`wait_until="domcontentloaded"` + a 3s bounded settle wait, because
+`networkidle` hung to the full timeout on a real SPA (Notion) that actually
+finished loading in ~3s - confirmed live, not assumed.
 
 ## Purpose
 

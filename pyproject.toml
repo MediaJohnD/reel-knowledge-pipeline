@@ -17,6 +17,7 @@ dependencies = [
     "gallery-dl>=1.32.9",
     "trafilatura>=2.2.0",
     "filelock>=3.13",
+    "playwright>=1.62.0",
 ]
 
 [project.optional-dependencies]
@@ -50,7 +51,10 @@ packages = ["src/reel_pipeline"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra -m 'not playwright'"
+markers = [
+    "playwright: real (not mocked) Playwright render test - needs network + a Chromium binary, opt-in via `-m playwright`",
+]
 
 [tool.ruff]
 line-length = 100

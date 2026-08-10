@@ -6,16 +6,99 @@ import httpx
 import pytest
 import respx
 
-from reel_pipeline.config import Settings
+from reel_pipeline.config import RenderFallbackConfig, Settings, TextCaptureConfig
 from reel_pipeline.text_fetcher import (
     DispatchingTextFetcher,
     DriveFetcher,
     GenericHtmlFetcher,
     GitHubFetcher,
     NotionFetcher,
+    RenderedHtmlFetcher,
     TextFetchError,
     get_text_fetcher,
 )
+
+
+def _settings_with_render_fallback(tmp_path, *, enabled):
+    return Settings(
+        project_root=tmp_path,
+        text_capture=TextCaptureConfig(render_fallback=RenderFallbackConfig(enabled=enabled)),
+    )
+
+
+class _FakePage:
+    def __init__(self, html="", *, timeout=False, error=None):
+        self._html = html
+        self._timeout = timeout
+        self._error = error
+
+    def goto(self, url, wait_until=None, timeout=None):
+        from playwright.sync_api import Error as PlaywrightError
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+        if self._timeout:
+            raise PlaywrightTimeoutError("Timeout exceeded")
+        if self._error:
+            raise PlaywrightError(self._error)
+
+    def wait_for_timeout(self, ms):
+        pass
+
+    def content(self):
+        return self._html
+
+
+class _FakeBrowser:
+    def __init__(self, page):
+        self._page = page
+        self.closed = False
+
+    def new_page(self):
+        return self._page
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeChromium:
+    def __init__(self, browser=None, launch_error=None):
+        self._browser = browser
+        self._launch_error = launch_error
+
+    def launch(self):
+        if self._launch_error is not None:
+            raise self._launch_error
+        return self._browser
+
+
+class _FakePlaywrightHandle:
+    def __init__(self, chromium):
+        self.chromium = chromium
+
+
+class _FakeSyncPlaywright:
+    def __init__(self, chromium):
+        self._chromium = chromium
+
+    def __enter__(self):
+        return _FakePlaywrightHandle(self._chromium)
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+def _install_fake_playwright(
+    monkeypatch, *, html="", timeout=False, goto_error=None, launch_error=None
+):
+    import playwright.sync_api as playwright_api
+
+    page = _FakePage(html, timeout=timeout, error=goto_error)
+    browser = _FakeBrowser(page)
+    chromium = _FakeChromium(browser=browser, launch_error=launch_error)
+    monkeypatch.setattr(
+        playwright_api, "sync_playwright", lambda: _FakeSyncPlaywright(chromium)
+    )
+    return browser
 
 
 def _notion_block(block_id, block_type, title=None, content=None):
@@ -240,7 +323,10 @@ def test_notion_fetcher_extracts_main_text(tmp_path):
 
 @respx.mock
 def test_notion_fetcher_raises_clear_error_when_extraction_is_empty(tmp_path):
-    settings = Settings(project_root=tmp_path)
+    # render_fallback disabled: this test targets the plain-GET/app-shell
+    # heuristic specifically, not the render fallback (covered separately
+    # below) - a real Chromium launch has no place in this unit test.
+    settings = _settings_with_render_fallback(tmp_path, enabled=False)
     respx.get("https://www.notion.so/Private-Page-xyz").mock(
         return_value=httpx.Response(200, text=_NOTION_LOGIN_WALL_HTML)
     )
@@ -256,13 +342,35 @@ def test_notion_fetcher_raises_clear_error_for_js_rendered_app_shell(tmp_path):
     message, which trafilatura extracts as non-empty text - the fetcher must
     still treat this as unusable, not as real page content.
     """
-    settings = Settings(project_root=tmp_path)
+    settings = _settings_with_render_fallback(tmp_path, enabled=False)
     respx.get("https://roadmap.notion.site/").mock(
         return_value=httpx.Response(200, text=_NOTION_JS_REQUIRED_HTML)
     )
 
     with pytest.raises(TextFetchError, match="client-side"):
         GenericHtmlFetcher(settings).fetch("https://roadmap.notion.site/", "cid-js-shell")
+
+
+@respx.mock
+def test_generic_html_fetcher_falls_back_to_render_when_app_shell(tmp_path, monkeypatch):
+    """render_fallback enabled (the default): an app-shell plain-GET result
+    escalates to RenderedHtmlFetcher instead of raising immediately.
+    """
+    settings = Settings(project_root=tmp_path)
+    respx.get("https://roadmap.notion.site/").mock(
+        return_value=httpx.Response(200, text=_NOTION_JS_REQUIRED_HTML)
+    )
+    rendered_html = (
+        "<html><body><article><p>Real roadmap content, only visible after "
+        "JS runs, long enough to clear the app-shell length heuristic.</p>"
+        "</article></body></html>"
+    )
+    _install_fake_playwright(monkeypatch, html=rendered_html)
+
+    result = GenericHtmlFetcher(settings).fetch("https://roadmap.notion.site/", "cid-fallback")
+
+    assert "Real roadmap content" in result.text
+    assert result.backend == "playwright-render"
 
 
 @respx.mock
@@ -398,6 +506,137 @@ def test_notion_fetcher_raises_clear_error_when_no_page_id_in_url(tmp_path):
 
     with pytest.raises(TextFetchError, match="could not find a Notion page id"):
         NotionFetcher(settings).fetch("https://someworkspace.notion.site/", "cid-notion6")
+
+
+def test_rendered_html_fetcher_extracts_text_from_rendered_dom(tmp_path, monkeypatch):
+    settings = Settings(project_root=tmp_path)
+    rendered_html = (
+        "<html><body><article><p>Content that only exists after JS runs, well "
+        "past the minimum plausible length so it clears the app-shell check.</p>"
+        "</article></body></html>"
+    )
+    browser = _install_fake_playwright(monkeypatch, html=rendered_html)
+
+    result = RenderedHtmlFetcher(settings).fetch("https://example.com/spa", "cid-render1")
+
+    assert "Content that only exists after JS runs" in result.text
+    assert result.backend == "playwright-render"
+    assert result.content_kind == "text"
+    assert browser.closed is True
+
+
+def test_rendered_html_fetcher_raises_when_still_app_shell_after_render(tmp_path, monkeypatch):
+    settings = Settings(project_root=tmp_path)
+    _install_fake_playwright(monkeypatch, html="<html><body></body></html>")
+
+    with pytest.raises(TextFetchError, match="no usable text even after rendering"):
+        RenderedHtmlFetcher(settings).fetch("https://example.com/broken-spa", "cid-render2")
+
+
+def test_rendered_html_fetcher_raises_on_bot_detection_challenge(tmp_path, monkeypatch):
+    """Regression test for a real page found during live verification
+    (roadmap.notion.site): the challenge text is long enough to clear the
+    app-shell length check and generic enough to slip past the login-wall
+    markers, so without this check it would be captured as if it were real
+    content.
+    """
+    settings = Settings(project_root=tmp_path)
+    challenge_html = (
+        "<html><body><article><p>Verification successful. Waiting for "
+        "example.com to respond\nEnable JavaScript and cookies to continue"
+        "</p></article></body></html>"
+    )
+    _install_fake_playwright(monkeypatch, html=challenge_html)
+
+    with pytest.raises(TextFetchError, match="bot-detection challenge"):
+        RenderedHtmlFetcher(settings).fetch("https://example.com/gated-by-cf", "cid-render6")
+
+
+def test_rendered_html_fetcher_raises_on_login_wall(tmp_path, monkeypatch):
+    settings = Settings(project_root=tmp_path)
+    login_html = (
+        "<html><body><article><p>Please log in to continue viewing this "
+        "content - you must sign in with an account to see the rest.</p>"
+        "</article></body></html>"
+    )
+    _install_fake_playwright(monkeypatch, html=login_html)
+
+    with pytest.raises(TextFetchError, match="requires login"):
+        RenderedHtmlFetcher(settings).fetch("https://example.com/gated", "cid-render3")
+
+
+def test_rendered_html_fetcher_raises_on_timeout(tmp_path, monkeypatch):
+    settings = Settings(project_root=tmp_path)
+    _install_fake_playwright(monkeypatch, timeout=True)
+
+    with pytest.raises(TextFetchError, match="exceeded"):
+        RenderedHtmlFetcher(settings).fetch("https://example.com/slow", "cid-render4")
+
+
+def test_rendered_html_fetcher_raises_clear_error_when_chromium_not_installed(
+    tmp_path, monkeypatch
+):
+    from playwright.sync_api import Error as PlaywrightError
+
+    settings = Settings(project_root=tmp_path)
+    _install_fake_playwright(
+        monkeypatch,
+        launch_error=PlaywrightError(
+            "Executable doesn't exist at /path/to/chromium - run playwright install"
+        ),
+    )
+
+    with pytest.raises(TextFetchError, match="Chromium not installed"):
+        RenderedHtmlFetcher(settings).fetch("https://example.com/x", "cid-render5")
+
+
+@respx.mock
+def test_generic_html_fetcher_render_fallback_disabled_never_launches_browser(
+    tmp_path, monkeypatch
+):
+    settings = _settings_with_render_fallback(tmp_path, enabled=False)
+    respx.get("https://roadmap.notion.site/").mock(
+        return_value=httpx.Response(200, text=_NOTION_JS_REQUIRED_HTML)
+    )
+
+    def _fail_if_launched():
+        pytest.fail("render fallback must not launch a browser when disabled")
+
+    import playwright.sync_api as playwright_api
+
+    monkeypatch.setattr(playwright_api, "sync_playwright", _fail_if_launched)
+
+    with pytest.raises(TextFetchError, match="client-side"):
+        GenericHtmlFetcher(settings).fetch("https://roadmap.notion.site/", "cid-no-fallback")
+
+
+@pytest.mark.playwright
+def test_rendered_html_fetcher_detects_real_bot_challenge_on_roadmap_notion_site():
+    """Opt-in, real (not mocked) Playwright render against the actual
+    roadmap.notion.site failure this fallback was built for - proves the
+    real thing works end to end without making every `uv run pytest` depend
+    on network access or a Chromium binary. Run explicitly with
+    `uv run pytest -m playwright`.
+
+    Live verification (2026-08-10) found this specific page sits behind a
+    bot-detection/verification challenge ("Verification successful. Waiting
+    for roadmap.notion.site to respond") that headless Chromium doesn't
+    pass - not a JS-rendering problem this fallback can solve, and per
+    project policy (no anti-detection tooling) this pipeline doesn't try to
+    bypass it. The correct, verified outcome is a clear TextFetchError, not
+    a silent capture of the challenge page's boilerplate text.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from reel_pipeline.config import Settings as SettingsForLiveTest
+
+    with tempfile.TemporaryDirectory() as tmp:
+        settings = SettingsForLiveTest(project_root=Path(tmp))
+        with pytest.raises(TextFetchError, match="bot-detection challenge"):
+            RenderedHtmlFetcher(settings).fetch(
+                "https://roadmap.notion.site/", "cid-render-live"
+            )
 
 
 @respx.mock

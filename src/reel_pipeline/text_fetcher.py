@@ -421,22 +421,152 @@ _APP_SHELL_MARKERS = (
 # (a stray noscript/meta fragment) than real page content - real pages,
 # even short ones, run well past this once trafilatura strips markup.
 _MIN_PLAUSIBLE_EXTRACTED_LENGTH = 60
+# Checked against the *rendered* page only (post-JS) - a plain-GET app shell
+# never gets this far. Generic enough to catch Notion's/most SPAs' own login
+# wall without hardcoding one product's copy.
+_LOGIN_WALL_MARKERS = (
+    "log in to continue",
+    "sign in to continue",
+    "log in to view this page",
+    "please log in",
+    "please sign in",
+)
+# A Cloudflare-style (or similar) bot-detection challenge page - observed live
+# against roadmap.notion.site, whose challenge text ("Verification
+# successful. Waiting for roadmap.notion.site to respond / Enable JavaScript
+# and cookies to continue") is long enough to clear the app-shell length
+# check and phrased generically enough to slip past the login-wall markers,
+# so it would otherwise be captured and written to the vault as if it were
+# real page content. Per this fallback's explicit no-anti-detection stance
+# (see RenderedHtmlFetcher's docstring), a challenge means the site is
+# actively saying no to headless access - respected, not bypassed.
+_BOT_CHALLENGE_MARKERS = (
+    "checking your browser",
+    "just a moment",
+    "verification successful",
+    "enable javascript and cookies to continue",
+    "attention required",
+)
+
+
+def _looks_like_app_shell(extracted: str) -> bool:
+    too_short = len(extracted) < _MIN_PLAUSIBLE_EXTRACTED_LENGTH
+    has_app_shell_marker = any(marker in extracted.lower() for marker in _APP_SHELL_MARKERS)
+    return not extracted or too_short or has_app_shell_marker
+
+
+class RenderedHtmlFetcher:
+    """Read-only headless-Chromium fallback for GenericHtmlFetcher, used only
+    when the plain-GET path already produced an app shell (see
+    GenericHtmlFetcher.fetch). Loads the URL, waits for it to settle, and
+    extracts text from the *rendered* DOM the same way GenericHtmlFetcher
+    extracts from raw HTML.
+
+    Deliberately narrow, per
+    docs/superpowers/specs/2026-08-10-js-rendered-text-capture-design.md:
+    - No fingerprint spoofing/anti-detection - stock headless Chromium,
+      default automation-flagged user agent. A site that blocks headless
+      browsers is respected, not worked around.
+    - No credentials - no cookies, no login, no session reuse from the
+      yt-dlp/gallery-dl cookie config. A login-gated page still fails.
+    - No interaction - navigate, wait, read. No clicking, scrolling, or
+      filling anything.
+    - One browser instance launched and closed per fetch call - no
+      persistent process, no shared state between items.
+      # ponytail: per-call launch is O(items needing fallback) browser
+      # startups; fine at "handful of pages per run" scale, upgrade to a
+      # shared browser context if that stops being true.
+    """
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+
+    def fetch(self, url: str, content_id: str) -> TranscriptResult:
+        from playwright.sync_api import Error as PlaywrightError
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+        from playwright.sync_api import sync_playwright
+
+        timeout_ms = self.settings.text_capture.render_fallback.timeout_seconds * 1000
+        try:
+            with sync_playwright() as playwright:
+                try:
+                    browser = playwright.chromium.launch()
+                except PlaywrightError as exc:
+                    if "Executable doesn't exist" in str(exc):
+                        raise TextFetchError(
+                            "Chromium not installed for the render fallback - run "
+                            "`uv run playwright install chromium`"
+                        ) from exc
+                    raise TextFetchError(
+                        f"failed to launch headless Chromium for {url!r}: {exc}"
+                    ) from exc
+                try:
+                    page = browser.new_page()
+                    # "networkidle" is unreliable for real SPAs (Notion never
+                    # goes network-idle - background websockets/polling keep
+                    # firing - confirmed live: it hung to the full timeout on
+                    # a page that actually loaded in ~3s). "domcontentloaded"
+                    # plus a short bounded settle wait for post-load JS to
+                    # finish rendering is what real testing showed works.
+                    page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                    page.wait_for_timeout(3000)
+                    html = page.content()
+                finally:
+                    browser.close()
+        except PlaywrightTimeoutError as exc:
+            raise TextFetchError(
+                f"rendering {url!r} exceeded "
+                f"{self.settings.text_capture.render_fallback.timeout_seconds}s - "
+                "the page may be slow or may never finish loading"
+            ) from exc
+        except PlaywrightError as exc:
+            raise TextFetchError(f"failed to render {url!r}: {exc}") from exc
+
+        extracted = (trafilatura.extract(html) or "").strip()
+        if any(marker in extracted.lower() for marker in _BOT_CHALLENGE_MARKERS):
+            raise TextFetchError(
+                f"page {url!r} is behind a bot-detection challenge (e.g. "
+                "Cloudflare) that headless Chromium didn't pass - this pipeline "
+                "doesn't attempt to bypass bot detection (no fingerprint "
+                "spoofing/anti-detection tooling), per project policy"
+            )
+        if any(marker in extracted.lower() for marker in _LOGIN_WALL_MARKERS):
+            raise TextFetchError(
+                f"page {url!r} requires login even with JS rendering - no "
+                "credentials are used by this pipeline"
+            )
+        if _looks_like_app_shell(extracted):
+            raise TextFetchError(
+                f"page {url!r} produced no usable text even after rendering - "
+                "the page's JS itself may have failed, or content genuinely "
+                "didn't load in time"
+            )
+
+        return TranscriptResult(
+            content_id=content_id,
+            text=extracted,
+            content_kind="text",
+            language=None,
+            backend="playwright-render",
+            duration_seconds=None,
+        )
 
 
 class GenericHtmlFetcher:
     """Plain HTTP GET + trafilatura text extraction for any public page
     classify_url_kind() routed here as "text" (Notion share links, Google
     Docs' /mobilebasic public view, Airtable share links, blog posts, ...).
-    No JS execution - not browser automation.
 
     Client-rendered app shells with no server-side content (common on Notion,
-    possible on the others) raise TextFetchError rather than returning
-    boilerplate - see the app-shell heuristic below.
+    possible on the others) fall back to RenderedHtmlFetcher (a read-only
+    headless-Chromium render) rather than failing outright, unless
+    text_capture.render_fallback.enabled is false.
     """
 
     def __init__(self, settings: Settings, client: httpx.Client | None = None):
         self.settings = settings
         self._client = client
+        self._rendered = RenderedHtmlFetcher(settings)
 
     def fetch(self, url: str, content_id: str) -> TranscriptResult:
         owned_client = self._client or httpx.Client(timeout=30.0, follow_redirects=True)
@@ -461,18 +591,15 @@ class GenericHtmlFetcher:
         # the page's actual content. The empty-string check alone doesn't
         # catch this; matching known app-shell boilerplate and a minimum
         # plausible length does.
-        too_short = len(extracted) < _MIN_PLAUSIBLE_EXTRACTED_LENGTH
-        has_app_shell_marker = any(
-            marker in extracted.lower() for marker in _APP_SHELL_MARKERS
-        )
-        looks_like_app_shell = not extracted or too_short or has_app_shell_marker
-        if looks_like_app_shell:
-            raise TextFetchError(
-                f"page {url!r} produced no usable text - it's rendered "
-                "client-side with no real content in the server HTML (or requires "
-                "login), rather than being genuinely empty. This pipeline cannot "
-                "fetch it without browser automation, which is against project policy."
-            )
+        if _looks_like_app_shell(extracted):
+            if not self.settings.text_capture.render_fallback.enabled:
+                raise TextFetchError(
+                    f"page {url!r} produced no usable text - it's rendered "
+                    "client-side with no real content in the server HTML (or requires "
+                    "login), rather than being genuinely empty. The browser-render "
+                    "fallback is disabled (text_capture.render_fallback.enabled: false)."
+                )
+            return self._rendered.fetch(url, content_id)
 
         return TranscriptResult(
             content_id=content_id,

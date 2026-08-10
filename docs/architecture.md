@@ -122,12 +122,15 @@ or webhook - converges on `state.json` before any processing begins, so:
 
 ## Safety guardrails (see `docs/runbook.md` for details)
 
-- No browser automation, ever. Only `download.allowed_domains` in
-  `config/settings.yaml` are attempted, via yt-dlp or gallery-dl (both
+- No *interactive* browser automation. `download.allowed_domains` in
+  `config/settings.yaml` are attempted only via yt-dlp or gallery-dl (both
   cookie-authenticated CLI tools, never a driven browser session).
   `download.blocked_domains` (if any are added later) is enforced up front:
   those URLs are routed to `needs-attention.txt` with a clear reason instead
-  of being downloaded.
+  of being downloaded. `text_fetcher.py`'s `RenderedHtmlFetcher` (2026-08-10)
+  is the one narrow, read-only exception: headless Chromium, no clicks/forms/
+  cookies/anti-detection, confined to text-capture's fallback path when plain
+  `trafilatura` extraction already failed - `downloader.py` is untouched.
 - Instagram, Facebook, LinkedIn, and Google Drive are each a deliberate, scoped
   exception to `CLAUDE.md`'s "no social platform by default" baseline - enabled
   here for low-volume personal use with the account owner's own real account, via

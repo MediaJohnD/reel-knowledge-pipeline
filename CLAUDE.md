@@ -14,7 +14,24 @@ The system supports:
 7. logging, idempotency, and recovery (`logging_setup.py`, `queue_manager.py`, `worker.py`)
 
 ## Risk posture
-- No browser automation, ever - only cookie-authenticated CLI tools (yt-dlp, gallery-dl).
+- No *interactive* browser automation, ever - no account actions, form fills,
+  clicks, or logins. This was an unqualified "no browser automation, ever"
+  until 2026-08-10, when it was deliberately narrowed (owner sign-off given
+  explicitly, not inferred) to add one scoped exception: `text_fetcher.py`'s
+  `RenderedHtmlFetcher`, a read-only headless-Chromium fallback used only
+  when the plain-GET + `trafilatura` text-capture path already failed on a
+  client-rendered app shell (`text_capture.render_fallback` in
+  `config/settings.yaml`, default on). It navigates, waits for the page to
+  settle, and reads the rendered DOM - no clicks, no scrolling, no form
+  fills, no cookies/login/session reuse from the yt-dlp/gallery-dl cookie
+  config, and no anti-detection/fingerprint-spoofing tooling (a site that
+  blocks headless Chromium is respected, not worked around - confirmed live
+  against `roadmap.notion.site`, which sits behind a bot-detection challenge
+  the fallback correctly refuses to try to pass, raising a clear error
+  instead of capturing the challenge page as content). Confined to
+  `text_fetcher.py`; `downloader.py` (yt-dlp/gallery-dl) is untouched and
+  still the only thing that ever uses cookies. See
+  `docs/superpowers/specs/2026-08-10-js-rendered-text-capture-design.md`.
 - Instagram is explicitly enabled as of 2026-07-11 - a deliberate, scoped exception to the
   general "no Instagram by default" baseline, made for the project owner's own real account
   (no burner) at low volume ("a handful of reels that matter", not bulk/scheduled scraping).
