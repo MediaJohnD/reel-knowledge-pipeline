@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Literal
 
 from reel_pipeline.config import Settings
 from reel_pipeline.models import (
@@ -16,7 +17,9 @@ from reel_pipeline.queue_manager import QueueManager
 from reel_pipeline.vault_organizer import organize_vault
 
 
-def _write_done_record(settings, manager, content_id, title, content_kind="media"):
+def _write_done_record(
+    settings, manager, content_id, title, content_kind: Literal["media", "text"] = "media"
+):
     item = ContentItem(
         content_id=content_id,
         source_url=f"https://example.com/{content_id}",
