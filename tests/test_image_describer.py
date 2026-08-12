@@ -101,6 +101,12 @@ def test_describe_raises_clear_error_on_failure(tmp_path):
         # missed "analyze"/"interpret"/"identify" refusals.
         "I'm sorry, but I cannot analyze the image you've shared.",
         "Unfortunately I am not able to interpret the photo directly.",
+        # Coverage gap found live (2026-08-12): a positively-phrased refusal that
+        # never says "cannot" - the model asks to be sent the images instead of
+        # describing the ones already attached. One such note reached the vault
+        # before this pattern was added.
+        "Certainly, please provide the images so I can analyze them for you.",
+        "Sure! Please share the images and I'll describe them in detail.",
     ],
 )
 def test_describe_rejects_refusal_instead_of_writing_a_note(tmp_path, refusal):
@@ -140,6 +146,30 @@ def test_describe_keeps_genuine_description_that_mentions_images(tmp_path):
             return_value=httpx.Response(200, json={"response": description})
         )
         result = LlmImageDescriber(settings).describe([image_path], "cid-genuine")
+
+    assert result.text == description
+
+
+def test_describe_keeps_genuine_description_that_mentions_sharing_or_providing(tmp_path):
+    # _REQUEST_FOR_IMAGES_RE targets an imperative request for images the model
+    # doesn't have - a genuine description that merely narrates someone
+    # sharing/providing something depicted in the image must still pass.
+    settings = make_settings(
+        tmp_path,
+        llm=LlmConfig(provider="ollama", ollama_host="http://localhost:11434"),
+    )
+    image_path = tmp_path / "post_1.jpg"
+    image_path.write_bytes(b"fake-jpg-bytes")
+    description = (
+        "The screenshot shows a message where someone offers to share the photos "
+        "from last weekend's trip once they upload them to the shared drive."
+    )
+
+    with respx.mock:
+        respx.post("http://localhost:11434/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": description})
+        )
+        result = LlmImageDescriber(settings).describe([image_path], "cid-genuine-2")
 
     assert result.text == description
 

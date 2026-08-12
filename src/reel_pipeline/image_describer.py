@@ -45,6 +45,24 @@ _REFUSAL_RE = re.compile(
     r"(?:image|photo|picture|screenshot)s?\b",
     re.IGNORECASE,
 )
+# A second, positively-phrased refusal shape: the model agrees to help but asks
+# to be *sent* the images, rather than describing the ones already attached
+# ("Certainly, please provide the images so I can analyze them for you") - it
+# never says "cannot", so _REFUSAL_RE alone missed it (found 2026-08-12, one
+# such note reached the vault before this was added). "please" is required
+# (not just the verb+noun pair) - a genuine description narrating someone
+# sharing/providing something ("offers to share the photos from the trip")
+# matches the verb+noun proximity alone but would never plausibly say
+# "please" with no addressee, so requiring it keeps the false-positive rate
+# down per this module's founding tradeoff: under-catching beats dropping a
+# good capture.
+_REQUEST_FOR_IMAGES_RE = re.compile(
+    r"\bplease\s+(?:\w+\s+){0,2}"
+    r"(?:provide|share|send|attach|upload|paste)\s+"
+    r"(?:\w+\s+){0,3}"  # "the", "each of the", "me the actual", ...
+    r"(?:image|photo|picture|screenshot)s?\b",
+    re.IGNORECASE,
+)
 # Vision models routinely emit typographic quotes ("can’t", "don’t") rather
 # than ASCII ones - normalized before matching so _REFUSAL_RE's ASCII-only
 # apostrophes don't silently miss them (found by review, 2026-08-10).
@@ -75,7 +93,8 @@ class LlmImageDescriber:
             raise ImageDescriptionError(str(exc)) from exc
 
         text = text.strip()
-        if _REFUSAL_RE.search(text.translate(_CURLY_QUOTES)):
+        normalized = text.translate(_CURLY_QUOTES)
+        if _REFUSAL_RE.search(normalized) or _REQUEST_FOR_IMAGES_RE.search(normalized):
             raise ImageDescriptionError(
                 "the vision model refused to describe the image(s) rather than "
                 f"returning a description: {text[:200]!r}"
