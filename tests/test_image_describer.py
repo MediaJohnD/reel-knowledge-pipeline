@@ -71,6 +71,35 @@ def test_describe_uses_image_description_provider_override_when_text_provider_la
     assert result.backend == "vision:ollama:mistral-small3.1"
 
 
+def test_describe_uses_gemini_vision(tmp_path):
+    settings = make_settings(
+        tmp_path,
+        llm=LlmConfig(provider="gemini"),
+        image_description=ImageDescriptionConfig(model="gemini-2.5-flash", provider="gemini"),
+    )
+    settings.gemini_api_key = "gemini-test-key"
+    image_path = tmp_path / "post_1.jpg"
+    image_path.write_bytes(b"fake-jpg-bytes")
+
+    with respx.mock:
+        respx.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        ).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "candidates": [
+                        {"content": {"parts": [{"text": "A screenshot described via Gemini."}]}}
+                    ]
+                },
+            )
+        )
+        result = LlmImageDescriber(settings).describe([image_path], "cid-gemini")
+
+    assert result.text == "A screenshot described via Gemini."
+    assert result.backend == "vision:gemini:gemini-2.5-flash"
+
+
 def test_describe_raises_clear_error_on_failure(tmp_path):
     settings = make_settings(
         tmp_path,

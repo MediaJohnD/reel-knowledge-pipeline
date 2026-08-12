@@ -74,6 +74,25 @@ class LlmCallError(RuntimeError):
     """Raised when an LLM call fails or returns no usable text."""
 
 
+def _gemini_empty_text_error(payload: dict) -> LlmCallError:
+    """Gemini 2.5 models spend part of max_tokens on internal 'thinking' before
+    the visible answer - a tight max_tokens (found live 2026-08-12, testing the
+    new vision path at max_tokens=50) can exhaust the whole budget on thinking
+    and return finishReason='MAX_TOKENS' with zero answer text. Surfacing that
+    reason directly, instead of dumping the raw payload, makes "raise
+    max_tokens" the obvious fix rather than something to reverse-engineer.
+    """
+    candidates = payload.get("candidates", [])
+    finish_reason = candidates[0].get("finishReason") if candidates else None
+    if finish_reason == "MAX_TOKENS":
+        return LlmCallError(
+            "Gemini response had no text content: max_tokens was exhausted "
+            "(likely by the model's internal 'thinking' before any answer text) "
+            "- try raising max_tokens."
+        )
+    return LlmCallError(f"Gemini API response had no text content: {payload!r}")
+
+
 def _call_claude(
     settings: Settings,
     prompt: str,
@@ -283,7 +302,7 @@ def _call_gemini(
     parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
     text = "".join(p.get("text", "") for p in parts)
     if not text:
-        raise LlmCallError(f"Gemini API response had no text content: {payload!r}")
+        raise _gemini_empty_text_error(payload)
     return text
 
 
@@ -470,6 +489,54 @@ def _call_ollama_vision(
     return text
 
 
+def _call_gemini_vision(
+    settings: Settings,
+    prompt: str,
+    image_paths: list[Path],
+    *,
+    model: str,
+    max_tokens: int,
+    static_prefix: str = "",
+    client: httpx.Client | None = None,
+) -> str:
+    """Every current Gemini model is natively multimodal - unlike Ollama/Anthropic,
+    there's no separate 'vision-capable' model tier to pick here.
+    """
+    api_key = settings.require_gemini_api_key()
+    combined_prompt = f"{static_prefix}\n\n{prompt}" if static_prefix else prompt
+    parts: list[dict] = []
+    for path in image_paths:
+        media_type = mimetypes.guess_type(path.name)[0] or _DEFAULT_IMAGE_MEDIA_TYPE
+        parts.append({"inline_data": {"mime_type": media_type, "data": _encode_image_b64(path)}})
+    parts.append({"text": combined_prompt})
+
+    owned_client = client or httpx.Client(timeout=180.0)
+    owns_client = client is None
+    try:
+        response = owned_client.post(
+            f"{_GEMINI_ENDPOINT}/{model}:generateContent",
+            params={"key": api_key},
+            json={
+                "contents": [{"parts": parts}],
+                "generationConfig": {"maxOutputTokens": max_tokens},
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except httpx.HTTPError as exc:
+        raise LlmCallError(f"Gemini API vision request failed: {exc}") from exc
+    finally:
+        if owns_client:
+            owned_client.close()
+
+    candidates = payload.get("candidates", [])
+    resp_parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
+    text = "".join(p.get("text", "") for p in resp_parts)
+    if not text:
+        raise _gemini_empty_text_error(payload)
+    return text
+
+
 def describe_images(
     settings: Settings,
     prompt: str,
@@ -481,10 +548,11 @@ def describe_images(
     client: httpx.Client | None = None,
     provider: str | None = None,
 ) -> str:
-    """provider overrides settings.llm.provider for this call - only "ollama" and
-    "anthropic" support vision (Groq/Gemini/Cerebras have no vision path here), so
-    callers whose text provider is one of those pass settings.image_description.provider
-    (or default to "ollama") instead of falling through to the text provider.
+    """provider overrides settings.llm.provider for this call - only "ollama",
+    "anthropic", and "gemini" support vision (Groq/Cerebras have no vision path
+    here), so callers whose text provider is one of those pass
+    settings.image_description.provider (or default to "ollama") instead of
+    falling through to the text provider.
     """
     if not image_paths:
         raise ValueError("describe_images requires at least one image path")
@@ -510,8 +578,18 @@ def describe_images(
             static_prefix=static_prefix,
             client=client,
         )
+    if resolved_provider == "gemini":
+        return _call_gemini_vision(
+            settings,
+            prompt,
+            image_paths,
+            model=model,
+            max_tokens=max_tokens,
+            static_prefix=static_prefix,
+            client=client,
+        )
     raise ValueError(
         f"Unknown or vision-incapable llm provider: {resolved_provider!r}. "
-        "Vision only supports 'ollama' or 'anthropic' - set image_description.provider "
-        "in settings.yaml if llm.provider is 'groq'/'gemini'/'cerebras'."
+        "Vision only supports 'ollama', 'anthropic', or 'gemini' - set "
+        "image_description.provider in settings.yaml if llm.provider is 'groq'/'cerebras'."
     )

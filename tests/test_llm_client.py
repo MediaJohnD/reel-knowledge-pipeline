@@ -176,6 +176,27 @@ def test_call_llm_dispatches_to_gemini(tmp_path):
     assert result == "hello from gemini"
 
 
+def test_call_llm_gemini_max_tokens_exhaustion_raises_diagnosable_error(tmp_path):
+    # Gemini 2.5's internal "thinking" can consume the whole max_tokens budget
+    # before any answer text - finishReason="MAX_TOKENS" with empty parts.
+    # Found live 2026-08-12 testing the vision path; the error should say what
+    # actually happened instead of dumping the raw response payload.
+    settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="gemini"))
+    settings.gemini_api_key = "gemini-test-key"
+
+    with respx.mock:
+        respx.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        ).mock(
+            return_value=httpx.Response(
+                200,
+                json={"candidates": [{"content": {"role": "model"}, "finishReason": "MAX_TOKENS"}]},
+            )
+        )
+        with pytest.raises(LlmCallError, match="max_tokens was exhausted"):
+            call_llm(settings, "prompt text", model="gemini-2.5-flash", max_tokens=50)
+
+
 def test_call_llm_groq_json_mode_sets_response_format(tmp_path):
     settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="groq"))
     settings.groq_api_key = "gsk-test"
