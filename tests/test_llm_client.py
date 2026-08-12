@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import time
 
 import httpx
 import pytest
 import respx
 
 from reel_pipeline.config import LlmConfig, Settings
-from reel_pipeline.llm_client import LlmCallError, call_llm
+from reel_pipeline.llm_client import LlmCallError, _seconds_to_wait, call_llm
 
 
 def test_call_llm_dispatches_to_ollama(tmp_path):
@@ -228,3 +229,37 @@ def test_call_llm_raises_for_unknown_provider(tmp_path):
 
     with pytest.raises(ValueError, match="not-a-real-provider"):
         call_llm(settings, "prompt text", model="whatever", max_tokens=100)
+
+
+def test_seconds_to_wait_is_zero_on_first_call():
+    assert _seconds_to_wait(min_interval=2.0, elapsed_since_last_call=None) == 0.0
+
+
+def test_seconds_to_wait_is_zero_when_interval_disabled():
+    assert _seconds_to_wait(min_interval=0.0, elapsed_since_last_call=0.0) == 0.0
+
+
+def test_seconds_to_wait_returns_remaining_gap():
+    assert _seconds_to_wait(min_interval=2.0, elapsed_since_last_call=0.5) == 1.5
+
+
+def test_seconds_to_wait_is_zero_once_interval_has_elapsed():
+    assert _seconds_to_wait(min_interval=2.0, elapsed_since_last_call=5.0) == 0.0
+
+
+def test_call_llm_throttles_consecutive_calls_to_same_provider(tmp_path):
+    settings = Settings(
+        project_root=tmp_path,
+        llm=LlmConfig(provider="ollama", min_interval_seconds={"ollama": 0.2}),
+    )
+
+    with respx.mock:
+        respx.post("http://localhost:11434/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": "ok"})
+        )
+        start = time.monotonic()
+        call_llm(settings, "first", model="m", max_tokens=10)
+        call_llm(settings, "second", model="m", max_tokens=10)
+        elapsed = time.monotonic() - start
+
+    assert elapsed >= 0.2

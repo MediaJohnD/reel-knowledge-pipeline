@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+import time
 from pathlib import Path
 
 import httpx
@@ -42,6 +43,31 @@ _GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 _CEREBRAS_ENDPOINT = "https://api.cerebras.ai/v1/chat/completions"
 _GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
 _DEFAULT_IMAGE_MEDIA_TYPE = "image/jpeg"
+
+# Per-provider timestamp (time.monotonic()) of the last call made by this
+# process - checked by _throttle() before every provider call so a run_once()
+# pass processing many items back-to-back can't burst past a hosted
+# provider's rate limit. Process-local only: separate worker/webhook
+# processes don't share it, but within one run_once() call (the actual
+# source of the 2026-08-12 Cerebras 429s) it's exactly what's needed.
+_last_call_at: dict[str, float] = {}
+
+
+def _seconds_to_wait(min_interval: float, elapsed_since_last_call: float | None) -> float:
+    """Pure helper for _throttle(), split out for testing without real sleeps."""
+    if min_interval <= 0 or elapsed_since_last_call is None:
+        return 0.0
+    return max(0.0, min_interval - elapsed_since_last_call)
+
+
+def _throttle(settings: Settings, provider: str) -> None:
+    min_interval = settings.llm.min_interval_seconds.get(provider, 0.0)
+    now = time.monotonic()
+    last = _last_call_at.get(provider)
+    wait = _seconds_to_wait(min_interval, None if last is None else now - last)
+    if wait > 0:
+        time.sleep(wait)
+    _last_call_at[provider] = time.monotonic()
 
 
 class LlmCallError(RuntimeError):
@@ -285,6 +311,7 @@ def call_llm(
     Gemini, none for Ollama) only pays off if the shared text is a literal
     prefix of the request.
     """
+    _throttle(settings, settings.llm.provider)
     if settings.llm.provider == "ollama":
         combined = f"{static_prefix}\n\n{prompt}" if static_prefix else prompt
         return _call_ollama(settings, combined, model=model, max_tokens=max_tokens, client=client)
@@ -462,6 +489,7 @@ def describe_images(
     if not image_paths:
         raise ValueError("describe_images requires at least one image path")
     resolved_provider = provider or settings.llm.provider
+    _throttle(settings, resolved_provider)
     if resolved_provider == "ollama":
         return _call_ollama_vision(
             settings,

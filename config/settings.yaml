@@ -39,6 +39,17 @@ llm:
   # Ollama defaults to a 4096-token context regardless of the model's real
   # capacity; long transcripts or multi-image carousels can exceed that.
   ollama_num_ctx: 16384
+  # Minimum seconds between consecutive calls to each provider - run_once()
+  # has no natural pacing between items, so re-processing a backlog can fire
+  # a dozen+ calls in under a minute and trip a hosted free-tier rate limit
+  # (happened against Cerebras on 2026-08-12). Ollama is local/unmetered, so
+  # it's unthrottled; the hosted providers all get a few seconds of spacing.
+  min_interval_seconds:
+    anthropic: 1.0
+    ollama: 0.0
+    groq: 2.0
+    gemini: 2.0
+    cerebras: 2.0
 
 enrichment:
   # Model name meaning depends on llm.provider above - a Cerebras/Groq model id

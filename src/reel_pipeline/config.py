@@ -58,6 +58,21 @@ class LlmConfig(BaseModel):
     # erroring) on long transcripts or multi-image carousels. Set generously -
     # this only affects memory use for the duration of a request, not model choice.
     ollama_num_ctx: int = 16384
+    # Minimum seconds between consecutive calls to a given provider - worker.py
+    # processes actionable items back-to-back with no natural pacing (a backlog
+    # re-queue can fire a dozen+ LLM calls in under a minute), which is exactly
+    # what tripped a Cerebras 429 on 2026-08-12. Ollama is local with no vendor
+    # rate limit, so it defaults to 0 (no throttling). Missing keys also default
+    # to 0 via .get() in llm_client.py, not an error.
+    min_interval_seconds: dict[str, float] = Field(
+        default_factory=lambda: {
+            "anthropic": 1.0,
+            "ollama": 0.0,
+            "groq": 2.0,
+            "gemini": 2.0,
+            "cerebras": 2.0,
+        }
+    )
 
 
 class EnrichmentConfig(BaseModel):
