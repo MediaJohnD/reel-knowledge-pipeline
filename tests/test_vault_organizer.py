@@ -13,7 +13,7 @@ from reel_pipeline.models import (
 )
 from reel_pipeline.obsidian_writer import write_note
 from reel_pipeline.queue_manager import QueueManager
-from reel_pipeline.vault_organizer import TEXT_CAPTURE_SUBFOLDER, organize_vault
+from reel_pipeline.vault_organizer import organize_vault
 
 
 def _write_done_record(settings, manager, content_id, title, content_kind="media"):
@@ -40,29 +40,52 @@ def _write_done_record(settings, manager, content_id, title, content_kind="media
     return path
 
 
-def test_media_note_stays_at_vault_root(tmp_path):
+def test_note_already_in_a_manually_sorted_subfolder_is_left_there(tmp_path):
+    # This is the whole point: the organizer must never move a note between
+    # folders based on content_kind - the vault's real foldering is manual,
+    # topic-based sorting, unrelated to media vs. text-capture.
     settings = Settings(project_root=tmp_path)
     manager = QueueManager(settings)
     path = _write_done_record(settings, manager, "vid1", "A Reel Title", content_kind="media")
 
+    manually_sorted_dir = settings.vault_dir / "Projects"
+    manually_sorted_dir.mkdir(parents=True, exist_ok=True)
+    moved_path = manually_sorted_dir / path.name
+    path.rename(moved_path)
+
+    def mutate(state):
+        state["vid1"].note_path = str(moved_path)
+
+    manager.mutate_state(mutate)
+
     changes = organize_vault(settings)
 
     assert changes == []
-    assert path.parent == settings.vault_dir
+    assert moved_path.is_file()
 
 
-def test_text_capture_note_moves_into_resources_subfolder(tmp_path):
+def test_filename_is_normalized_in_place_without_changing_folder(tmp_path):
     settings = Settings(project_root=tmp_path)
     manager = QueueManager(settings)
-    _write_done_record(settings, manager, "doc1", "A Text Capture", content_kind="text")
+    path = _write_done_record(settings, manager, "doc1", "A Text Capture", content_kind="text")
+
+    subfolder = settings.vault_dir / "Resources"
+    subfolder.mkdir(parents=True, exist_ok=True)
+    stale_name = subfolder / "Stale Old Name.md"
+    path.rename(stale_name)
+
+    def mutate(state):
+        state["doc1"].note_path = str(stale_name)
+
+    manager.mutate_state(mutate)
 
     changes = organize_vault(settings)
 
     assert len(changes) == 1
-    moved = settings.vault_dir / TEXT_CAPTURE_SUBFOLDER / "a-text-capture.md"
-    assert moved.is_file()
+    normalized = subfolder / "a-text-capture.md"
+    assert normalized.is_file()
     state = manager.load_state()
-    assert state["doc1"].note_path == str(moved)
+    assert state["doc1"].note_path == str(normalized)
 
 
 def test_stale_note_path_with_mismatched_frontmatter_content_id_is_skipped_not_renamed(tmp_path):

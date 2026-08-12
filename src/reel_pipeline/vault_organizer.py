@@ -1,13 +1,14 @@
 """Nightly vault housekeeping.
 
-Repairs filename/location drift for notes already written by
-obsidian_writer.py: re-derives each DONE record's canonical slug filename
-from its frontmatter title, and files it under the vault-root subfolder that
-matches its content_kind - media (reels) stay at the vault root, text-capture
-notes move into `Resources/`. obsidian_writer.write_note() already gets new
-notes right on first write; this only fixes drift (legacy filenames, notes
-moved out-of-band) and is safe to run repeatedly - a note already in its
-canonical spot is left untouched.
+Normalizes each DONE record's note filename to its frontmatter-title slug,
+in whatever folder it currently lives in. Does NOT move notes between
+folders - an earlier version filed notes into `Resources/` vs. vault root
+by content_kind (media vs. text-capture), but that fights this vault's real
+organization: notes get manually sorted into Areas/Projects/Resources/etc.
+by topic, independent of content_kind, and the content_kind-based move
+undid that sorting the one time it ran against healed note_path bookkeeping
+(see the 2026-08-12 revert). Filename-only normalization has no such
+conflict - it's safe regardless of which folder a note lives in.
 """
 
 from __future__ import annotations
@@ -18,14 +19,6 @@ from reel_pipeline.config import Settings
 from reel_pipeline.models import ItemStatus, StateRecord
 from reel_pipeline.obsidian_writer import note_filename, read_frontmatter
 from reel_pipeline.queue_manager import QueueManager
-
-TEXT_CAPTURE_SUBFOLDER = "Resources"
-
-
-def _target_dir(settings: Settings, record: StateRecord) -> Path:
-    if record.content_kind == "text":
-        return settings.vault_dir / TEXT_CAPTURE_SUBFOLDER
-    return settings.vault_dir
 
 
 def organize_vault(settings: Settings) -> list[str]:
@@ -64,8 +57,7 @@ def organize_vault(settings: Settings) -> list[str]:
             if not title:
                 title = current.stem
 
-            target_dir = _target_dir(settings, record)
-            target_dir.mkdir(parents=True, exist_ok=True)
+            target_dir = current.parent
             target_name = note_filename(target_dir, record.content_id, title)
             target_path = target_dir / target_name
 

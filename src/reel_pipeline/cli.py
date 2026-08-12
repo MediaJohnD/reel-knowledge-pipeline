@@ -80,9 +80,10 @@ def retry(
 
 @app.command("organize-vault")
 def organize_vault_cmd() -> None:
-    """Normalize note filenames and file each note into the vault subfolder
-    matching its content_kind (media stays at vault root, text-capture moves
-    to Resources/). Safe to run repeatedly - already-correct notes are skipped.
+    """Normalize each note's filename to its frontmatter title slug, in place -
+    never moves a note between folders (vault foldering is manual/topic-based,
+    not something this pipeline decides). Safe to run repeatedly - already-
+    correct notes are skipped.
     """
     from reel_pipeline.vault_organizer import organize_vault
 
