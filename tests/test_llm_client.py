@@ -136,6 +136,43 @@ def test_call_llm_dispatches_to_groq(tmp_path):
     assert result == "hello from groq"
 
 
+def test_call_llm_groq_strips_think_block_from_reasoning_models(tmp_path):
+    settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="groq"))
+    settings.groq_api_key = "gsk-test"
+    raw_content = "\n<think>\nreasoning about the answer\n</think>\n\nhello from qwen"
+
+    with respx.mock:
+        route = respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200, json={"choices": [{"message": {"content": raw_content}}]}
+            )
+        )
+        result = call_llm(settings, "prompt text", model="qwen/qwen3.6-27b", max_tokens=100)
+
+    assert result == "hello from qwen"
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["reasoning_format"] == "raw"
+
+
+def test_call_llm_groq_truncated_reasoning_raises_instead_of_leaking_fragment(tmp_path):
+    # max_tokens exhausted mid-reasoning, before a closing </think> ever
+    # appeared - found live 2026-08-12. There's no confirmed answer text, so
+    # this must be a real, diagnosable failure, not a silently "successful"
+    # call returning a chopped-off reasoning fragment as the answer.
+    settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="groq"))
+    settings.groq_api_key = "gsk-test"
+    truncated = "\n<think>\nStill reasoning and ran out of budget"
+
+    with respx.mock:
+        respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200, json={"choices": [{"message": {"content": truncated}}]}
+            )
+        )
+        with pytest.raises(LlmCallError, match="no text content"):
+            call_llm(settings, "prompt text", model="qwen/qwen3.6-27b", max_tokens=50)
+
+
 def test_call_llm_dispatches_to_cerebras(tmp_path):
     settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="cerebras"))
     settings.cerebras_api_key = "csk-test"
@@ -209,8 +246,10 @@ def test_call_llm_groq_json_mode_sets_response_format(tmp_path):
             settings, "prompt text", model="llama-3.1-8b-instant", max_tokens=100, json_mode=True
         )
 
-    sent_body = route.calls.last.request.content
-    assert json.loads(sent_body)["response_format"] == {"type": "json_object"}
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["response_format"] == {"type": "json_object"}
+    # "raw" reasoning_format isn't supported alongside JSON mode.
+    assert "reasoning_format" not in sent
 
 
 def test_call_llm_groq_omits_response_format_by_default(tmp_path):

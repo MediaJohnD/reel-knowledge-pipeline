@@ -100,6 +100,41 @@ def test_describe_uses_gemini_vision(tmp_path):
     assert result.backend == "vision:gemini:gemini-2.5-flash"
 
 
+def test_describe_uses_groq_vision(tmp_path):
+    settings = make_settings(
+        tmp_path,
+        llm=LlmConfig(provider="groq"),
+        image_description=ImageDescriptionConfig(model="qwen/qwen3.6-27b", provider="groq"),
+    )
+    settings.groq_api_key = "gsk-test"
+    image_path = tmp_path / "post_1.jpg"
+    image_path.write_bytes(b"fake-jpg-bytes")
+
+    # Qwen (found live 2026-08-12) inlines a <think>...</think> reasoning
+    # block before the real answer when reasoning_format="raw" is requested -
+    # this must not leak into the note as if it were part of the description.
+    raw_content = (
+        "\n<think>\nThe user wants a description.\n</think>\n\nA screenshot described via Groq."
+    )
+
+    with respx.mock:
+        route = respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200, json={"choices": [{"message": {"content": raw_content}}]}
+            )
+        )
+        result = LlmImageDescriber(settings).describe([image_path], "cid-groq")
+
+    assert result.text == "A screenshot described via Groq."
+    assert result.backend == "vision:groq:qwen/qwen3.6-27b"
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["reasoning_format"] == "raw"
+    content = sent["messages"][0]["content"]
+    assert content[0]["type"] == "text" and content[0]["text"]
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
 def test_describe_raises_clear_error_on_failure(tmp_path):
     settings = make_settings(
         tmp_path,

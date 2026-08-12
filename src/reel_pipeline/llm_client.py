@@ -43,6 +43,8 @@ _GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 _CEREBRAS_ENDPOINT = "https://api.cerebras.ai/v1/chat/completions"
 _GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
 _DEFAULT_IMAGE_MEDIA_TYPE = "image/jpeg"
+_THINK_OPEN_TAG = "<think>"
+_THINK_CLOSE_TAG = "</think>"
 
 # Per-provider timestamp (time.monotonic()) of the last call made by this
 # process - checked by _throttle() before every provider call so a run_once()
@@ -68,6 +70,24 @@ def _throttle(settings: Settings, provider: str) -> None:
     if wait > 0:
         time.sleep(wait)
     _last_call_at[provider] = time.monotonic()
+
+
+def _strip_groq_reasoning(text: str) -> str:
+    """Reasoning-capable Groq models (Qwen, DeepSeek-R1, ...) called with
+    reasoning_format="raw" put their internal reasoning before a closing
+    </think> tag, with the real answer after it. If max_tokens ran out mid-
+    reasoning before a closing tag ever appeared (found live 2026-08-12 -
+    reasoning_format="hidden" hit this same failure invisibly, spending the
+    whole budget and returning nothing with no way to tell why), there's no
+    confirmed answer text - return "" so the caller's existing empty-text
+    check reports a real, diagnosable failure instead of silently leaking a
+    chopped-off reasoning fragment as if it were the model's answer.
+    """
+    if _THINK_CLOSE_TAG in text:
+        return text.rsplit(_THINK_CLOSE_TAG, 1)[1].strip()
+    if _THINK_OPEN_TAG in text:
+        return ""
+    return text.strip()
 
 
 class LlmCallError(RuntimeError):
@@ -199,6 +219,19 @@ def _call_groq(
     }
     if json_mode:
         body["response_format"] = {"type": "json_object"}
+        # "raw" reasoning_format isn't supported alongside JSON mode - Groq
+        # forces reasoning into a separate message.reasoning field server-side
+        # in that case, leaving content already clean with nothing to strip.
+    else:
+        # Reasoning-capable Groq models (Qwen, DeepSeek-R1, ...) otherwise
+        # inline a <think>...</think> block before the actual answer. "raw"
+        # keeps it visible so _strip_groq_reasoning() below can remove it -
+        # NOT "hidden": found live 2026-08-12 that hidden reasoning still
+        # spends max_tokens invisibly and can return a totally empty answer
+        # with zero indication why, whereas raw at least lets a truncated
+        # (unclosed) reasoning block be detected and reported as a real
+        # failure instead of silently succeeding with nothing.
+        body["reasoning_format"] = "raw"
     try:
         response = owned_client.post(
             _GROQ_ENDPOINT,
@@ -218,8 +251,68 @@ def _call_groq(
 
     choices = payload.get("choices", [])
     text = choices[0].get("message", {}).get("content", "") if choices else ""
+    text = _strip_groq_reasoning(text)
     if not text:
         raise LlmCallError(f"Groq API response had no text content: {payload!r}")
+    return text
+
+
+def _call_groq_vision(
+    settings: Settings,
+    prompt: str,
+    image_paths: list[Path],
+    *,
+    model: str,
+    max_tokens: int,
+    static_prefix: str = "",
+    client: httpx.Client | None = None,
+) -> str:
+    """Groq's OpenAI-compatible endpoint takes images as data-URI image_url
+    parts alongside text, same shape OpenAI's vision API uses. Only some Groq
+    models support image input (check input_modalities via GET
+    /openai/v1/models) - a text-only model here just errors like any other
+    unsupported request, same as calling it with an oversized prompt would.
+    """
+    combined_prompt = f"{static_prefix}\n\n{prompt}" if static_prefix else prompt
+    api_key = settings.require_groq_api_key()
+    content: list[dict] = [{"type": "text", "text": combined_prompt}]
+    for path in image_paths:
+        media_type = mimetypes.guess_type(path.name)[0] or _DEFAULT_IMAGE_MEDIA_TYPE
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{media_type};base64,{_encode_image_b64(path)}"},
+            }
+        )
+    owned_client = client or httpx.Client(timeout=180.0)
+    owns_client = client is None
+    try:
+        response = owned_client.post(
+            _GROQ_ENDPOINT,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "content-type": "application/json",
+            },
+            json={
+                "model": model,
+                "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": content}],
+                "reasoning_format": "raw",  # see _call_groq's comment
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except httpx.HTTPError as exc:
+        raise LlmCallError(f"Groq API vision request failed: {exc}") from exc
+    finally:
+        if owns_client:
+            owned_client.close()
+
+    choices = payload.get("choices", [])
+    text = choices[0].get("message", {}).get("content", "") if choices else ""
+    text = _strip_groq_reasoning(text)
+    if not text:
+        raise LlmCallError(f"Groq API vision response had no text content: {payload!r}")
     return text
 
 
@@ -549,10 +642,12 @@ def describe_images(
     provider: str | None = None,
 ) -> str:
     """provider overrides settings.llm.provider for this call - only "ollama",
-    "anthropic", and "gemini" support vision (Groq/Cerebras have no vision path
-    here), so callers whose text provider is one of those pass
+    "anthropic", "gemini", and "groq" support vision here (Cerebras has no
+    vision path), so callers whose text provider is cerebras pass
     settings.image_description.provider (or default to "ollama") instead of
-    falling through to the text provider.
+    falling through to the text provider. Note Groq vision requires a model
+    that actually supports image input - check `input_modalities` via GET
+    /openai/v1/models, since most Groq text models don't.
     """
     if not image_paths:
         raise ValueError("describe_images requires at least one image path")
@@ -588,8 +683,18 @@ def describe_images(
             static_prefix=static_prefix,
             client=client,
         )
+    if resolved_provider == "groq":
+        return _call_groq_vision(
+            settings,
+            prompt,
+            image_paths,
+            model=model,
+            max_tokens=max_tokens,
+            static_prefix=static_prefix,
+            client=client,
+        )
     raise ValueError(
         f"Unknown or vision-incapable llm provider: {resolved_provider!r}. "
-        "Vision only supports 'ollama', 'anthropic', or 'gemini' - set "
-        "image_description.provider in settings.yaml if llm.provider is 'groq'/'cerebras'."
+        "Vision only supports 'ollama', 'anthropic', 'gemini', or 'groq' - set "
+        "image_description.provider in settings.yaml if llm.provider is 'cerebras'."
     )

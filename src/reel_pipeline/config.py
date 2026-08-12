@@ -92,14 +92,17 @@ class SkillWriterConfig(BaseModel):
 class ImageDescriptionConfig(BaseModel):
     # Must be a vision-capable model - e.g. an Ollama model tagged "vision" in
     # `ollama list` (mistral-small3.1, llava, qwen2-vl, ...), any current
-    # Claude model (all support image input) when provider is "anthropic", or
-    # any current Gemini model (all are natively multimodal) when "gemini".
+    # Claude model (all support image input) when provider is "anthropic", any
+    # current Gemini model (all are natively multimodal) when "gemini", or a
+    # Groq model whose input_modalities includes "image" (check GET
+    # /openai/v1/models - most Groq text models do NOT support images) when
+    # "groq".
     model: str = "mistral-small3.1"
     max_tokens: int = 1024
-    # Vision only works on "ollama", "anthropic", or "gemini" (describe_images()
-    # in llm_client.py) - Groq/Cerebras have no vision path wired in here.
-    # Defaults to null, meaning "use llm.provider" - only set this when
-    # llm.provider is switched to something vision-incapable (e.g. cerebras)
+    # Vision works on "ollama", "anthropic", "gemini", or "groq"
+    # (describe_images() in llm_client.py) - Cerebras has no vision path wired
+    # in here. Defaults to null, meaning "use llm.provider" - only set this
+    # when llm.provider is switched to something vision-incapable (cerebras)
     # so image/carousel posts keep working on ollama instead of erroring.
     provider: str | None = None
 

@@ -65,7 +65,9 @@ skill_writer:
 # Photo posts / carousels (no video) are described by a vision-capable model
 # instead of transcribed. Must support image input - check `ollama list` for a
 # "vision" capability tag, any current Claude model if provider is "anthropic",
-# or any current Gemini model if provider is "gemini" (all are multimodal).
+# any current Gemini model if provider is "gemini" (all are multimodal), or a
+# Groq model whose input_modalities includes "image" if provider is "groq"
+# (check GET /openai/v1/models - most Groq text models don't support images).
 # provider pinned to "ollama" explicitly: llm.provider above is "cerebras" for
 # text enrichment, but Cerebras has no vision path (see llm_client.describe_images) -
 # without this override, photo/carousel posts would fail with "vision-incapable
