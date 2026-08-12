@@ -31,9 +31,9 @@ def slugify(text: str, max_length: int = 60) -> str:
     return slug[:max_length].rstrip("-") or "untitled"
 
 
-def _existing_content_id(path: Path) -> str | None:
-    """Reads just the content_id out of a note's frontmatter, or None if the
-    file doesn't exist or has no parseable frontmatter.
+def read_frontmatter(path: Path) -> dict | None:
+    """Parses a note's YAML frontmatter, or None if the file doesn't exist or
+    has no parseable frontmatter block.
     """
     if not path.is_file():
         return None
@@ -47,7 +47,15 @@ def _existing_content_id(path: Path) -> str | None:
     if end == -1:
         return None
     frontmatter = yaml.safe_load(text[4:end])
-    return frontmatter.get("content_id") if isinstance(frontmatter, dict) else None
+    return frontmatter if isinstance(frontmatter, dict) else None
+
+
+def _existing_content_id(path: Path) -> str | None:
+    """Reads just the content_id out of a note's frontmatter, or None if the
+    file doesn't exist or has no parseable frontmatter.
+    """
+    frontmatter = read_frontmatter(path)
+    return frontmatter.get("content_id") if frontmatter else None
 
 
 def note_filename(vault_dir: Path, content_id: str, title: str) -> str:

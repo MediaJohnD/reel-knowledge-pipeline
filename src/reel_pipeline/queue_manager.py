@@ -90,6 +90,14 @@ class QueueManager:
                 "another process appears to be stuck mid-mutation."
             ) from exc
 
+    def mutate_state(self, mutate_fn: Callable[[dict[str, StateRecord]], _T]) -> _T:
+        """Public entry point for callers (e.g. vault_organizer) that need to
+        read-modify-write multiple records under the same state.json lock
+        worker.py's own mutations use, rather than one record at a time via
+        update_record().
+        """
+        return self._locked_mutate(mutate_fn)
+
     def update_record(self, record: StateRecord) -> None:
         def mutate(state: dict[str, StateRecord]) -> None:
             record.updated_at = datetime.now(UTC)
