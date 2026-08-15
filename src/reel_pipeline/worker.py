@@ -62,6 +62,17 @@ from reel_pipeline.transcriber import Transcriber, get_transcriber
 logger = get_logger(__name__)
 
 
+def describe_exc(exc: BaseException) -> str:
+    """Error text for logs and needs-attention.txt.
+
+    Not every exception stringifies to something: one reached
+    needs-attention.txt on 2026-08-14 as a bare "processing failed: " with no
+    type name and no context, which is impossible to diagnose after the fact.
+    repr() always names the type, so use it whenever str() comes back blank.
+    """
+    return str(exc) or repr(exc)
+
+
 class EnrichmentProvider(Protocol):
     def enrich(self, transcript: TranscriptResult, source_url: str) -> EnrichmentResult: ...
 
@@ -277,13 +288,13 @@ class WorkerPipeline:
                 record.skill_error = None
             except Exception as exc:  # noqa: BLE001 - must never fail the whole item
                 record.skill_path = None
-                record.skill_error = str(exc)
+                record.skill_error = describe_exc(exc)
                 log_context(
                     logger,
                     30,
                     "skill generation failed",
                     content_id=record.content_id,
-                    error=str(exc),
+                    error=describe_exc(exc),
                 )
 
             self._cleanup_tmp_dir(record.content_id)
@@ -291,7 +302,7 @@ class WorkerPipeline:
             self._cleanup_stale_skill(previous_skill_path, record.skill_path)
 
         except Exception as exc:  # noqa: BLE001 - any stage failure must be recorded, not raised
-            new_error = str(exc)
+            new_error = describe_exc(exc)
             previous_error = record.error
             record.attempt_count += 1
             schedule = self.settings.retry.backoff_schedule_minutes
@@ -457,7 +468,9 @@ class WorkerPipeline:
             if old_file.is_file():
                 old_file.unlink()
         except OSError as exc:
-            log_context(logger, 30, "stale note cleanup failed", path=previous_path, error=str(exc))
+            log_context(
+                logger, 30, "stale note cleanup failed", path=previous_path, error=describe_exc(exc)
+            )
 
     def _cleanup_stale_skill(self, previous_path: str | None, new_path: str | None) -> None:
         """Same rationale as _cleanup_stale_note, for skill_writer's `<slug>/SKILL.md`
@@ -471,7 +484,11 @@ class WorkerPipeline:
                 shutil.rmtree(old_dir)
         except OSError as exc:
             log_context(
-                logger, 30, "stale skill cleanup failed", path=previous_path, error=str(exc)
+                logger,
+                30,
+                "stale skill cleanup failed",
+                path=previous_path,
+                error=describe_exc(exc),
             )
 
     def _cleanup_tmp_dir(self, content_id: str) -> None:
@@ -484,7 +501,9 @@ class WorkerPipeline:
             if tmp_dir.exists():
                 shutil.rmtree(tmp_dir)
         except OSError as exc:
-            log_context(logger, 30, "tmp cleanup failed", content_id=content_id, error=str(exc))
+            log_context(
+                logger, 30, "tmp cleanup failed", content_id=content_id, error=describe_exc(exc)
+            )
 
     def _warn_if_state_size_exceeds_threshold(self) -> None:
         """state.json is fully reparsed and rewritten on every mutation, an O(n)
@@ -530,7 +549,9 @@ class WorkerPipeline:
                 if child.stat().st_mtime < cutoff:
                     shutil.rmtree(child)
             except OSError as exc:
-                log_context(logger, 30, "stale tmp sweep failed", path=str(child), error=str(exc))
+                log_context(
+                    logger, 30, "stale tmp sweep failed", path=str(child), error=describe_exc(exc)
+                )
 
     def run_once(self) -> RunSummary:
         """Acquires a lock (distinct from QueueManager's per-mutation state.json

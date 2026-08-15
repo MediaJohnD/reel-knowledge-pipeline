@@ -79,6 +79,15 @@ class FailingDownloader:
         raise RuntimeError("simulated download failure")
 
 
+class BlankErrorDownloader:
+    """An exception whose str() is empty - the 2026-08-14 Threads failure that
+    reached needs-attention.txt as a bare "processing failed: ".
+    """
+
+    def download(self, url: str, content_id: str) -> DownloadResult:
+        raise RuntimeError()
+
+
 class FailNTimesThenSucceedDownloader:
     def __init__(self, fail_count: int):
         self.fail_count = fail_count
@@ -311,6 +320,23 @@ def test_download_failure_marks_failed_and_records_needs_attention(tmp_path):
 
     needs_attention = pipeline.queue_manager.needs_attention_file.read_text(encoding="utf-8")
     assert "simulated download failure" in needs_attention
+
+
+def test_failure_with_a_blank_error_message_still_names_the_exception_type(tmp_path):
+    settings = make_settings(tmp_path)
+    pipeline = build_pipeline(settings, BlankErrorDownloader())
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=blank1\n", encoding="utf-8"
+    )
+
+    pipeline.run_once()
+
+    state = pipeline.queue_manager.load_state()
+    (record,) = state.values()
+    assert record.error == "RuntimeError()"
+
+    needs_attention = pipeline.queue_manager.needs_attention_file.read_text(encoding="utf-8")
+    assert "processing failed: RuntimeError()" in needs_attention
 
 
 def test_webhook_ingested_item_is_processed_same_as_queue_file(tmp_path):
