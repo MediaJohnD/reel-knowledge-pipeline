@@ -8,7 +8,13 @@ import pytest
 import respx
 
 from reel_pipeline.config import LlmConfig, Settings
-from reel_pipeline.llm_client import LlmCallError, _seconds_to_wait, call_llm
+from reel_pipeline.llm_client import (
+    LlmCallError,
+    _rate_limit_wait,
+    _seconds_to_wait,
+    call_llm,
+    describe_images,
+)
 
 
 def test_call_llm_dispatches_to_ollama(tmp_path):
@@ -136,22 +142,46 @@ def test_call_llm_dispatches_to_groq(tmp_path):
     assert result == "hello from groq"
 
 
+def test_call_llm_groq_never_sends_reasoning_format(tmp_path):
+    """Groq 400s on reasoning_format for non-reasoning models, and on "raw"
+    specifically for gpt-oss-120b (verified live 2026-08-15) - sending it at
+    all made the whole provider unusable. Covers the vision path too, which
+    used to send it as well.
+    """
+    settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="groq"))
+    settings.groq_api_key = "gsk-test"
+    image = tmp_path / "frame.jpg"
+    image.write_bytes(b"\xff\xd8\xff\xdb-not-a-real-jpeg")
+
+    with respx.mock:
+        route = respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+        )
+        call_llm(settings, "prompt", model="openai/gpt-oss-120b", max_tokens=100)
+        call_llm(settings, "prompt", model="openai/gpt-oss-120b", max_tokens=100, json_mode=True)
+        describe_images(settings, "prompt", [image], model="qwen/qwen3.6-27b", max_tokens=100)
+
+    assert route.call_count == 3
+    for call in route.calls:
+        assert "reasoning_format" not in json.loads(call.request.content)
+
+
 def test_call_llm_groq_strips_think_block_from_reasoning_models(tmp_path):
     settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="groq"))
     settings.groq_api_key = "gsk-test"
     raw_content = "\n<think>\nreasoning about the answer\n</think>\n\nhello from qwen"
 
     with respx.mock:
-        route = respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+        respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
             return_value=httpx.Response(
                 200, json={"choices": [{"message": {"content": raw_content}}]}
             )
         )
         result = call_llm(settings, "prompt text", model="qwen/qwen3.6-27b", max_tokens=100)
 
+    # Still inlined by qwen/qwen3.6-27b as of 2026-08-15 with no
+    # reasoning_format sent at all - see test_call_llm_groq_never_sends_reasoning_format.
     assert result == "hello from qwen"
-    sent = json.loads(route.calls.last.request.content)
-    assert sent["reasoning_format"] == "raw"
 
 
 def test_call_llm_groq_truncated_reasoning_raises_instead_of_leaking_fragment(tmp_path):
@@ -323,3 +353,78 @@ def test_call_llm_throttles_consecutive_calls_to_same_provider(tmp_path):
         elapsed = time.monotonic() - start
 
     assert elapsed >= 0.2
+
+
+def test_rate_limit_wait_honours_retry_after_header():
+    response = httpx.Response(429, headers={"retry-after": "7"})
+    assert _rate_limit_wait(response, attempt=0) == 7.0
+
+
+def test_rate_limit_wait_backs_off_without_a_usable_retry_after():
+    # An HTTP-date Retry-After (also legal) is unparseable as seconds, so it
+    # must fall back to the schedule rather than blow up.
+    response = httpx.Response(429, headers={"retry-after": "Wed, 21 Oct 2026 07:28:00 GMT"})
+    assert _rate_limit_wait(response, attempt=0) == 5.0
+    assert _rate_limit_wait(response, attempt=2) == 20.0
+
+
+def test_call_llm_retries_a_429_and_succeeds(tmp_path, monkeypatch):
+    settings = Settings(
+        project_root=tmp_path,
+        llm=LlmConfig(provider="cerebras", min_interval_seconds={"cerebras": 0.0}),
+    )
+    settings.cerebras_api_key = "csk-test"
+    monkeypatch.setattr("reel_pipeline.llm_client.time.sleep", lambda _seconds: None)
+
+    with respx.mock:
+        route = respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(429, headers={"retry-after": "1"}),
+                httpx.Response(200, json={"choices": [{"message": {"content": "recovered"}}]}),
+            ]
+        )
+        result = call_llm(settings, "prompt", model="gpt-oss-120b", max_tokens=100)
+
+    assert result == "recovered"
+    assert route.call_count == 2
+
+
+def test_call_llm_gives_up_on_a_persistent_429(tmp_path, monkeypatch):
+    settings = Settings(
+        project_root=tmp_path,
+        llm=LlmConfig(provider="cerebras", min_interval_seconds={"cerebras": 0.0}),
+    )
+    settings.cerebras_api_key = "csk-test"
+    monkeypatch.setattr("reel_pipeline.llm_client.time.sleep", lambda _seconds: None)
+
+    with respx.mock:
+        route = respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
+            return_value=httpx.Response(429)
+        )
+        with pytest.raises(LlmCallError, match="429"):
+            call_llm(settings, "prompt", model="gpt-oss-120b", max_tokens=100)
+
+    assert route.call_count == 1 + 3  # initial attempt plus _RATE_LIMIT_RETRIES
+
+
+def test_call_llm_does_not_sleep_out_a_quota_length_retry_after(tmp_path, monkeypatch):
+    """A daily-quota Retry-After must fail fast for the item-level retry to
+    handle, not stall the whole run_once() pass.
+    """
+    settings = Settings(
+        project_root=tmp_path,
+        llm=LlmConfig(provider="cerebras", min_interval_seconds={"cerebras": 0.0}),
+    )
+    settings.cerebras_api_key = "csk-test"
+    slept: list[float] = []
+    monkeypatch.setattr("reel_pipeline.llm_client.time.sleep", slept.append)
+
+    with respx.mock:
+        route = respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
+            return_value=httpx.Response(429, headers={"retry-after": "3600"})
+        )
+        with pytest.raises(LlmCallError, match="429"):
+            call_llm(settings, "prompt", model="gpt-oss-120b", max_tokens=100)
+
+    assert route.call_count == 1
+    assert slept == []

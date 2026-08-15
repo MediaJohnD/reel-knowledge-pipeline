@@ -32,6 +32,7 @@ import base64
 import mimetypes
 import time
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -72,16 +73,67 @@ def _throttle(settings: Settings, provider: str) -> None:
     _last_call_at[provider] = time.monotonic()
 
 
+# A 429 that survives this many retries is left to the item-level retry
+# (settings.retry.backoff_schedule_minutes) - by then it's a quota that won't
+# clear in seconds. Waits are Retry-After when the vendor sends one, else
+# 5s/10s/20s; anything longer than _RATE_LIMIT_MAX_WAIT isn't slept through at
+# all, so a daily-quota Retry-After can't stall a whole run_once() pass.
+_RATE_LIMIT_STATUS = 429
+_RATE_LIMIT_RETRIES = 3
+_RATE_LIMIT_BASE_WAIT = 5.0
+_RATE_LIMIT_MAX_WAIT = 60.0
+
+
+def _rate_limit_wait(response: httpx.Response, attempt: int) -> float:
+    """Seconds to wait after a 429, or a value above _RATE_LIMIT_MAX_WAIT to
+    mean "don't wait, give up". Pure helper, so it's testable without sleeps.
+
+    Retry-After may also be an HTTP-date rather than a delay in seconds; that
+    parses as a float failure and falls back to the exponential schedule,
+    which is the conservative direction (we may wait less than asked, but
+    never longer than _RATE_LIMIT_MAX_WAIT).
+    """
+    try:
+        return max(0.0, float(response.headers.get("retry-after", "")))
+    except ValueError:
+        return _RATE_LIMIT_BASE_WAIT * 2**attempt
+
+
+def _post_json(client: httpx.Client, url: str, **kwargs: Any) -> dict:
+    """POST and return the parsed JSON body, retrying 429s in place.
+
+    Without this, one 429 failed the whole item and pushed it into the retry
+    backlog to be picked up a day later (the recurring ~2/day Cerebras entries
+    in needs-attention.txt through 2026-08-14). Those were isolated single
+    requests, not bursts - _throttle() already spaces bursts out - so retrying
+    the request is the only thing that clears them.
+    """
+    response = client.post(url, **kwargs)
+    for attempt in range(_RATE_LIMIT_RETRIES):
+        if response.status_code != _RATE_LIMIT_STATUS:
+            break
+        wait = _rate_limit_wait(response, attempt)
+        if wait > _RATE_LIMIT_MAX_WAIT:
+            break
+        time.sleep(wait)
+        response = client.post(url, **kwargs)
+    response.raise_for_status()
+    return response.json()
+
+
 def _strip_groq_reasoning(text: str) -> str:
-    """Reasoning-capable Groq models (Qwen, DeepSeek-R1, ...) called with
-    reasoning_format="raw" put their internal reasoning before a closing
-    </think> tag, with the real answer after it. If max_tokens ran out mid-
-    reasoning before a closing tag ever appeared (found live 2026-08-12 -
-    reasoning_format="hidden" hit this same failure invisibly, spending the
-    whole budget and returning nothing with no way to tell why), there's no
-    confirmed answer text - return "" so the caller's existing empty-text
-    check reports a real, diagnosable failure instead of silently leaking a
-    chopped-off reasoning fragment as if it were the model's answer.
+    """Some reasoning-capable Groq models put their internal reasoning inline
+    in message.content, before a closing </think> tag, with the real answer
+    after it. Still true as of 2026-08-15 for qwen/qwen3.6-27b - this account's
+    only vision-capable model, so the vision path always needs this - even
+    though gpt-oss-120b now separates reasoning into message.reasoning
+    server-side and returns clean content (see _call_groq).
+
+    If max_tokens ran out mid-reasoning before a closing tag ever appeared
+    (found live 2026-08-12), there's no confirmed answer text - return "" so
+    the caller's existing empty-text check reports a real, diagnosable failure
+    instead of silently leaking a chopped-off reasoning fragment as if it were
+    the model's answer.
     """
     if _THINK_CLOSE_TAG in text:
         return text.rsplit(_THINK_CLOSE_TAG, 1)[1].strip()
@@ -139,7 +191,8 @@ def _call_claude(
             }
         ]
     try:
-        response = owned_client.post(
+        payload = _post_json(
+            owned_client,
             _ANTHROPIC_ENDPOINT,
             headers={
                 "x-api-key": api_key,
@@ -148,8 +201,6 @@ def _call_claude(
             },
             json=body,
         )
-        response.raise_for_status()
-        payload = response.json()
     except httpx.HTTPError as exc:
         raise LlmCallError(f"Claude API request failed: {exc}") from exc
     finally:
@@ -174,7 +225,8 @@ def _call_ollama(
     owned_client = client or httpx.Client(timeout=300.0)
     owns_client = client is None
     try:
-        response = owned_client.post(
+        payload = _post_json(
+            owned_client,
             f"{settings.llm.ollama_host}/api/generate",
             json={
                 "model": model,
@@ -183,8 +235,6 @@ def _call_ollama(
                 "options": {"num_predict": max_tokens, "num_ctx": settings.llm.ollama_num_ctx},
             },
         )
-        response.raise_for_status()
-        payload = response.json()
     except httpx.HTTPError as exc:
         raise LlmCallError(
             f"Ollama request to {settings.llm.ollama_host!r} failed: {exc}. "
@@ -219,21 +269,19 @@ def _call_groq(
     }
     if json_mode:
         body["response_format"] = {"type": "json_object"}
-        # "raw" reasoning_format isn't supported alongside JSON mode - Groq
-        # forces reasoning into a separate message.reasoning field server-side
-        # in that case, leaving content already clean with nothing to strip.
-    else:
-        # Reasoning-capable Groq models (Qwen, DeepSeek-R1, ...) otherwise
-        # inline a <think>...</think> block before the actual answer. "raw"
-        # keeps it visible so _strip_groq_reasoning() below can remove it -
-        # NOT "hidden": found live 2026-08-12 that hidden reasoning still
-        # spends max_tokens invisibly and can return a totally empty answer
-        # with zero indication why, whereas raw at least lets a truncated
-        # (unclosed) reasoning block be detected and reported as a real
-        # failure instead of silently succeeding with nothing.
-        body["reasoning_format"] = "raw"
+    # No reasoning_format is sent at all. It used to be "raw" here so
+    # _strip_groq_reasoning() could see the <think> block; Groq has since
+    # narrowed which models accept the parameter, and as of 2026-08-15 every
+    # value 400s on non-reasoning models (llama-3.1-8b-instant) and "raw"
+    # specifically 400s on gpt-oss-120b - which had made this whole provider
+    # unusable. Omitting it is the only setting all models accept, and it
+    # loses nothing: gpt-oss now splits reasoning into message.reasoning
+    # server-side (clean content, and an exhausted budget still surfaces as
+    # the empty-content error below), while models that do inline <think>
+    # still do so without the parameter, for _strip_groq_reasoning() to cut.
     try:
-        response = owned_client.post(
+        payload = _post_json(
+            owned_client,
             _GROQ_ENDPOINT,
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -241,8 +289,6 @@ def _call_groq(
             },
             json=body,
         )
-        response.raise_for_status()
-        payload = response.json()
     except httpx.HTTPError as exc:
         raise LlmCallError(f"Groq API request failed: {exc}") from exc
     finally:
@@ -287,7 +333,8 @@ def _call_groq_vision(
     owned_client = client or httpx.Client(timeout=180.0)
     owns_client = client is None
     try:
-        response = owned_client.post(
+        payload = _post_json(
+            owned_client,
             _GROQ_ENDPOINT,
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -297,11 +344,11 @@ def _call_groq_vision(
                 "model": model,
                 "max_tokens": max_tokens,
                 "messages": [{"role": "user", "content": content}],
-                "reasoning_format": "raw",  # see _call_groq's comment
+                # No reasoning_format - see _call_groq. qwen/qwen3.6-27b, the
+                # only vision-capable model on this account, inlines <think>
+                # either way, so _strip_groq_reasoning() below still applies.
             },
         )
-        response.raise_for_status()
-        payload = response.json()
     except httpx.HTTPError as exc:
         raise LlmCallError(f"Groq API vision request failed: {exc}") from exc
     finally:
@@ -336,7 +383,8 @@ def _call_cerebras(
     if json_mode:
         body["response_format"] = {"type": "json_object"}
     try:
-        response = owned_client.post(
+        payload = _post_json(
+            owned_client,
             _CEREBRAS_ENDPOINT,
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -344,8 +392,6 @@ def _call_cerebras(
             },
             json=body,
         )
-        response.raise_for_status()
-        payload = response.json()
     except httpx.HTTPError as exc:
         raise LlmCallError(f"Cerebras API request failed: {exc}") from exc
     finally:
@@ -375,7 +421,8 @@ def _call_gemini(
     if json_mode:
         generation_config["response_mime_type"] = "application/json"
     try:
-        response = owned_client.post(
+        payload = _post_json(
+            owned_client,
             f"{_GEMINI_ENDPOINT}/{model}:generateContent",
             params={"key": api_key},
             json={
@@ -383,8 +430,6 @@ def _call_gemini(
                 "generationConfig": generation_config,
             },
         )
-        response.raise_for_status()
-        payload = response.json()
     except httpx.HTTPError as exc:
         raise LlmCallError(f"Gemini API request failed: {exc}") from exc
     finally:
@@ -516,7 +561,8 @@ def _call_claude_vision(
     owned_client = client or httpx.Client(timeout=180.0)
     owns_client = client is None
     try:
-        response = owned_client.post(
+        payload = _post_json(
+            owned_client,
             _ANTHROPIC_ENDPOINT,
             headers={
                 "x-api-key": api_key,
@@ -525,8 +571,6 @@ def _call_claude_vision(
             },
             json=body,
         )
-        response.raise_for_status()
-        payload = response.json()
     except httpx.HTTPError as exc:
         raise LlmCallError(f"Claude API vision request failed: {exc}") from exc
     finally:
@@ -554,7 +598,8 @@ def _call_ollama_vision(
     owned_client = client or httpx.Client(timeout=300.0)
     owns_client = client is None
     try:
-        response = owned_client.post(
+        payload = _post_json(
+            owned_client,
             f"{settings.llm.ollama_host}/api/generate",
             json={
                 "model": model,
@@ -564,8 +609,6 @@ def _call_ollama_vision(
                 "options": {"num_predict": max_tokens, "num_ctx": settings.llm.ollama_num_ctx},
             },
         )
-        response.raise_for_status()
-        payload = response.json()
     except httpx.HTTPError as exc:
         raise LlmCallError(
             f"Ollama vision request to {settings.llm.ollama_host!r} failed: {exc}. "
@@ -606,7 +649,8 @@ def _call_gemini_vision(
     owned_client = client or httpx.Client(timeout=180.0)
     owns_client = client is None
     try:
-        response = owned_client.post(
+        payload = _post_json(
+            owned_client,
             f"{_GEMINI_ENDPOINT}/{model}:generateContent",
             params={"key": api_key},
             json={
@@ -614,8 +658,6 @@ def _call_gemini_vision(
                 "generationConfig": {"maxOutputTokens": max_tokens},
             },
         )
-        response.raise_for_status()
-        payload = response.json()
     except httpx.HTTPError as exc:
         raise LlmCallError(f"Gemini API vision request failed: {exc}") from exc
     finally:

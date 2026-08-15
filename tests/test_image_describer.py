@@ -110,9 +110,10 @@ def test_describe_uses_groq_vision(tmp_path):
     image_path = tmp_path / "post_1.jpg"
     image_path.write_bytes(b"fake-jpg-bytes")
 
-    # Qwen (found live 2026-08-12) inlines a <think>...</think> reasoning
-    # block before the real answer when reasoning_format="raw" is requested -
-    # this must not leak into the note as if it were part of the description.
+    # Qwen (found live 2026-08-12, still true 2026-08-15 with no
+    # reasoning_format sent at all) inlines a <think>...</think> reasoning
+    # block before the real answer - this must not leak into the note as if it
+    # were part of the description.
     raw_content = (
         "\n<think>\nThe user wants a description.\n</think>\n\nA screenshot described via Groq."
     )
@@ -128,7 +129,6 @@ def test_describe_uses_groq_vision(tmp_path):
     assert result.text == "A screenshot described via Groq."
     assert result.backend == "vision:groq:qwen/qwen3.6-27b"
     sent = json.loads(route.calls.last.request.content)
-    assert sent["reasoning_format"] == "raw"
     content = sent["messages"][0]["content"]
     assert content[0]["type"] == "text" and content[0]["text"]
     assert content[1]["type"] == "image_url"
