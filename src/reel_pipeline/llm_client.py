@@ -43,6 +43,12 @@ _ANTHROPIC_VERSION = "2023-06-01"
 _GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 _CEREBRAS_ENDPOINT = "https://api.cerebras.ai/v1/chat/completions"
 _GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
+# Gemini's key goes in the x-goog-api-key header, never the ?key= query param
+# Google also accepts. httpx puts the full request URL in every HTTPStatusError
+# message, which this module wraps into LlmCallError -> record.error ->
+# data/inbox/needs-attention.txt, so a query-param key gets written to disk in
+# plaintext on any Gemini failure (it did, twice, on 2026-08-12). A header
+# cannot leak that way.
 _DEFAULT_IMAGE_MEDIA_TYPE = "image/jpeg"
 _THINK_OPEN_TAG = "<think>"
 _THINK_CLOSE_TAG = "</think>"
@@ -424,7 +430,7 @@ def _call_gemini(
         payload = _post_json(
             owned_client,
             f"{_GEMINI_ENDPOINT}/{model}:generateContent",
-            params={"key": api_key},
+            headers={"x-goog-api-key": api_key},
             json={
                 "contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": generation_config,
@@ -652,7 +658,7 @@ def _call_gemini_vision(
         payload = _post_json(
             owned_client,
             f"{_GEMINI_ENDPOINT}/{model}:generateContent",
-            params={"key": api_key},
+            headers={"x-goog-api-key": api_key},
             json={
                 "contents": [{"parts": parts}],
                 "generationConfig": {"maxOutputTokens": max_tokens},

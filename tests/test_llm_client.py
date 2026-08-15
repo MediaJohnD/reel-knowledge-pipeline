@@ -225,6 +225,39 @@ def test_call_llm_cerebras_requires_api_key(tmp_path):
         call_llm(settings, "prompt text", model="gpt-oss-120b", max_tokens=100)
 
 
+def test_gemini_key_goes_in_a_header_and_never_into_an_error_message(tmp_path):
+    """A ?key= query param leaks into httpx's HTTPStatusError message, which
+    this module wraps into LlmCallError -> record.error ->
+    data/inbox/needs-attention.txt. That wrote the real key to disk twice on
+    2026-08-12. Covers the vision path too, and asserts on the failure path
+    specifically - that is the one that actually leaked.
+    """
+    settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="gemini"))
+    settings.gemini_api_key = "gemini-secret-value"
+    image = tmp_path / "frame.jpg"
+    image.write_bytes(b"\xff\xd8\xff\xdb-not-a-real-jpeg")
+    endpoint = (
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    )
+
+    with respx.mock:
+        route = respx.post(endpoint).mock(return_value=httpx.Response(503))
+        for call in (
+            lambda: call_llm(settings, "p", model="gemini-2.5-flash", max_tokens=10),
+            lambda: describe_images(
+                settings, "p", [image], model="gemini-2.5-flash", max_tokens=10
+            ),
+        ):
+            with pytest.raises(LlmCallError) as excinfo:
+                call()
+            assert "gemini-secret-value" not in str(excinfo.value)
+
+    assert route.call_count == 2
+    for sent in route.calls:
+        assert "key=" not in str(sent.request.url)
+        assert sent.request.headers["x-goog-api-key"] == "gemini-secret-value"
+
+
 def test_call_llm_dispatches_to_gemini(tmp_path):
     settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="gemini"))
     settings.gemini_api_key = "gemini-test-key"
