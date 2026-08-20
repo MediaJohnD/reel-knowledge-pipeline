@@ -258,7 +258,8 @@ class GalleryDlDownloader:
         images = [p for p in all_files if p.suffix.lower() in _IMAGE_SUFFIXES]
 
         videos = [p for p in all_videos if _video_has_audio_stream(p)]
-        silent_videos = [p for p in all_videos if p not in videos]
+        video_set = set(videos)
+        silent_videos = [p for p in all_videos if p not in video_set]
         if silent_videos:
             # A silent "video" (no audio track) has nothing for Transcriber to
             # transcribe - it's effectively a photo, so route it through the

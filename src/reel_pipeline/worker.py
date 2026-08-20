@@ -385,7 +385,8 @@ class WorkerPipeline:
             )
 
         images = [p for p in files if p.suffix.lower() in image_suffixes]
-        silent_videos = [p for p in video_containers if p not in real_videos]
+        real_video_set = set(real_videos)
+        silent_videos = [p for p in video_containers if p not in real_video_set]
         images += [_extract_first_frame(p) for p in silent_videos]
         if images:
             return DownloadResult(
