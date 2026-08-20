@@ -320,9 +320,7 @@ class NotionFetcher:
             if child is None:
                 continue  # not in this chunk - the v1 pagination gap above
 
-            child_title = _notion_rich_text_to_plain(
-                child.get("properties", {}).get("title")
-            )
+            child_title = _notion_rich_text_to_plain(child.get("properties", {}).get("title"))
             if child_title and child.get("type") not in _NOTION_FILENAME_TITLE_BLOCK_TYPES:
                 lines.append(child_title)
             if child.get("type") in _NOTION_COLLECTION_BLOCK_TYPES:

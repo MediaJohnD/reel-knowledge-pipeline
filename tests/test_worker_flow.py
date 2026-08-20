@@ -724,9 +724,9 @@ def test_resuming_with_a_cached_silent_video_routes_to_image_describer(tmp_path,
             return TranscriptResult(content_id=content_id, text="a description", backend="stub")
 
     pipeline.image_describer = CountingImageDescriber()
-    pipeline.transcriber.transcribe = lambda media_path, content_id: (
-        _ for _ in ()
-    ).throw(AssertionError("Transcriber should not be called for a silent video"))
+    pipeline.transcriber.transcribe = lambda media_path, content_id: (_ for _ in ()).throw(
+        AssertionError("Transcriber should not be called for a silent video")
+    )
 
     result = pipeline.process_item(record)
 

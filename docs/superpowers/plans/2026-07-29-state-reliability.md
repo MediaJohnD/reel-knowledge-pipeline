@@ -249,8 +249,8 @@ In `src/reel_pipeline/config.py`, in the `Settings` class, add after the `mainte
 In `load_settings()`, add after the `maintenance=MaintenanceConfig(...)` line (currently line 338):
 
 ```python
-        maintenance=MaintenanceConfig(**raw.get("maintenance", {})),
-        retry=RetryConfig(**raw.get("retry", {})),
+maintenance = (MaintenanceConfig(**raw.get("maintenance", {})),)
+retry = (RetryConfig(**raw.get("retry", {})),)
 ```
 
 - [ ] **Step 5: Run test to verify it passes**
@@ -401,42 +401,44 @@ class StateLockTimeout(RuntimeError):
 Then, in the `QueueManager` class, replace `save_state` and `update_record` (currently lines 49-60) with:
 
 ```python
-    def save_state(self, state: dict[str, StateRecord]) -> None:
-        items = {cid: json.loads(record.model_dump_json()) for cid, record in state.items()}
-        payload = {"items": items}
-        tmp_path = self.state_file.with_suffix(".json.tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(tmp_path, self.state_file)
+def save_state(self, state: dict[str, StateRecord]) -> None:
+    items = {cid: json.loads(record.model_dump_json()) for cid, record in state.items()}
+    payload = {"items": items}
+    tmp_path = self.state_file.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp_path, self.state_file)
 
-    def _locked_mutate(self, mutate_fn: Callable[[dict[str, StateRecord]], _T]) -> _T:
-        """Acquire the cross-process state.json lock briefly, load current state,
-        call mutate_fn(state) to modify it in place, save, and return mutate_fn's
-        result. Every state.json mutation (update_record, add_url,
-        sync_queue_file_into_state) goes through this, so two processes'
-        mutations serialize on the smallest possible critical section instead of
-        one holding the lock for an entire run_once() pass - see worker.py's
-        run_once() docstring for the corruption this prevents, and the design
-        doc's "Locking model" section for why this is scoped this tightly.
-        """
-        lock_path = self.state_file.with_suffix(".lock")
-        try:
-            with FileLock(str(lock_path), timeout=5):
-                state = self.load_state()
-                result = mutate_fn(state)
-                self.save_state(state)
-                return result
-        except FileLockTimeout as exc:
-            raise StateLockTimeout(
-                f"Could not acquire the state.json lock ({lock_path}) within 5s - "
-                "another process appears to be stuck mid-mutation."
-            ) from exc
 
-    def update_record(self, record: StateRecord) -> None:
-        def mutate(state: dict[str, StateRecord]) -> None:
-            record.updated_at = datetime.now(UTC)
-            state[record.content_id] = record
+def _locked_mutate(self, mutate_fn: Callable[[dict[str, StateRecord]], _T]) -> _T:
+    """Acquire the cross-process state.json lock briefly, load current state,
+    call mutate_fn(state) to modify it in place, save, and return mutate_fn's
+    result. Every state.json mutation (update_record, add_url,
+    sync_queue_file_into_state) goes through this, so two processes'
+    mutations serialize on the smallest possible critical section instead of
+    one holding the lock for an entire run_once() pass - see worker.py's
+    run_once() docstring for the corruption this prevents, and the design
+    doc's "Locking model" section for why this is scoped this tightly.
+    """
+    lock_path = self.state_file.with_suffix(".lock")
+    try:
+        with FileLock(str(lock_path), timeout=5):
+            state = self.load_state()
+            result = mutate_fn(state)
+            self.save_state(state)
+            return result
+    except FileLockTimeout as exc:
+        raise StateLockTimeout(
+            f"Could not acquire the state.json lock ({lock_path}) within 5s - "
+            "another process appears to be stuck mid-mutation."
+        ) from exc
 
-        self._locked_mutate(mutate)
+
+def update_record(self, record: StateRecord) -> None:
+    def mutate(state: dict[str, StateRecord]) -> None:
+        record.updated_at = datetime.now(UTC)
+        state[record.content_id] = record
+
+    self._locked_mutate(mutate)
 ```
 
 - [ ] **Step 4: Route add_url and sync_queue_file_into_state through _locked_mutate**
@@ -621,9 +623,13 @@ def test_get_actionable_items_excludes_failed_permanent(tmp_path):
     from reel_pipeline.models import StateRecord
 
     permanent = StateRecord(
-        content_id="perm1", url="https://youtube.com/1", normalized_url="https://youtube.com/1",
-        source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED_PERMANENT,
-        added_at=now, updated_at=now,
+        content_id="perm1",
+        url="https://youtube.com/1",
+        normalized_url="https://youtube.com/1",
+        source=QueueSource.QUEUE_FILE,
+        status=ItemStatus.FAILED_PERMANENT,
+        added_at=now,
+        updated_at=now,
     )
     qm.save_state({"perm1": permanent})
 
@@ -638,15 +644,25 @@ def test_get_actionable_items_excludes_failed_item_whose_backoff_has_not_elapsed
     from reel_pipeline.models import StateRecord
 
     waiting = StateRecord(
-        content_id="wait1", url="https://youtube.com/1", normalized_url="https://youtube.com/1",
-        source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED,
-        added_at=now, updated_at=now, attempt_count=1,
+        content_id="wait1",
+        url="https://youtube.com/1",
+        normalized_url="https://youtube.com/1",
+        source=QueueSource.QUEUE_FILE,
+        status=ItemStatus.FAILED,
+        added_at=now,
+        updated_at=now,
+        attempt_count=1,
         next_retry_at=now + timedelta(minutes=5),
     )
     ready = StateRecord(
-        content_id="ready1", url="https://youtube.com/2", normalized_url="https://youtube.com/2",
-        source=QueueSource.QUEUE_FILE, status=ItemStatus.FAILED,
-        added_at=now, updated_at=now, attempt_count=1,
+        content_id="ready1",
+        url="https://youtube.com/2",
+        normalized_url="https://youtube.com/2",
+        source=QueueSource.QUEUE_FILE,
+        status=ItemStatus.FAILED,
+        added_at=now,
+        updated_at=now,
+        attempt_count=1,
         next_retry_at=now - timedelta(minutes=1),
     )
     qm.save_state({"wait1": waiting, "ready1": ready})

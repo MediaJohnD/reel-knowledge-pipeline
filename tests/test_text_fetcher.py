@@ -95,9 +95,7 @@ def _install_fake_playwright(
     page = _FakePage(html, timeout=timeout, error=goto_error)
     browser = _FakeBrowser(page)
     chromium = _FakeChromium(browser=browser, launch_error=launch_error)
-    monkeypatch.setattr(
-        playwright_api, "sync_playwright", lambda: _FakeSyncPlaywright(chromium)
-    )
+    monkeypatch.setattr(playwright_api, "sync_playwright", lambda: _FakeSyncPlaywright(chromium))
     return browser
 
 
@@ -511,9 +509,7 @@ def test_notion_fetcher_ignores_cyclic_content_reference(tmp_path):
     page_id = "3ab66d04-debf-805d-949e-fcfb31f8837e"
     blocks = {
         page_id: _notion_block(page_id, "page", title=[["Notes"]], content=["child-1"]),
-        "child-1": _notion_block(
-            "child-1", "text", title=[["Child text."]], content=[page_id]
-        ),
+        "child-1": _notion_block("child-1", "text", title=[["Child text."]], content=[page_id]),
     }
     respx.post("https://app.notion.com/api/v3/loadPageChunk").mock(
         return_value=httpx.Response(200, json=_notion_load_page_chunk_response(blocks))
@@ -681,9 +677,7 @@ def test_rendered_html_fetcher_correctly_rejects_real_unfetchable_page():
     with tempfile.TemporaryDirectory() as tmp:
         settings = SettingsForLiveTest(project_root=Path(tmp))
         with pytest.raises(TextFetchError):
-            RenderedHtmlFetcher(settings).fetch(
-                "https://roadmap.notion.site/", "cid-render-live"
-            )
+            RenderedHtmlFetcher(settings).fetch("https://roadmap.notion.site/", "cid-render-live")
 
 
 @respx.mock
@@ -799,9 +793,7 @@ def test_dispatching_text_fetcher_routes_notion_to_notion_fetcher(tmp_path, monk
     assert calls == [("notion", "https://www.notion.so/Some-Page-abc")]
 
 
-def test_dispatching_text_fetcher_routes_unenumerated_domain_to_generic_html(
-    tmp_path, monkeypatch
-):
+def test_dispatching_text_fetcher_routes_unenumerated_domain_to_generic_html(tmp_path, monkeypatch):
     """2026-08-10 catch-all policy: any non-GitHub host goes through the
     generic HTML fetcher by default, not an "unrecognized domain" rejection.
     """
@@ -838,9 +830,7 @@ def test_dispatching_text_fetcher_routes_drive_to_drive_fetcher(tmp_path, monkey
         ),
     )
 
-    DispatchingTextFetcher(settings).fetch(
-        "https://drive.google.com/file/d/abc123/view", "cid11"
-    )
+    DispatchingTextFetcher(settings).fetch("https://drive.google.com/file/d/abc123/view", "cid11")
 
     assert calls == [("drive", "https://drive.google.com/file/d/abc123/view")]
 

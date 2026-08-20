@@ -343,71 +343,69 @@ from reel_pipeline.validators import classify_url_kind, validate_url
 Replace the `_register()` method body:
 
 ```python
-    def _register(
-        self, url: str, source: QueueSource, state: dict[str, StateRecord]
-    ) -> StateRecord:
-        result = validate_url(url, self.settings)
-        now = datetime.now(UTC)
+def _register(self, url: str, source: QueueSource, state: dict[str, StateRecord]) -> StateRecord:
+    result = validate_url(url, self.settings)
+    now = datetime.now(UTC)
 
-        # validate_url() only knows about download.allowed_domains - a URL it
-        # rejects for "not in the configured allow-list" may still be a valid
-        # text-capture URL, so re-check via classify_url_kind() before treating
-        # it as genuinely blocked.
-        if not result.ok and not result.blocked:
-            kind = classify_url_kind(url, self.settings)
-            if kind == "text":
-                content_id = result.content_id
-                existing = state.get(content_id)
-                if existing is not None:
-                    return existing
-                record = StateRecord(
-                    content_id=content_id,
-                    url=url,
-                    normalized_url=result.normalized_url,
-                    source=source,
-                    status=ItemStatus.PENDING,
-                    content_kind="text",
-                    added_at=now,
-                    updated_at=now,
-                )
-                state[content_id] = record
-                return record
-
-        if not result.ok:
-            content_id = result.content_id or url
+    # validate_url() only knows about download.allowed_domains - a URL it
+    # rejects for "not in the configured allow-list" may still be a valid
+    # text-capture URL, so re-check via classify_url_kind() before treating
+    # it as genuinely blocked.
+    if not result.ok and not result.blocked:
+        kind = classify_url_kind(url, self.settings)
+        if kind == "text":
+            content_id = result.content_id
             existing = state.get(content_id)
-            if existing is None:
-                record = StateRecord(
-                    content_id=content_id,
-                    url=url,
-                    normalized_url=result.normalized_url,
-                    source=source,
-                    status=ItemStatus.BLOCKED,
-                    added_at=now,
-                    updated_at=now,
-                    error=result.reason,
-                )
-                state[content_id] = record
-                self.append_needs_attention(url, result.reason or "validation failed")
-                return record
-            return existing
+            if existing is not None:
+                return existing
+            record = StateRecord(
+                content_id=content_id,
+                url=url,
+                normalized_url=result.normalized_url,
+                source=source,
+                status=ItemStatus.PENDING,
+                content_kind="text",
+                added_at=now,
+                updated_at=now,
+            )
+            state[content_id] = record
+            return record
 
-        existing = state.get(result.content_id)
-        if existing is not None:
-            return existing
+    if not result.ok:
+        content_id = result.content_id or url
+        existing = state.get(content_id)
+        if existing is None:
+            record = StateRecord(
+                content_id=content_id,
+                url=url,
+                normalized_url=result.normalized_url,
+                source=source,
+                status=ItemStatus.BLOCKED,
+                added_at=now,
+                updated_at=now,
+                error=result.reason,
+            )
+            state[content_id] = record
+            self.append_needs_attention(url, result.reason or "validation failed")
+            return record
+        return existing
 
-        record = StateRecord(
-            content_id=result.content_id,
-            url=url,
-            normalized_url=result.normalized_url,
-            source=source,
-            status=ItemStatus.PENDING,
-            content_kind="media",
-            added_at=now,
-            updated_at=now,
-        )
-        state[result.content_id] = record
-        return record
+    existing = state.get(result.content_id)
+    if existing is not None:
+        return existing
+
+    record = StateRecord(
+        content_id=result.content_id,
+        url=url,
+        normalized_url=result.normalized_url,
+        source=source,
+        status=ItemStatus.PENDING,
+        content_kind="media",
+        added_at=now,
+        updated_at=now,
+    )
+    state[result.content_id] = record
+    return record
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -742,9 +740,7 @@ def test_notion_fetcher_extracts_main_text(tmp_path):
         return_value=httpx.Response(200, text=_NOTION_PAGE_HTML)
     )
 
-    result = NotionFetcher(settings).fetch(
-        "https://www.notion.so/Project-Notes-abc123", "cid5"
-    )
+    result = NotionFetcher(settings).fetch("https://www.notion.so/Project-Notes-abc123", "cid5")
 
     assert "onboarding process" in result.text
     assert "clone the repo" in result.text
@@ -799,9 +795,7 @@ class NotionFetcher:
             except httpx.HTTPError as exc:
                 raise TextFetchError(f"failed to fetch Notion page {url!r}: {exc}") from exc
             if response.status_code != 200:
-                raise TextFetchError(
-                    f"Notion page {url!r} returned HTTP {response.status_code}"
-                )
+                raise TextFetchError(f"Notion page {url!r} returned HTTP {response.status_code}")
             html = response.text
         finally:
             if owns_client:
@@ -869,8 +863,9 @@ def test_dispatching_text_fetcher_routes_github_to_github_fetcher(tmp_path, monk
     monkeypatch.setattr(
         GitHubFetcher,
         "fetch",
-        lambda self, url, content_id: calls.append(("github", url))
-        or TranscriptResultStub(content_id),
+        lambda self, url, content_id: (
+            calls.append(("github", url)) or TranscriptResultStub(content_id)
+        ),
     )
     monkeypatch.setattr(
         NotionFetcher,
@@ -889,8 +884,9 @@ def test_dispatching_text_fetcher_routes_notion_to_notion_fetcher(tmp_path, monk
     monkeypatch.setattr(
         NotionFetcher,
         "fetch",
-        lambda self, url, content_id: calls.append(("notion", url))
-        or TranscriptResultStub(content_id),
+        lambda self, url, content_id: (
+            calls.append(("notion", url)) or TranscriptResultStub(content_id)
+        ),
     )
     monkeypatch.setattr(
         GitHubFetcher,
@@ -1301,94 +1297,88 @@ Update `WorkerPipeline.__init__`:
 Update `process_item()` - replace the download+transcribe block:
 
 ```python
-    def process_item(self, record: StateRecord) -> StateRecord:
-        try:
-            if record.content_kind == "text":
-                record.status = ItemStatus.DOWNLOADING
-                self.queue_manager.update_record(record)
-                transcript = self.text_fetcher.fetch(record.url, record.content_id)
-                log_context(
-                    logger, 20, "text captured", content_id=record.content_id, url=record.url
-                )
-                record.status = ItemStatus.TRANSCRIBING
-                self.queue_manager.update_record(record)
+def process_item(self, record: StateRecord) -> StateRecord:
+    try:
+        if record.content_kind == "text":
+            record.status = ItemStatus.DOWNLOADING
+            self.queue_manager.update_record(record)
+            transcript = self.text_fetcher.fetch(record.url, record.content_id)
+            log_context(logger, 20, "text captured", content_id=record.content_id, url=record.url)
+            record.status = ItemStatus.TRANSCRIBING
+            self.queue_manager.update_record(record)
+        else:
+            record.status = ItemStatus.DOWNLOADING
+            self.queue_manager.update_record(record)
+            download_result = self.downloader.download(record.url, record.content_id)
+            log_context(logger, 20, "downloaded", content_id=record.content_id, url=record.url)
+
+            record.status = ItemStatus.TRANSCRIBING
+            self.queue_manager.update_record(record)
+            media_paths = [Path(p) for p in download_result.media_paths]
+            if download_result.media_type is MediaType.IMAGE:
+                transcript = self.image_describer.describe(media_paths, record.content_id)
             else:
-                record.status = ItemStatus.DOWNLOADING
-                self.queue_manager.update_record(record)
-                download_result = self.downloader.download(record.url, record.content_id)
-                log_context(
-                    logger, 20, "downloaded", content_id=record.content_id, url=record.url
-                )
-
-                record.status = ItemStatus.TRANSCRIBING
-                self.queue_manager.update_record(record)
-                media_paths = [Path(p) for p in download_result.media_paths]
-                if download_result.media_type is MediaType.IMAGE:
-                    transcript = self.image_describer.describe(media_paths, record.content_id)
-                else:
-                    transcript = self._transcribe_media_paths(media_paths, record.content_id)
-                log_context(
-                    logger,
-                    20,
-                    "transcribed",
-                    content_id=record.content_id,
-                    media_type=download_result.media_type.value,
-                )
-
-            record.status = ItemStatus.ENRICHING
-            self.queue_manager.update_record(record)
-            enrichment = self.enricher.enrich(transcript, record.url)
+                transcript = self._transcribe_media_paths(media_paths, record.content_id)
             log_context(
                 logger,
                 20,
-                "enriched",
+                "transcribed",
                 content_id=record.content_id,
-                high_signal=enrichment.high_signal,
+                media_type=download_result.media_type.value,
             )
 
-            record.status = ItemStatus.WRITING_NOTE
-            self.queue_manager.update_record(record)
-            content_item = ContentItem(
-                content_id=record.content_id,
-                source_url=record.url,
-                created_at=datetime.now(UTC),
-                transcript=transcript,
-                enrichment=enrichment,
-            )
-            note_path = write_note(self.settings, content_item)
-            skill_path = self.skill_writer.generate(content_item)
-
-            previous_note_path = record.note_path
-            previous_skill_path = record.skill_path
-            record.status = ItemStatus.DONE
-            record.note_path = str(note_path)
-            record.skill_path = str(skill_path) if skill_path else None
-            record.error = None
-            log_context(
-                logger,
-                20,
-                "note written",
-                content_id=record.content_id,
-                note_path=str(note_path),
-            )
-            self._cleanup_tmp_dir(record.content_id)
-            self._cleanup_stale_note(previous_note_path, record.note_path)
-            self._cleanup_stale_skill(previous_skill_path, record.skill_path)
-
-        except Exception as exc:  # noqa: BLE001 - any stage failure must be recorded, not raised
-            new_error = str(exc)
-            previous_error = record.error
-            record.status = ItemStatus.FAILED
-            record.error = new_error
-            if new_error != previous_error:
-                reason = f"processing failed: {new_error}"
-                self.queue_manager.append_needs_attention(record.url, reason)
-            log_context(
-                logger, 40, "processing failed", content_id=record.content_id, error=new_error
-            )
-
+        record.status = ItemStatus.ENRICHING
         self.queue_manager.update_record(record)
-        return record
+        enrichment = self.enricher.enrich(transcript, record.url)
+        log_context(
+            logger,
+            20,
+            "enriched",
+            content_id=record.content_id,
+            high_signal=enrichment.high_signal,
+        )
+
+        record.status = ItemStatus.WRITING_NOTE
+        self.queue_manager.update_record(record)
+        content_item = ContentItem(
+            content_id=record.content_id,
+            source_url=record.url,
+            created_at=datetime.now(UTC),
+            transcript=transcript,
+            enrichment=enrichment,
+        )
+        note_path = write_note(self.settings, content_item)
+        skill_path = self.skill_writer.generate(content_item)
+
+        previous_note_path = record.note_path
+        previous_skill_path = record.skill_path
+        record.status = ItemStatus.DONE
+        record.note_path = str(note_path)
+        record.skill_path = str(skill_path) if skill_path else None
+        record.error = None
+        log_context(
+            logger,
+            20,
+            "note written",
+            content_id=record.content_id,
+            note_path=str(note_path),
+        )
+        self._cleanup_tmp_dir(record.content_id)
+        self._cleanup_stale_note(previous_note_path, record.note_path)
+        self._cleanup_stale_skill(previous_skill_path, record.skill_path)
+
+    except Exception as exc:  # noqa: BLE001 - any stage failure must be recorded, not raised
+        new_error = str(exc)
+        previous_error = record.error
+        record.status = ItemStatus.FAILED
+        record.error = new_error
+        if new_error != previous_error:
+            reason = f"processing failed: {new_error}"
+            self.queue_manager.append_needs_attention(record.url, reason)
+        log_context(logger, 40, "processing failed", content_id=record.content_id, error=new_error)
+
+    self.queue_manager.update_record(record)
+    return record
 ```
 
 (Everything from `record.status = ItemStatus.ENRICHING` onward, and the whole `except` block, are unchanged from the current file - only the `try:` block's opening is restructured into the `if record.content_kind == "text":` branch.)

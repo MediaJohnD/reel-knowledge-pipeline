@@ -180,9 +180,7 @@ def test_classify_url_kind_drive_video_url_stays_media(tmp_path, monkeypatch):
     _install_fake_yt_dlp(monkeypatch, raises=False)
     settings = make_settings(tmp_path, allowed=["drive.google.com"])
 
-    assert (
-        classify_url_kind("https://drive.google.com/file/d/abc123/view", settings) == "media"
-    )
+    assert classify_url_kind("https://drive.google.com/file/d/abc123/view", settings) == "media"
 
 
 def test_classify_url_kind_drive_non_video_url_becomes_text(tmp_path, monkeypatch):
@@ -195,6 +193,4 @@ def test_classify_url_kind_drive_non_video_url_becomes_text(tmp_path, monkeypatc
     _install_fake_yt_dlp(monkeypatch, raises=True)
     settings = make_settings(tmp_path, allowed=["drive.google.com"])
 
-    assert (
-        classify_url_kind("https://drive.google.com/file/d/abc123/view", settings) == "text"
-    )
+    assert classify_url_kind("https://drive.google.com/file/d/abc123/view", settings) == "text"

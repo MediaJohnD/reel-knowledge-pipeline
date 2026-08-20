@@ -188,9 +188,7 @@ def test_gallery_dl_downloader_routes_silent_video_to_image_path(tmp_path, monke
     assert result.media_paths == [str(frame_path)]
 
 
-def test_gallery_dl_downloader_ignores_silent_video_when_a_real_video_exists(
-    tmp_path, monkeypatch
-):
+def test_gallery_dl_downloader_ignores_silent_video_when_a_real_video_exists(tmp_path, monkeypatch):
     """A carousel with both a real (audio) video and a silent one keeps the
     binary VIDEO-vs-IMAGE split today's design already has - the whole post
     is VIDEO, using only the real video path. See _video_has_audio_stream's
