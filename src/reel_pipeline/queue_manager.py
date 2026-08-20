@@ -20,6 +20,7 @@ import json
 import os
 from collections.abc import Callable
 from datetime import UTC, datetime
+from textwrap import indent
 from typing import TypeVar
 
 from filelock import FileLock
@@ -51,21 +52,78 @@ class QueueManager:
             self.queue_file.write_text("", encoding="utf-8")
         if not self.needs_attention_file.exists():
             self.needs_attention_file.write_text("", encoding="utf-8")
+        self._cached_state: dict[str, StateRecord] | None = None
+        self._cached_stamp: tuple[int, int] | None = None
+        self._record_json: dict[str, str] = {}
 
     # -- state.json persistence -------------------------------------------------
 
+    def _disk_stamp(self) -> tuple[int, int] | None:
+        try:
+            stat = self.state_file.stat()
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
+
     def load_state(self) -> dict[str, StateRecord]:
-        if not self.state_file.exists():
-            return {}
-        raw = json.loads(self.state_file.read_text(encoding="utf-8") or "{}")
-        return {cid: StateRecord(**record) for cid, record in raw.get("items", {}).items()}
+        """Parsed state.json, reusing the last parse when the file on disk hasn't
+        changed since we wrote it.
+
+        Every mutation used to reparse the whole file (O(items) pydantic
+        validation per stage transition, ~6 per item per run_once() pass). The
+        cache is invalidated by (mtime_ns, size), so another process's write -
+        a webhook add_url(), a concurrent CLI run - is always picked up; we
+        only skip the reparse when the bytes are provably the ones we wrote.
+
+        The returned dict is the live cache, not a copy: mutating a StateRecord
+        in it must be followed by update_record()/mutate_state(), which is what
+        tells save_state() to re-serialize that record.
+        """
+        stamp = self._disk_stamp()
+        if self._cached_state is not None and stamp == self._cached_stamp:
+            return self._cached_state
+        if stamp is None:
+            state: dict[str, StateRecord] = {}
+        else:
+            raw = json.loads(self.state_file.read_text(encoding="utf-8") or "{}")
+            state = {cid: StateRecord(**record) for cid, record in raw.get("items", {}).items()}
+        self._record_json.clear()
+        self._cached_state = state
+        self._cached_stamp = stamp
+        return state
 
     def save_state(self, state: dict[str, StateRecord]) -> None:
-        items = {cid: json.loads(record.model_dump_json()) for cid, record in state.items()}
-        payload = {"items": items}
+        """Atomically rewrite state.json, re-serializing only records that
+        actually changed since the last write.
+
+        Byte-identical to the previous `json.dumps(payload, indent=2,
+        sort_keys=True)` output - each record is rendered at indent=2 and
+        re-indented by one level - so the on-disk format is unchanged; only the
+        cost is. The file itself is still rewritten whole (it is a single JSON
+        document), but that's a memcpy of cached text rather than an
+        O(items) pydantic dump on every stage transition.
+        """
+        cached = self._cached_state
+        parts: list[str] = []
+        for cid, record in sorted(state.items()):
+            if cached is None or cached.get(cid) is not record:
+                # A record object we've never serialized, or one swapped in
+                # under an existing content_id - can't trust the cached text.
+                self._record_json.pop(cid, None)
+            text = self._record_json.get(cid)
+            if text is None:
+                text = json.dumps(record.model_dump(mode="json"), indent=2, sort_keys=True)
+                self._record_json[cid] = text
+            parts.append(f"    {json.dumps(cid)}: {indent(text, '    ').lstrip()}")
+        body = ",\n".join(parts)
+        payload = '{\n  "items": {' + (f"\n{body}\n  " if body else "") + "}\n}"
         tmp_path = self.state_file.with_suffix(".json.tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        tmp_path.write_text(payload, encoding="utf-8")
         os.replace(tmp_path, self.state_file)
+        self._cached_state = state
+        self._cached_stamp = self._disk_stamp()
+        for stale in set(self._record_json) - set(state):
+            del self._record_json[stale]
 
     def _locked_mutate(self, mutate_fn: Callable[[dict[str, StateRecord]], _T]) -> _T:
         """Acquire the cross-process state.json lock briefly, load current state,
@@ -96,12 +154,22 @@ class QueueManager:
         worker.py's own mutations use, rather than one record at a time via
         update_record().
         """
-        return self._locked_mutate(mutate_fn)
+
+        def mutate(state: dict[str, StateRecord]) -> _T:
+            result = mutate_fn(state)
+            # mutate_fn can touch any record in place, and we can't tell which -
+            # drop every cached serialization rather than risk writing stale
+            # text. Rare path (vault_organizer), so the full re-dump is fine.
+            self._record_json.clear()
+            return result
+
+        return self._locked_mutate(mutate)
 
     def update_record(self, record: StateRecord) -> None:
         def mutate(state: dict[str, StateRecord]) -> None:
             record.updated_at = datetime.now(UTC)
             state[record.content_id] = record
+            self._record_json.pop(record.content_id, None)
 
         self._locked_mutate(mutate)
 
@@ -283,6 +351,7 @@ class QueueManager:
                 target.next_retry_at = None
                 target.error = None
                 target.updated_at = now
+                self._record_json.pop(target.content_id, None)
             return [target.content_id for target in targets]
 
         return self._locked_mutate(mutate)

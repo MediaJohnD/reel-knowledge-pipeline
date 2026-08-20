@@ -115,14 +115,18 @@ def test_reset_for_retry_by_content_id_resets_failed_permanent_record(tmp_path):
 
     from reel_pipeline.models import ItemStage, StateRecord
 
+    # Deliberately stale: Windows' clock granularity is coarse enough that a
+    # `now` captured microseconds earlier can compare equal to the timestamp
+    # reset_for_retry() writes, which says nothing either way.
+    stale = now - timedelta(minutes=5)
     permanent = StateRecord(
         content_id="perm1",
         url="https://youtube.com/1",
         normalized_url="https://youtube.com/1",
         source=QueueSource.QUEUE_FILE,
         status=ItemStatus.FAILED_PERMANENT,
-        added_at=now,
-        updated_at=now,
+        added_at=stale,
+        updated_at=stale,
         attempt_count=5,
         error="boom",
         last_completed_stage=ItemStage.DOWNLOADED,
@@ -142,7 +146,7 @@ def test_reset_for_retry_by_content_id_resets_failed_permanent_record(tmp_path):
     assert record.last_completed_stage == ItemStage.DOWNLOADED
     # Regression: reset_for_retry() used to leave updated_at stale, unlike
     # every other mutation path in this file (update_record, _register, etc).
-    assert record.updated_at > now
+    assert record.updated_at > stale
 
 
 def test_reset_for_retry_ignores_content_id_not_in_failed_permanent_status(tmp_path):
@@ -482,6 +486,92 @@ def test_blocked_text_capture_domain_still_rejected(tmp_path):
     registered = qm.sync_queue_file_into_state()
 
     assert registered[0].status == ItemStatus.BLOCKED
+
+
+def _record(cid: str, **overrides):
+    from reel_pipeline.models import StateRecord
+
+    now = datetime.now(UTC)
+    fields = {
+        "content_id": cid,
+        "url": f"https://youtube.com/{cid}",
+        "normalized_url": f"https://youtube.com/{cid}",
+        "source": QueueSource.QUEUE_FILE,
+        "status": ItemStatus.PENDING,
+        "added_at": now,
+        "updated_at": now,
+    }
+    fields.update(overrides)
+    return StateRecord(**fields)
+
+
+def test_save_state_output_matches_the_plain_full_dump_byte_for_byte(tmp_path):
+    """save_state() now assembles the file from per-record cached JSON instead
+    of one json.dumps() over everything, so pin the format: it must stay
+    byte-identical to the straightforward full dump, both empty and populated.
+    """
+    import json
+
+    qm = QueueManager(make_settings(tmp_path))
+
+    qm.save_state({})
+    assert qm.state_file.read_text(encoding="utf-8") == json.dumps({"items": {}}, indent=2)
+
+    state = {"b1": _record("b1"), "a1": _record("a1", error="boom", attempt_count=2)}
+    qm.save_state(state)
+    expected = json.dumps(
+        {"items": {cid: json.loads(r.model_dump_json()) for cid, r in state.items()}},
+        indent=2,
+        sort_keys=True,
+    )
+    assert qm.state_file.read_text(encoding="utf-8") == expected
+
+
+def test_updated_record_is_reserialized_not_served_from_the_cache(tmp_path):
+    """The serialization cache is only safe if every in-place mutation path
+    invalidates its record - otherwise a mutated record silently persists as
+    its stale text.
+    """
+    qm = QueueManager(make_settings(tmp_path))
+    record = _record("x1")
+    qm.save_state({"x1": record})
+
+    record.status = ItemStatus.DONE
+    record.note_path = "/vault/x1.md"
+    qm.update_record(record)
+
+    reloaded = QueueManager(make_settings(tmp_path)).load_state()["x1"]
+    assert reloaded.status == ItemStatus.DONE
+    assert reloaded.note_path == "/vault/x1.md"
+
+
+def test_load_state_picks_up_another_writers_changes(tmp_path):
+    """The parse cache must never hide a write from another process (a webhook
+    add_url(), a concurrent CLI run) - it's keyed on the file's own mtime/size.
+    """
+    settings = make_settings(tmp_path)
+    qm = QueueManager(settings)
+    qm.save_state({"x1": _record("x1")})
+    assert set(qm.load_state()) == {"x1"}
+
+    other = QueueManager(settings)
+    other_state = other.load_state()
+    other_state["x2"] = _record("x2")
+    other.save_state(other_state)
+
+    assert set(qm.load_state()) == {"x1", "x2"}
+
+
+def test_mutate_state_in_place_changes_are_persisted(tmp_path):
+    qm = QueueManager(make_settings(tmp_path))
+    qm.save_state({"x1": _record("x1", status=ItemStatus.DONE)})
+
+    def mutate(state):
+        state["x1"].note_path = "/vault/renamed.md"
+
+    qm.mutate_state(mutate)
+
+    assert QueueManager(make_settings(tmp_path)).load_state()["x1"].note_path == "/vault/renamed.md"
 
 
 def test_add_url_waits_for_a_concurrently_held_state_lock_instead_of_racing(tmp_path):

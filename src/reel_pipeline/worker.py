@@ -524,11 +524,13 @@ class WorkerPipeline:
             )
 
     def _warn_if_state_size_exceeds_threshold(self) -> None:
-        """state.json is fully reparsed and rewritten on every mutation, an O(n)
-        cost per stage transition (O(n^2) over a full backlog pass) - a
-        deliberate tradeoff at this project's original "handful of reels"
-        scale (see docs/superpowers/specs/2026-07-29-state-reliability-design.md's
-        "Deferred" section). This turns that into a monitored deferral: once
+        """state.json is rewritten whole on every mutation - it's one JSON
+        document - so a stage transition still costs O(n) bytes written, even
+        though QueueManager now caches the parse and re-serializes only the
+        record that actually changed (see load_state/save_state). Removing the
+        remaining O(n) would mean giving up the single-file format (see
+        docs/superpowers/specs/2026-07-29-state-reliability-design.md's
+        "Deferred" section). This keeps that a monitored deferral: once
         item count reaches maintenance.state_size_warning_threshold, log a
         warning each run_once() pass so growth past that original assumption
         is visible instead of just slowly degrading. threshold <= 0 disables
