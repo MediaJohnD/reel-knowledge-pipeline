@@ -25,11 +25,14 @@ from __future__ import annotations
 
 import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from itertools import repeat
 from pathlib import Path
 from typing import Protocol
 
+import httpx
 from filelock import FileLock
 from filelock import Timeout as FileLockTimeout
 
@@ -110,6 +113,7 @@ class WorkerPipeline:
         text_fetcher: TextFetcher,
         enricher: EnrichmentProvider,
         skill_writer: SkillGenerator,
+        llm_client: httpx.Client | None = None,
     ):
         self.settings = settings
         self.queue_manager = queue_manager
@@ -119,6 +123,7 @@ class WorkerPipeline:
         self.text_fetcher = text_fetcher
         self.enricher = enricher
         self.skill_writer = skill_writer
+        self._llm_client = llm_client
 
     def process_item(self, record: StateRecord) -> StateRecord:
         try:
@@ -440,7 +445,19 @@ class WorkerPipeline:
         if len(media_paths) == 1:
             return self.transcriber.transcribe(media_paths[0], content_id)
 
-        results = [self.transcriber.transcribe(path, content_id) for path in media_paths]
+        if self.settings.transcription.backend == "openai":
+            # The hosted API calls are independent HTTP requests. Keep results in
+            # media_paths order while limiting concurrent uploads so a large carousel
+            # cannot overwhelm either the API or local bandwidth.
+            with ThreadPoolExecutor(max_workers=min(len(media_paths), 4)) as executor:
+                results = list(
+                    executor.map(self.transcriber.transcribe, media_paths, repeat(content_id))
+                )
+        else:
+            # Local faster-whisper reuses one cached CTranslate2 model (and possibly
+            # one CUDA context); concurrent inference on that shared instance is not
+            # a safe or useful default.
+            results = [self.transcriber.transcribe(path, content_id) for path in media_paths]
         combined_text = "\n\n".join(
             f"[Clip {i + 1}/{len(results)}] {result.text}" for i, result in enumerate(results)
         )
@@ -571,16 +588,20 @@ class WorkerPipeline:
         registration) never touches this lock, only the per-mutation one, so
         it's never blocked by an in-progress backlog pass.
         """
-        lock_path = self.settings.state_file.with_suffix(".run_once.lock")
         try:
-            with FileLock(str(lock_path), timeout=600):
-                return self._run_once_locked()
-        except FileLockTimeout as exc:
-            raise RunOnceLockError(
-                f"Could not acquire the run_once() lock ({lock_path}) within 600s - "
-                "another run_once() (this process, another CLI invocation, or the "
-                "webhook server) appears to be stuck rather than just busy."
-            ) from exc
+            lock_path = self.settings.state_file.with_suffix(".run_once.lock")
+            try:
+                with FileLock(str(lock_path), timeout=600):
+                    return self._run_once_locked()
+            except FileLockTimeout as exc:
+                raise RunOnceLockError(
+                    f"Could not acquire the run_once() lock ({lock_path}) within 600s - "
+                    "another run_once() (this process, another CLI invocation, or the "
+                    "webhook server) appears to be stuck rather than just busy."
+                ) from exc
+        finally:
+            if self._llm_client is not None:
+                self._llm_client.close()
 
     def _run_once_locked(self) -> RunSummary:
         self.settings.ensure_directories()
@@ -611,13 +632,18 @@ class WorkerPipeline:
 
 def build_worker(settings: Settings) -> WorkerPipeline:
     """Wire up the real (non-fake) implementations for CLI/webhook use."""
+    # Use Ollama's existing 300-second timeout for the shared client, which is
+    # long enough for every supported LLM and vision provider. This keeps TCP/TLS
+    # connections alive across all items in a run_once() pass.
+    llm_client = httpx.Client(timeout=300.0)
     return WorkerPipeline(
         settings=settings,
         queue_manager=QueueManager(settings),
         downloader=get_downloader(settings),
         transcriber=get_transcriber(settings),
-        image_describer=get_image_describer(settings),
+        image_describer=get_image_describer(settings, client=llm_client),
         text_fetcher=get_text_fetcher(settings),
-        enricher=Enricher(settings),
-        skill_writer=SkillWriter(settings),
+        enricher=Enricher(settings, client=llm_client),
+        skill_writer=SkillWriter(settings, client=llm_client),
+        llm_client=llm_client,
     )

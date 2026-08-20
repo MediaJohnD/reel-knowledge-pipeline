@@ -15,6 +15,8 @@ import re
 from pathlib import Path
 from typing import Protocol
 
+import httpx
+
 from reel_pipeline.config import Settings
 from reel_pipeline.enricher import render_and_split
 from reel_pipeline.llm_client import LlmCallError, describe_images
@@ -70,8 +72,9 @@ _CURLY_QUOTES = str.maketrans({"’": "'", "‘": "'"})
 
 
 class LlmImageDescriber:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, client: httpx.Client | None = None):
         self.settings = settings
+        self._client = client
         self._prompt_template = settings.describe_image_post_prompt.read_text(encoding="utf-8")
 
     def describe(self, media_paths: list[Path], content_id: str) -> TranscriptResult:
@@ -88,6 +91,7 @@ class LlmImageDescriber:
                 max_tokens=self.settings.image_description.max_tokens,
                 static_prefix=static_prefix,
                 provider=provider,
+                client=self._client,
             )
         except LlmCallError as exc:
             raise ImageDescriptionError(str(exc)) from exc
@@ -109,5 +113,5 @@ class LlmImageDescriber:
         )
 
 
-def get_image_describer(settings: Settings) -> ImageDescriber:
-    return LlmImageDescriber(settings)
+def get_image_describer(settings: Settings, client: httpx.Client | None = None) -> ImageDescriber:
+    return LlmImageDescriber(settings, client=client)

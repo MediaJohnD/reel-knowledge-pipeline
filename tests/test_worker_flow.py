@@ -6,7 +6,15 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from reel_pipeline.config import DownloadConfig, MaintenanceConfig, Settings
+from reel_pipeline.config import (
+    PROJECT_ROOT,
+    DownloadConfig,
+    MaintenanceConfig,
+    PromptsConfig,
+    Settings,
+)
+from reel_pipeline.enricher import Enricher
+from reel_pipeline.image_describer import LlmImageDescriber
 from reel_pipeline.models import (
     DownloadResult,
     EnrichmentResult,
@@ -16,7 +24,8 @@ from reel_pipeline.models import (
     TranscriptResult,
 )
 from reel_pipeline.queue_manager import QueueManager
-from reel_pipeline.worker import WorkerPipeline
+from reel_pipeline.skill_writer import SkillWriter
+from reel_pipeline.worker import WorkerPipeline, build_worker
 
 
 class FakeDownloader:
@@ -206,6 +215,30 @@ def build_pipeline(
         enricher=FakeEnricher(),
         skill_writer=FakeSkillWriter(settings),
     )
+
+
+def test_build_worker_shares_and_closes_llm_client_per_pass(tmp_path):
+    settings = make_settings(tmp_path)
+    settings.prompts = PromptsConfig(
+        enrich_transcript=str(PROJECT_ROOT / "config" / "prompts" / "enrich_transcript.md"),
+        enrich_text_capture=str(PROJECT_ROOT / "config" / "prompts" / "enrich_text_capture.md"),
+        create_skill=str(PROJECT_ROOT / "config" / "prompts" / "create_skill.md"),
+        describe_image_post=str(PROJECT_ROOT / "config" / "prompts" / "describe_image_post.md"),
+    )
+    pipeline = build_worker(settings)
+    client = pipeline._llm_client
+
+    assert client is not None
+    assert isinstance(pipeline.enricher, Enricher)
+    assert isinstance(pipeline.skill_writer, SkillWriter)
+    assert isinstance(pipeline.image_describer, LlmImageDescriber)
+    assert pipeline.enricher._client is client
+    assert pipeline.skill_writer._client is client
+    assert pipeline.image_describer._client is client
+
+    pipeline.run_once()
+
+    assert client.is_closed
 
 
 def test_failed_item_gets_backoff_and_attempt_count_increment(tmp_path):
@@ -517,6 +550,39 @@ def test_multi_video_carousel_transcribes_every_clip_and_combines_them(tmp_path)
     note_text = note_path.read_text(encoding="utf-8")
     assert "transcript for" in note_text
     assert note_text.count("transcript for") == 2  # both clips' text made it into the note
+
+
+def test_openai_multi_video_transcription_runs_clips_concurrently_and_keeps_order(tmp_path):
+    settings = Settings(
+        project_root=tmp_path,
+        download=DownloadConfig(allowed_domains=["instagram.com"], blocked_domains=[]),
+    )
+    settings.transcription.backend = "openai"
+
+    class ConcurrentTranscriber:
+        def __init__(self):
+            self.barrier = threading.Barrier(2)
+            self.calls = []
+
+        def transcribe(self, media_path, content_id):
+            self.calls.append(media_path)
+            self.barrier.wait(timeout=2)
+            return TranscriptResult(
+                content_id=content_id,
+                text=f"transcript for {media_path.name}",
+                backend="openai",
+            )
+
+    transcriber = ConcurrentTranscriber()
+    pipeline = build_pipeline(settings, FakeMultiVideoDownloader(), transcriber=transcriber)
+    media_paths = [Path("first.mp4"), Path("second.mp4")]
+
+    result = pipeline._transcribe_media_paths(media_paths, "carousel-id")
+
+    assert len(transcriber.calls) == 2
+    assert (
+        result.text == "[Clip 1/2] transcript for first.mp4\n\n[Clip 2/2] transcript for second.mp4"
+    )
 
 
 def test_reprocessing_with_a_new_title_removes_the_stale_note_and_skill(tmp_path):
