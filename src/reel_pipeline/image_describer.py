@@ -12,6 +12,8 @@ based on DownloadResult.media_type.
 from __future__ import annotations
 
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Protocol
 
@@ -62,13 +64,62 @@ _REQUEST_FOR_IMAGES_RE = re.compile(
     r"\bplease\s+(?:\w+\s+){0,2}"
     r"(?:provide|share|send|attach|upload|paste)\s+"
     r"(?:\w+\s+){0,3}"  # "the", "each of the", "me the actual", ...
-    r"(?:image|photo|picture|screenshot)s?\b",
+    # The object can be the images themselves, or - found live 2026-08-21 -
+    # what the model wants *about* them ("please provide a description of the
+    # images", "please paste a transcription of the screenshots"). Matching the
+    # description noun directly keeps the wildcard gap above at three words
+    # rather than widening it to six to reach the trailing "images".
+    r"(?:image|photo|picture|screenshot|transcription|transcript|description)s?\b",
     re.IGNORECASE,
 )
 # Vision models routinely emit typographic quotes ("can’t", "don’t") rather
 # than ASCII ones - normalized before matching so _REFUSAL_RE's ASCII-only
 # apostrophes don't silently miss them (found by review, 2026-08-10).
 _CURLY_QUOTES = str.maketrans({"’": "'", "‘": "'"})
+
+
+# Formats the vision path cannot rely on the model decoding. Ollama with
+# mistral-small3.1 does not decode WebP and - measured 2026-08-21 - does not
+# error either: it returns HTTP 200 with the image dropped and answers as if
+# nothing were attached (2.7s, against 70.3s for the same picture as JPEG), so
+# the failure arrives looking like a refusal rather than a fault. Instagram
+# serves WebP routinely. Both image-selection sites accept ".webp"
+# (downloader._IMAGE_SUFFIXES and worker._cached_download_result's rescan), so
+# the re-encode belongs here, where every source converges before the call.
+_NEEDS_REENCODE_SUFFIXES = (".webp",)
+
+
+def _reencode_for_vision(source: Path, workdir: Path, index: int) -> Path:
+    """Re-encodes one image into PNG so the vision model can actually decode it.
+
+    ffmpeg rather than Pillow: Pillow is not a declared dependency, while ffmpeg
+    already is (downloader._extract_first_frame). PNG rather than JPEG because
+    the source is already lossy and these carousels are frequently screenshots
+    of small text - a second lossy pass is exactly what would cost the model
+    the characters it is being asked to transcribe.
+
+    Output goes to a caller-owned temp dir, never back into data/tmp/: the
+    resume path (worker._cached_download_result) rescans that directory for
+    images, so a converted copy left beside its original would come back as a
+    second, duplicate image on the next attempt.
+    """
+    target = workdir / f"{index:03d}-{source.stem}.png"
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed argv, no shell, path is our own download
+            ["ffmpeg", "-y", "-i", str(source), str(target)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ImageDescriptionError(
+            f"ffmpeg failed to convert {source.suffix} image {source}: {exc}"
+        ) from exc
+    if result.returncode != 0 or not target.exists():
+        raise ImageDescriptionError(
+            f"ffmpeg failed to convert {source.suffix} image {source}: {result.stderr.strip()}"
+        )
+    return target
 
 
 class LlmImageDescriber:
@@ -78,10 +129,55 @@ class LlmImageDescriber:
         self._prompt_template = settings.describe_image_post_prompt.read_text(encoding="utf-8")
 
     def describe(self, media_paths: list[Path], content_id: str) -> TranscriptResult:
+        provider = self.settings.image_description.provider or self.settings.llm.provider
+        with tempfile.TemporaryDirectory(prefix="reel-vision-") as workdir:
+            prepared = [
+                _reencode_for_vision(path, Path(workdir), i)
+                if path.suffix.lower() in _NEEDS_REENCODE_SUFFIXES
+                else path
+                for i, path in enumerate(media_paths)
+            ]
+            batches = self._batch(prepared)
+            texts = [self._describe_batch(batch, provider) for batch in batches]
+
+        if len(batches) == 1:
+            text = texts[0]
+        else:
+            # Labelled like worker._transcribe_media_paths' "[Clip i/n]" so the
+            # enricher can see where one batch's description ends and the next
+            # begins. Each batch is described in isolation, so the model cannot
+            # narrate the arc across a split carousel the way the prompt asks
+            # for - an accepted loss, since the alternative was a permanent
+            # HTTP 400 and no description at all.
+            total = len(media_paths)
+            labelled, start = [], 0
+            for batch, part in zip(batches, texts, strict=True):
+                labelled.append(f"[Images {start + 1}-{start + len(batch)} of {total}] {part}")
+                start += len(batch)
+            text = "\n\n".join(labelled)
+
+        return TranscriptResult(
+            content_id=content_id,
+            text=text,
+            language=None,
+            backend=f"vision:{provider}:{self.settings.image_description.model}",
+            duration_seconds=None,
+        )
+
+    def _batch(self, media_paths: list[Path]) -> list[list[Path]]:
+        """Splits a carousel into per-request groups. Always yields at least one
+        batch, so an empty media_paths still reaches describe_images() and
+        raises there rather than silently producing an empty description.
+        """
+        size = max(1, self.settings.image_description.max_images_per_call)
+        return [media_paths[i : i + size] for i in range(0, len(media_paths), size)] or [
+            media_paths
+        ]
+
+    def _describe_batch(self, media_paths: list[Path], provider: str) -> str:
         static_prefix, prompt = render_and_split(
             self._prompt_template, image_count=str(len(media_paths))
         )
-        provider = self.settings.image_description.provider or self.settings.llm.provider
         try:
             text = describe_images(
                 self.settings,
@@ -98,19 +194,14 @@ class LlmImageDescriber:
 
         text = text.strip()
         normalized = text.translate(_CURLY_QUOTES)
+        # Per batch, not on the joined text: a refusal in one batch alongside a
+        # genuine description in another would otherwise reach the vault.
         if _REFUSAL_RE.search(normalized) or _REQUEST_FOR_IMAGES_RE.search(normalized):
             raise ImageDescriptionError(
                 "the vision model refused to describe the image(s) rather than "
                 f"returning a description: {text[:200]!r}"
             )
-
-        return TranscriptResult(
-            content_id=content_id,
-            text=text,
-            language=None,
-            backend=f"vision:{provider}:{self.settings.image_description.model}",
-            duration_seconds=None,
-        )
+        return text
 
 
 def get_image_describer(settings: Settings, client: httpx.Client | None = None) -> ImageDescriber:

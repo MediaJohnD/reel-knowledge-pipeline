@@ -40,8 +40,15 @@ Switch by editing `llm.provider` in `config/settings.yaml` (or override with
 **Ollama context window:** Ollama defaults every request to a 4096-token
 context regardless of the model's real capacity - long transcripts or
 multi-image carousels can silently exceed that and fail with
-`exceed_context_size_error`. `llm.ollama_num_ctx` (default `16384`) overrides
-this; raise it further if you process very long videos or large carousels.
+`exceed_context_size_error`. `llm.ollama_num_ctx` (default `32768`) overrides
+this; raise it further if you process very long videos.
+
+For **carousels specifically**, `num_ctx` is no longer the lever -
+`image_description.max_images_per_call` (default `6`) is. Images cost roughly
+1000 prompt tokens each, so a long carousel used to overflow no matter how the
+context was sized; `image_describer.py` now splits it across several requests
+and joins the descriptions, which bounds request size by the cap rather than by
+the length of the post.
 
 ## Photo posts / carousels (no video)
 
@@ -355,7 +362,7 @@ device/browser, not just iOS.
 | `RuntimeError: REEL_WEBHOOK_SECRET is not set` | `.env` not loaded / secret missing before `serve-webhook` |
 | `RuntimeError: ANTHROPIC_API_KEY is not set` | Only applies when `llm.provider: anthropic` - set the key, or switch `llm.provider` to `ollama` in `config/settings.yaml` |
 | `LlmCallError: Ollama request ... failed` | Ollama isn't running, or the model in `enrichment.model`/`skill_writer.model` isn't pulled yet (`ollama pull <model>`) |
-| `exceed_context_size_error` from Ollama | Raise `llm.ollama_num_ctx` in `config/settings.yaml` (default 16384) - long transcripts or large image carousels need more than Ollama's 4096-token default |
+| `exceed_context_size_error` from Ollama | For a long transcript, raise `llm.ollama_num_ctx` in `config/settings.yaml` (default 32768). For a photo carousel, lower `image_description.max_images_per_call` (default 6) instead - each image costs ~1000 prompt tokens, so the fix is fewer images per request, not a bigger window. The full error text now includes Ollama's own message, which names the token counts |
 | `ImageDescriptionError` / vision request fails | `image_description.model` isn't vision-capable, or (Ollama) isn't pulled - check with `ollama list` for a `vision` capability tag |
 | `RuntimeError: Instagram downloads require a logged-in session` | Set `REEL_INSTAGRAM_COOKIES_FILE` or `REEL_INSTAGRAM_COOKIES_BROWSER` - see "Instagram setup" above |
 | yt-dlp download errors | Unsupported/blocked domain, network issue, or `ffmpeg` missing |

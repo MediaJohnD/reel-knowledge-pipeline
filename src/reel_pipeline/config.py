@@ -105,6 +105,18 @@ class ImageDescriptionConfig(BaseModel):
     # when llm.provider is switched to something vision-incapable (cerebras)
     # so image/carousel posts keep working on ollama instead of erroring.
     provider: str | None = None
+    # Images per vision request. A carousel longer than this is split across
+    # several calls and the descriptions joined (LlmImageDescriber.describe).
+    # Sending all of them at once overflowed the model's context and returned a
+    # permanent HTTP 400 no retry could clear: a real 20-image post measured
+    # 20667 prompt tokens against an ollama_num_ctx of 16384 (2026-08-21), so
+    # ~1000 tokens per image at Instagram carousel resolution. 6 leaves ~2.5x
+    # headroom for higher-resolution images; that same 20-image carousel was
+    # verified end-to-end at this value, describing all 20 across 4 batches.
+    # ponytail: fixed count, not a token estimate - a batch of unusually large
+    # images could still overflow. Measure real prompt token counts and size
+    # batches against ollama_num_ctx if that starts happening.
+    max_images_per_call: int = 6
 
 
 class DownloadConfig(BaseModel):

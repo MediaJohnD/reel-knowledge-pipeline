@@ -461,3 +461,65 @@ def test_call_llm_does_not_sleep_out_a_quota_length_retry_after(tmp_path, monkey
 
     assert route.call_count == 1
     assert slept == []
+
+
+def test_http_error_message_includes_the_provider_response_body(tmp_path):
+    """httpx's HTTPStatusError string is only "Client error '400 Bad Request'
+    for url ..." - the body, which is the part that says *why*, is dropped. The
+    Ollama vision path then appended its own guess ("Is Ollama running, and is
+    the model pulled?"), so needs-attention.txt recorded a cause that was not
+    merely vague but wrong: verified 2026-08-21 that Ollama was running and the
+    model was pulled, while the real error was a context overflow on a 20-image
+    carousel. Every provider goes through _post_json, so this is asserted once.
+    """
+    settings = Settings(
+        project_root=tmp_path,
+        llm=LlmConfig(provider="ollama", ollama_host="http://localhost:11434"),
+    )
+    image = tmp_path / "frame.jpg"
+    image.write_bytes(b"fake-jpg-bytes")
+
+    with respx.mock:
+        respx.post("http://localhost:11434/api/generate").mock(
+            return_value=httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "code": 400,
+                        "message": (
+                            "request (20667 tokens) exceeds the available "
+                            "context size (16384 tokens), try increasing it"
+                        ),
+                        "type": "exceed_context_size_error",
+                    }
+                },
+            )
+        )
+        with pytest.raises(LlmCallError, match="exceeds the available context size"):
+            describe_images(settings, "p", [image], model="mistral-small3.1", max_tokens=100)
+
+
+def test_http_error_body_does_not_leak_an_api_key_the_provider_echoed_back(tmp_path):
+    """Including the response body re-opens the leak path closed on 2026-08-12
+    (LlmCallError -> record.error -> needs-attention.txt on disk) if a provider
+    quotes the credential back in its error text. Auth always travels as a
+    request header here, so any header value appearing in the body is scrubbed.
+    """
+    settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="groq"))
+    settings.groq_api_key = "gsk-secret-value-1234"
+
+    with respx.mock:
+        respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                401,
+                json={"error": {"message": "Invalid API key: gsk-secret-value-1234"}},
+            )
+        )
+        with pytest.raises(LlmCallError) as excinfo:
+            call_llm(settings, "prompt text", model="openai/gpt-oss-120b", max_tokens=10)
+
+    message = str(excinfo.value)
+    assert "gsk-secret-value-1234" not in message
+    # The body still has to arrive - proving it was included, then scrubbed,
+    # rather than dropped wholesale (which would pass the leak check trivially).
+    assert "Invalid API key" in message

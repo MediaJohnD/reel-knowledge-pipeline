@@ -105,6 +105,51 @@ def _rate_limit_wait(response: httpx.Response, attempt: int) -> float:
         return _RATE_LIMIT_BASE_WAIT * 2**attempt
 
 
+# How much of a provider's error body is quoted into the raised error. Long
+# enough for the provider's own message (Ollama's context-overflow text runs
+# ~120 chars), short enough that an HTML error page cannot swamp
+# needs-attention.txt.
+_ERROR_BODY_LIMIT = 500
+# Request headers whose value is a credential. Everything sent from this module
+# travels as a header (never a query param - see the 2026-08-12 Gemini leak),
+# so redacting these covers every secret that could come back echoed in an
+# error body. Matched on the name so ordinary headers ("content-type",
+# "anthropic-version") are left readable.
+_SECRET_HEADER_HINTS = ("key", "auth", "token", "secret")
+
+
+def _error_detail(response: httpx.Response, headers: Any) -> str:
+    """The provider's own error text, flattened to one line, credential-scrubbed
+    and truncated - or "" when there is no body to report.
+
+    httpx's HTTPStatusError message stops at the status line, so without this
+    the reason never reaches the caller. That is not merely vague: the Ollama
+    vision path appended its own guess about the model not being pulled, and on
+    2026-08-21 that sent an investigation down the wrong path while the real
+    cause (a context overflow on a 20-image carousel) sat unreported in a body
+    nothing read.
+    """
+    try:
+        body = response.text
+    except Exception:  # noqa: BLE001 - an unreadable body must not mask the HTTP error
+        return ""
+    body = " ".join(body.split())
+    if not body:
+        return ""
+    for name, value in (headers or {}).items():
+        if not any(hint in str(name).lower() for hint in _SECRET_HEADER_HINTS):
+            continue
+        # Split so a scheme prefix ("Bearer <key>") does not stop the key
+        # itself from matching - providers echo the bare credential, not the
+        # whole header value.
+        for token in str(value).split():
+            if len(token) >= 8:
+                body = body.replace(token, "[redacted]")
+    if len(body) > _ERROR_BODY_LIMIT:
+        body = body[:_ERROR_BODY_LIMIT] + "..."
+    return body
+
+
 def _post_json(client: httpx.Client, url: str, **kwargs: Any) -> dict:
     """POST and return the parsed JSON body, retrying 429s in place.
 
@@ -123,7 +168,18 @@ def _post_json(client: httpx.Client, url: str, **kwargs: Any) -> dict:
             break
         time.sleep(wait)
         response = client.post(url, **kwargs)
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        detail = _error_detail(response, kwargs.get("headers"))
+        if not detail:
+            raise
+        # Re-raised rather than handled here so every provider's own wrapper
+        # keeps producing its own message; .response is carried over so a
+        # caller inspecting the status still sees it.
+        raise httpx.HTTPStatusError(
+            f"{exc}: {detail}", request=exc.request, response=exc.response
+        ) from exc
     return response.json()
 
 

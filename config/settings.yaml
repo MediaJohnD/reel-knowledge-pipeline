@@ -76,6 +76,11 @@ image_description:
   model: mistral-small3.1
   max_tokens: 1024
   provider: ollama
+  # A carousel longer than this is described in several calls and the results
+  # joined. Sending 20 images at once measured 20667 prompt tokens against an
+  # ollama_num_ctx of 16384 and failed with a permanent HTTP 400 that no retry
+  # could clear - see ImageDescriptionConfig for the sizing rationale.
+  max_images_per_call: 6
 
 # Platforms the downloader will attempt. Anything not matched here is rejected up
 # front rather than attempted. Instagram is handled by gallery-dl (downloader.py's

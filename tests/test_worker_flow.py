@@ -203,7 +203,12 @@ def make_settings(tmp_path) -> Settings:
 
 
 def build_pipeline(
-    settings, downloader, transcriber=None, image_describer=None, text_fetcher=None
+    settings,
+    downloader,
+    transcriber=None,
+    image_describer=None,
+    text_fetcher=None,
+    enricher=None,
 ) -> WorkerPipeline:
     return WorkerPipeline(
         settings=settings,
@@ -212,7 +217,7 @@ def build_pipeline(
         transcriber=transcriber or FakeTranscriber(),
         image_describer=image_describer or FakeImageDescriber(),
         text_fetcher=text_fetcher or FakeTextFetcher(),
-        enricher=FakeEnricher(),
+        enricher=enricher or FakeEnricher(),
         skill_writer=FakeSkillWriter(settings),
     )
 
@@ -1190,3 +1195,58 @@ def test_run_once_does_not_warn_when_state_size_is_below_threshold(tmp_path, cap
         pipeline.run_once()
 
     assert not any("state.json" in record.message for record in caplog.records)
+
+
+class SilentTranscriber:
+    """A video with no speech: faster-whisper returns an empty string rather
+    than raising, so nothing upstream treats this as a failure.
+    """
+
+    def transcribe(self, media_path: Path, content_id: str) -> TranscriptResult:
+        return TranscriptResult(content_id=content_id, text="  \n  ", language=None, backend="fake")
+
+
+class CountingEnricher(FakeEnricher):
+    """Counts calls instead of raising - an exception here would be swallowed by
+    process_item's own except block and the test would pass for the wrong reason.
+    """
+
+    def __init__(self):
+        self.calls = 0
+
+    def enrich(self, transcript, source_url):
+        self.calls += 1
+        return super().enrich(transcript, source_url)
+
+
+def test_empty_transcript_is_reported_instead_of_enriched_into_a_note(tmp_path):
+    """An empty transcript used to be enriched anyway: the model dutifully wrote
+    a title ("No Transcript Available") and a summary saying there was nothing
+    to summarise, obsidian_writer wrote it, and the item was marked DONE - so
+    the failure was invisible in state.json and surfaced only as vault noise.
+    Two such notes reached the vault on 2026-08-20.
+    """
+    settings = make_settings(tmp_path)
+    enricher = CountingEnricher()
+    pipeline = build_pipeline(
+        settings, FakeDownloader(), transcriber=SilentTranscriber(), enricher=enricher
+    )
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=silent1\n", encoding="utf-8"
+    )
+
+    summary = pipeline.run_once()
+
+    assert enricher.calls == 0, "enrichment must not run on an empty transcript"
+    assert summary.done == 0
+    assert summary.failed == 1
+    assert summary.note_paths == []
+    assert not list(settings.vault_dir.rglob("*.md")), "no note may be written"
+
+    state = pipeline.queue_manager.load_state()
+    (record,) = state.values()
+    assert record.status != ItemStatus.DONE
+    assert record.note_path is None
+
+    needs_attention = pipeline.queue_manager.needs_attention_file.read_text(encoding="utf-8")
+    assert "empty" in needs_attention.lower()

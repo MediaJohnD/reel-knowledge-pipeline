@@ -84,6 +84,19 @@ class SkillGenerator(Protocol):
     def generate(self, item: ContentItem) -> Path | None: ...
 
 
+class EmptyTranscriptError(RuntimeError):
+    """Raised when a stage produced a transcript with no text in it.
+
+    An empty transcript is not a transcript, but nothing upstream treats it as
+    a failure: faster-whisper returns "" for a clip with no speech, and a text
+    capture can extract nothing from a page it fetched successfully. Enrichment
+    then does what it is asked and titles the emptiness ("No Transcript
+    Available"), the note is written, and the item is marked DONE - so the
+    failure never appears in state.json and shows up only as vault noise. Two
+    such notes reached the vault on 2026-08-20.
+    """
+
+
 class RunOnceLockError(RuntimeError):
     """Raised when run_once() can't acquire the cross-process state.json lock
     within the timeout - another run_once() (this process, another CLI
@@ -225,6 +238,19 @@ class WorkerPipeline:
                     "transcribed",
                     content_id=record.content_id,
                     media_type=download_result.media_type.value,
+                )
+
+            # Deliberately outside the `if transcript is None` block above: this
+            # has to cover every branch that can produce a transcript - media
+            # (audio or vision), text capture, and the cached-transcript reuse
+            # near the top - rather than only the one that happens to produce
+            # empties today. Raising routes the item to needs-attention.txt
+            # through process_item's handler, the same way an
+            # ImageDescriptionError does, instead of writing a content-free note.
+            if not transcript.text.strip():
+                raise EmptyTranscriptError(
+                    f"transcript for {record.url} is empty - nothing to enrich "
+                    "(no speech in the media, or no extractable text at the source)"
                 )
 
             if enrichment is None:

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
 import json
+import subprocess
+from pathlib import Path
 
 import httpx
 import pytest
@@ -171,6 +174,14 @@ def test_describe_raises_clear_error_on_failure(tmp_path):
         # before this pattern was added.
         "Certainly, please provide the images so I can analyze them for you.",
         "Sure! Please share the images and I'll describe them in detail.",
+        # Coverage gap found live (2026-08-21): the same positively-phrased
+        # refusal, but with four words between the verb and the noun ("a
+        # description of the images") where the pattern allowed at most three.
+        # Produced by feeding the model a WebP it could not decode; the reply
+        # reached the vault as request-for-image-descriptions-to-generate-transcript.md.
+        "Sure, I can help with that! Please provide a description of the images "
+        "or copy and paste the text you see.",
+        "Of course - please paste a transcription of each of the screenshots below.",
     ],
 )
 def test_describe_rejects_refusal_instead_of_writing_a_note(tmp_path, refusal):
@@ -258,3 +269,194 @@ def test_describe_handles_multiple_carousel_images(tmp_path):
     assert result.text == "carousel description"
     sent_payload = json.loads(route.calls[0].request.content)
     assert len(sent_payload["images"]) == 3
+
+
+def _carousel(tmp_path, count: int) -> list:
+    paths = []
+    for i in range(count):
+        p = tmp_path / f"carousel_{i}.jpg"
+        p.write_bytes(f"fake-jpg-{i}".encode())
+        paths.append(p)
+    return paths
+
+
+def test_describe_splits_a_carousel_that_exceeds_the_per_call_image_cap(tmp_path):
+    """Every image went into one request against a fixed num_ctx, so a large
+    carousel overflowed the model's context and returned HTTP 400 forever -
+    reproduced 2026-08-21 with a real 20-image post (20667 tokens vs 16384).
+    Retrying could never clear it, so the item burned its whole attempt budget
+    and re-stranded its media in data/tmp/ each pass. Fan the images out over
+    several calls instead, mirroring worker._transcribe_media_paths.
+    """
+    settings = make_settings(
+        tmp_path,
+        llm=LlmConfig(provider="ollama", ollama_host="http://localhost:11434"),
+        image_description=ImageDescriptionConfig(model="mistral-small3.1", max_images_per_call=3),
+    )
+    paths = _carousel(tmp_path, 7)
+
+    with respx.mock:
+        route = respx.post("http://localhost:11434/api/generate").mock(
+            side_effect=[
+                httpx.Response(200, json={"response": "first three"}),
+                httpx.Response(200, json={"response": "second three"}),
+                httpx.Response(200, json={"response": "last one"}),
+            ]
+        )
+        result = LlmImageDescriber(settings).describe(paths, "cid-big")
+
+    assert route.call_count == 3
+    batch_sizes = [len(json.loads(c.request.content)["images"]) for c in route.calls]
+    assert batch_sizes == [3, 3, 1]
+    # Every image is sent exactly once, in the post's original order.
+    sent = [img for c in route.calls for img in json.loads(c.request.content)["images"]]
+    assert len(sent) == 7
+    assert len(set(sent)) == 7
+    for text in ("first three", "second three", "last one"):
+        assert text in result.text
+
+
+def test_describe_sends_a_carousel_at_the_cap_as_one_unlabelled_call(tmp_path):
+    """The boundary: at exactly the cap there is still only one call, and the
+    text is the model's description verbatim - no batch labelling, so the
+    common single-batch case is byte-identical to the pre-batching behaviour.
+    """
+    settings = make_settings(
+        tmp_path,
+        llm=LlmConfig(provider="ollama", ollama_host="http://localhost:11434"),
+        image_description=ImageDescriptionConfig(model="mistral-small3.1", max_images_per_call=3),
+    )
+    paths = _carousel(tmp_path, 3)
+
+    with respx.mock:
+        route = respx.post("http://localhost:11434/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": "one whole carousel"})
+        )
+        result = LlmImageDescriber(settings).describe(paths, "cid-cap")
+
+    assert route.call_count == 1
+    assert len(json.loads(route.calls[0].request.content)["images"]) == 3
+    assert result.text == "one whole carousel"
+
+
+def test_describe_rejects_a_refusal_returned_by_a_later_batch(tmp_path):
+    """The refusal guard has to run per batch. Checking only the joined text
+    would let a real description in batch one carry a refusal in batch two
+    through to the enricher and into the vault.
+    """
+    settings = make_settings(
+        tmp_path,
+        llm=LlmConfig(provider="ollama", ollama_host="http://localhost:11434"),
+        image_description=ImageDescriptionConfig(model="mistral-small3.1", max_images_per_call=2),
+    )
+    paths = _carousel(tmp_path, 4)
+
+    with respx.mock:
+        respx.post("http://localhost:11434/api/generate").mock(
+            side_effect=[
+                httpx.Response(200, json={"response": "a genuine description"}),
+                httpx.Response(
+                    200,
+                    json={"response": "I cannot view the images you have attached."},
+                ),
+            ]
+        )
+        with pytest.raises(ImageDescriptionError, match="refused"):
+            LlmImageDescriber(settings).describe(paths, "cid-refuse")
+
+
+def test_describe_re_encodes_webp_before_sending_it_to_the_vision_model(tmp_path, monkeypatch):
+    """Ollama/mistral-small3.1 does not decode WebP. It does not error either -
+    it returns HTTP 200 with the image silently dropped and answers as though
+    nothing were attached (measured 2026-08-21: 2.7s for a WebP against 70.3s
+    for the same picture as JPEG). That reply then passed enrichment and landed
+    in the vault as a normal note. Instagram commonly serves WebP.
+
+    Re-encoding happens here rather than in downloader.py because there are two
+    image-selection sites - downloader.py's gallery-dl branch and
+    worker._cached_download_result's resume-from-tmp rescan - and both accept
+    ".webp". This is where they converge before the vision call.
+    """
+    settings = make_settings(
+        tmp_path,
+        llm=LlmConfig(provider="ollama", ollama_host="http://localhost:11434"),
+    )
+    webp = tmp_path / "carousel_0.webp"
+    webp.write_bytes(b"RIFF\x00\x00\x00\x00WEBPVP8 fake-webp-payload")
+
+    ffmpeg_calls = []
+
+    def fake_run(command, **kwargs):
+        assert command[0] == "ffmpeg", command
+        ffmpeg_calls.append(command)
+        Path(command[-1]).write_bytes(b"\x89PNG\r\n\x1a\nfake-png-payload")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with respx.mock:
+        route = respx.post("http://localhost:11434/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": "a real description"})
+        )
+        result = LlmImageDescriber(settings).describe([webp], "cid-webp")
+
+    assert len(ffmpeg_calls) == 1
+    assert str(webp) in ffmpeg_calls[0]
+    sent = base64.b64decode(json.loads(route.calls[0].request.content)["images"][0])
+    assert sent.startswith(b"\x89PNG"), "the model must receive PNG, not the original WebP"
+    assert b"WEBP" not in sent
+    assert result.text == "a real description"
+
+
+def test_describe_does_not_re_encode_a_format_the_model_already_reads(tmp_path, monkeypatch):
+    """Only WebP is broken. Re-encoding JPEG/PNG would burn an ffmpeg process
+    per image per attempt and lose quality for nothing.
+    """
+    settings = make_settings(
+        tmp_path,
+        llm=LlmConfig(provider="ollama", ollama_host="http://localhost:11434"),
+    )
+    jpg = tmp_path / "carousel_0.jpg"
+    jpg.write_bytes(b"\xff\xd8\xff-fake-jpeg-payload")
+
+    def fail_run(command, **kwargs):
+        pytest.fail(f"no re-encode should run for a .jpg: {command}")
+
+    monkeypatch.setattr(subprocess, "run", fail_run)
+
+    with respx.mock:
+        route = respx.post("http://localhost:11434/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": "a real description"})
+        )
+        LlmImageDescriber(settings).describe([jpg], "cid-jpg")
+
+    sent = base64.b64decode(json.loads(route.calls[0].request.content)["images"][0])
+    assert sent == jpg.read_bytes()
+
+
+def test_describe_reports_a_failed_webp_re_encode_instead_of_sending_it_anyway(
+    tmp_path, monkeypatch
+):
+    """A failed conversion must not fall back to posting the WebP - that is the
+    exact silent-success path this fix exists to close.
+    """
+    settings = make_settings(
+        tmp_path,
+        llm=LlmConfig(provider="ollama", ollama_host="http://localhost:11434"),
+    )
+    webp = tmp_path / "carousel_0.webp"
+    webp.write_bytes(b"RIFF\x00\x00\x00\x00WEBPVP8 fake-webp-payload")
+
+    def failing_run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="ffmpeg: boom")
+
+    monkeypatch.setattr(subprocess, "run", failing_run)
+
+    with respx.mock:
+        route = respx.post("http://localhost:11434/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": "unreachable"})
+        )
+        with pytest.raises(ImageDescriptionError, match="webp"):
+            LlmImageDescriber(settings).describe([webp], "cid-webp-fail")
+
+    assert route.call_count == 0
