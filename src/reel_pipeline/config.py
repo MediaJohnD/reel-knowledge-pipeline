@@ -55,8 +55,14 @@ class LlmConfig(BaseModel):
     ollama_host: str = "http://localhost:11434"
     # Ollama defaults every request to a 4096-token context window regardless of
     # the model's actual capacity, silently truncating (or, for vision requests,
-    # erroring) on long transcripts or multi-image carousels. Set generously -
-    # this only affects memory use for the duration of a request, not model choice.
+    # erroring) on long transcripts. Set generously, but not blindly: this sizes
+    # the KV cache per request, and on a machine where the model only just fits
+    # in VRAM a larger window pushes it out. Measured 2026-08-21 with
+    # mistral-small3.1: 16384 needs 17.2GB with 15.0GB resident, 32768 needs
+    # 18.7GB with 14.8GB resident - the extra ~2GB spilled to system RAM was
+    # enough to make vision calls time out against the client timeout.
+    # Carousels are bounded by image_description.max_images_per_call, not by
+    # this, so raising it does not help them.
     ollama_num_ctx: int = 16384
     # Minimum seconds between consecutive calls to a given provider - worker.py
     # processes actionable items back-to-back with no natural pacing (a backlog
@@ -108,11 +114,13 @@ class ImageDescriptionConfig(BaseModel):
     # Images per vision request. A carousel longer than this is split across
     # several calls and the descriptions joined (LlmImageDescriber.describe).
     # Sending all of them at once overflowed the model's context and returned a
-    # permanent HTTP 400 no retry could clear: a real 20-image post measured
-    # 20667 prompt tokens against an ollama_num_ctx of 16384 (2026-08-21), so
-    # ~1000 tokens per image at Instagram carousel resolution. 6 leaves ~2.5x
-    # headroom for higher-resolution images; that same 20-image carousel was
-    # verified end-to-end at this value, describing all 20 across 4 batches.
+    # permanent HTTP 400: a real 20-image post measured 20667 prompt tokens
+    # against llm.ollama_num_ctx of 16384 (2026-08-21), so ~1000 tokens per
+    # image at Instagram carousel resolution. 6 leaves ~2.5x headroom for
+    # higher-resolution images; that same 20-image carousel was verified
+    # end-to-end at this value, described across 4 batches. Note the cap, not
+    # ollama_num_ctx, is the lever here: batching bounds a request to at most
+    # this many images no matter how long the post is.
     # ponytail: fixed count, not a token estimate - a batch of unusually large
     # images could still overflow. Measure real prompt token counts and size
     # batches against ollama_num_ctx if that starts happening.
