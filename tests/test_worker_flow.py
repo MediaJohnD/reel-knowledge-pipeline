@@ -15,6 +15,7 @@ from reel_pipeline.config import (
 )
 from reel_pipeline.enricher import Enricher
 from reel_pipeline.image_describer import LlmImageDescriber
+from reel_pipeline.llm_client import LlmCallError
 from reel_pipeline.models import (
     DownloadResult,
     EnrichmentResult,
@@ -1195,6 +1196,117 @@ def test_run_once_does_not_warn_when_state_size_is_below_threshold(tmp_path, cap
         pipeline.run_once()
 
     assert not any("state.json" in record.message for record in caplog.records)
+
+
+class LlmErrorEnricher:
+    """Every enrichment call fails with a provider HTTP error.
+
+    Models the 2026-08-16 Cerebras outage: with status 402 the account is out
+    of credit, which is true for every item equally and says nothing about any
+    one URL.
+    """
+
+    def __init__(self, status_code: int = 402):
+        self.status_code = status_code
+        self.calls = 0
+
+    def enrich(self, transcript: TranscriptResult, source_url: str) -> EnrichmentResult:
+        self.calls += 1
+        raise LlmCallError(
+            f"Cerebras API request failed: Client error '{self.status_code}'",
+            status_code=self.status_code,
+        )
+
+
+class CountingDownloader:
+    """FakeDownloader that records how many items it was asked to fetch, so a
+    test can prove the batch stopped instead of re-downloading media for every
+    remaining item (the 181 MB of stranded data/tmp dirs on 2026-08-20).
+    """
+
+    def __init__(self):
+        self.calls = 0
+
+    def download(self, url: str, content_id: str) -> DownloadResult:
+        self.calls += 1
+        return DownloadResult(
+            content_id=content_id,
+            media_type=MediaType.VIDEO,
+            media_paths=[f"/fake/{content_id}.mp3"],
+            platform="youtube",
+        )
+
+
+def test_account_level_provider_error_does_not_burn_attempts(tmp_path):
+    """A dead provider account must not consume the item's retry budget.
+
+    Before this, five nightly passes against a 402 walked every queued URL to
+    FAILED_PERMANENT even though none of them was broken.
+    """
+    settings = make_settings(tmp_path)
+    settings.retry.max_attempts = 2
+    settings.retry.backoff_schedule_minutes = [0, 0]
+    enricher = LlmErrorEnricher(status_code=402)
+    pipeline = build_pipeline(settings, FakeDownloader(), enricher=enricher)
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=acct402\n", encoding="utf-8"
+    )
+
+    pipeline.run_once()
+    pipeline.run_once()
+    pipeline.run_once()  # well past max_attempts=2
+
+    assert enricher.calls == 3  # still being retried, not given up on
+    (record,) = pipeline.queue_manager.load_state().values()
+    assert record.status is ItemStatus.FAILED
+    assert record.attempt_count == 0  # the outage never counted against the item
+    assert record.next_retry_at is not None
+
+
+def test_account_level_provider_error_aborts_the_rest_of_the_batch(tmp_path):
+    """Once the provider is known dead, the pass stops instead of marching
+    through the queue re-downloading media that enrichment can never consume.
+    """
+    settings = make_settings(tmp_path)
+    downloader = CountingDownloader()
+    enricher = LlmErrorEnricher(status_code=402)
+    pipeline = build_pipeline(settings, downloader, enricher=enricher)
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=first\n"
+        "https://www.youtube.com/watch?v=second\n"
+        "https://www.youtube.com/watch?v=third\n",
+        encoding="utf-8",
+    )
+
+    summary = pipeline.run_once()
+
+    assert enricher.calls == 1
+    assert downloader.calls == 1
+    assert summary.processed == 1
+    statuses = sorted(r.status.value for r in pipeline.queue_manager.load_state().values())
+    assert statuses == ["failed", "pending", "pending"]
+
+
+def test_non_account_llm_error_still_becomes_failed_permanent(tmp_path):
+    """The escape hatch stays narrow: a 500 is still the item's problem as far
+    as the retry budget is concerned, so it must still give up eventually.
+    """
+    settings = make_settings(tmp_path)
+    settings.retry.max_attempts = 2
+    settings.retry.backoff_schedule_minutes = [0, 0]
+    pipeline = build_pipeline(
+        settings, FakeDownloader(), enricher=LlmErrorEnricher(status_code=500)
+    )
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=svr500\n", encoding="utf-8"
+    )
+
+    pipeline.run_once()
+    pipeline.run_once()
+
+    (record,) = pipeline.queue_manager.load_state().values()
+    assert record.status is ItemStatus.FAILED_PERMANENT
+    assert record.attempt_count == 2
 
 
 class SilentTranscriber:

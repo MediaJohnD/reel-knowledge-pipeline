@@ -36,6 +36,9 @@ def run_once() -> None:
         typer.echo(f"  skill: {path}")
     for error in summary.errors:
         typer.echo(f"  error: {error}")
+    if summary.provider_outage:
+        typer.echo(f"  stopped early - LLM provider account failure: {summary.provider_outage}")
+        typer.echo("  remaining items were left PENDING and will retry once it is fixed.")
 
     if summary.failed:
         raise typer.Exit(code=1)

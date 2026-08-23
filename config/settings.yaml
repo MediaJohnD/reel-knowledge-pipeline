@@ -24,17 +24,23 @@ transcription:
   local_model_size: base
   openai_model: whisper-1
 
-# LLM used for enrichment and skill generation. "cerebras" is free (1M tokens/day)
-# and far faster than local Ollama inference - switched here 2026-08-09 because
-# qwen3:14b enrichment on this machine's GPU was the pipeline's actual bottleneck.
-# Model is gpt-oss-120b (OpenAI open-weight, non-Chinese-origin - see CLAUDE.md's
-# Chinese provider blocklist; Cerebras itself is a US company but also hosts
-# Chinese-origin models like Qwen3-235B, which this deliberately avoids).
+# LLM used for enrichment and skill generation. "groq" is free and far faster than
+# local Ollama inference - originally Cerebras (switched 2026-08-09 because
+# qwen3:14b enrichment on this machine's GPU was the pipeline's actual bottleneck),
+# moved to Groq 2026-08-20 after the Cerebras account began returning HTTP 402
+# Payment Required on every call from 2026-08-16, which burned 22 items down to
+# failed_permanent before it was caught.
+# Model is openai/gpt-oss-120b (OpenAI open-weight). Note the "Chinese provider"
+# rule is about not routing data to Chinese-operated servers, not about a model's
+# origin: Groq self-hosts every model it serves, so its Chinese-origin weights
+# (e.g. qwen/qwen3.6-27b) are allowed too. gpt-oss-120b is chosen here on merit.
+# NOTE: Groq requires the "openai/" prefix on the model id - a bare "gpt-oss-120b"
+# (the id Cerebras uses for the same weights) 404s on Groq. Verified live 2026-08-20.
 # "ollama" runs fully locally (no API key, no cost, slower) against an
 # already-running Ollama instance with the model already pulled. Switch to
 # "anthropic" (set ANTHROPIC_API_KEY) for hosted Claude instead.
 llm:
-  provider: cerebras # anthropic | ollama | groq | gemini | cerebras
+  provider: groq # anthropic | ollama | groq | gemini | cerebras
   ollama_host: http://localhost:11434
   # Ollama defaults to a 4096-token context regardless of the model's real
   # capacity; long transcripts or multi-image carousels can exceed that.
@@ -54,11 +60,11 @@ llm:
 enrichment:
   # Model name meaning depends on llm.provider above - a Cerebras/Groq model id
   # here, an Ollama model tag, an Anthropic model id, or a Gemini model id.
-  model: gpt-oss-120b
+  model: openai/gpt-oss-120b
   max_tokens: 4096
 
 skill_writer:
-  model: gpt-oss-120b
+  model: openai/gpt-oss-120b
   max_tokens: 2048
   enabled: true
 
@@ -68,18 +74,23 @@ skill_writer:
 # any current Gemini model if provider is "gemini" (all are multimodal), or a
 # Groq model whose input_modalities includes "image" if provider is "groq"
 # (check GET /openai/v1/models - most Groq text models don't support images).
-# provider pinned to "ollama" explicitly: llm.provider above is "cerebras" for
-# text enrichment, but Cerebras has no vision path (see llm_client.describe_images) -
-# without this override, photo/carousel posts would fail with "vision-incapable
-# llm provider" instead of using the local vision model that's already working.
+# provider pinned to "ollama" explicitly: llm.provider above is "groq" for text
+# enrichment, and Groq's only image-capable model is qwen/qwen3.6-27b (verified
+# against GET /openai/v1/models on 2026-08-20). That model IS permitted - the
+# blocklist is about not sending data to Chinese *servers*, not about a model's
+# origin, and Groq self-hosts everything on US/EU/SA infrastructure - so it is a
+# real fallback, not a banned one. Ollama stays the default here simply because
+# it is local, free, and already working. mistral-small3.1 is served by the
+# Ollama instance named in REEL_OLLAMA_HOST (port 11435 on this machine), not
+# the default 11434.
 image_description:
   model: mistral-small3.1
   max_tokens: 1024
   provider: ollama
   # A carousel longer than this is described in several calls and the results
-  # joined. Sending 20 images at once measured 20667 prompt tokens against an
-  # ollama_num_ctx of 16384 and failed with a permanent HTTP 400 that no retry
-  # could clear - see ImageDescriptionConfig for the sizing rationale.
+  # joined. Sending 20 images at once measured 20667 prompt tokens against
+  # llm.ollama_num_ctx (16384) and failed with a permanent HTTP 400 that no
+  # retry could clear - see ImageDescriptionConfig for the sizing rationale.
   max_images_per_call: 6
 
 # Platforms the downloader will attempt. Anything not matched here is rejected up

@@ -175,8 +175,8 @@ def _post_json(client: httpx.Client, url: str, **kwargs: Any) -> dict:
         if not detail:
             raise
         # Re-raised rather than handled here so every provider's own wrapper
-        # keeps producing its own message; .response is carried over so a
-        # caller inspecting the status still sees it.
+        # keeps producing its own message; .response is carried over so
+        # _http_status() (and LlmCallError.is_account_level) still work.
         raise httpx.HTTPStatusError(
             f"{exc}: {detail}", request=exc.request, response=exc.response
         ) from exc
@@ -204,8 +204,42 @@ def _strip_groq_reasoning(text: str) -> str:
     return text.strip()
 
 
+# Provider HTTP statuses that describe the *account*, not this request: no
+# credit left (402), key rejected (401), key not entitled to the resource
+# (403). Every item in a pass fails identically on these, so they say nothing
+# about any one URL and must not consume its retry budget - see
+# WorkerPipeline.process_item(). 429 is deliberately absent: _post_json()
+# already retries it in place and it is genuinely transient.
+_ACCOUNT_LEVEL_STATUSES = frozenset({401, 402, 403})
+
+
+def _http_status(exc: httpx.HTTPError) -> int | None:
+    """The provider's HTTP status, or None if the request never got a response
+    (connection error, timeout). httpx only sets .response on HTTPStatusError.
+    """
+    response = getattr(exc, "response", None)
+    return None if response is None else response.status_code
+
+
 class LlmCallError(RuntimeError):
-    """Raised when an LLM call fails or returns no usable text."""
+    """Raised when an LLM call fails or returns no usable text.
+
+    status_code carries the provider's HTTP status when the failure came back
+    as a response, and is None otherwise (connection failures, and the
+    empty-text errors raised after a successful 200). It exists so callers can
+    tell "this account is dead" from "this item is bad" - the distinction the
+    2026-08-16 Cerebras 402 outage needed and did not have, which walked 22
+    perfectly good URLs to FAILED_PERMANENT.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+    @property
+    def is_account_level(self) -> bool:
+        """True when the failure is about the account rather than this request."""
+        return self.status_code in _ACCOUNT_LEVEL_STATUSES
 
 
 def _gemini_empty_text_error(payload: dict) -> LlmCallError:
@@ -264,7 +298,9 @@ def _call_claude(
             json=body,
         )
     except httpx.HTTPError as exc:
-        raise LlmCallError(f"Claude API request failed: {exc}") from exc
+        raise LlmCallError(
+            f"Claude API request failed: {exc}", status_code=_http_status(exc)
+        ) from exc
     finally:
         if owns_client:
             owned_client.close()
@@ -284,7 +320,7 @@ def _call_ollama(
     max_tokens: int,
     client: httpx.Client | None = None,
 ) -> str:
-    owned_client = client or httpx.Client(timeout=300.0)
+    owned_client = client or httpx.Client(timeout=600.0)
     owns_client = client is None
     try:
         payload = _post_json(
@@ -300,7 +336,8 @@ def _call_ollama(
     except httpx.HTTPError as exc:
         raise LlmCallError(
             f"Ollama request to {settings.llm.ollama_host!r} failed: {exc}. "
-            f"Is Ollama running, and is {model!r} pulled (ollama pull {model})?"
+            f"Is Ollama running, and is {model!r} pulled (ollama pull {model})?",
+            status_code=_http_status(exc),
         ) from exc
     finally:
         if owns_client:
@@ -352,7 +389,9 @@ def _call_groq(
             json=body,
         )
     except httpx.HTTPError as exc:
-        raise LlmCallError(f"Groq API request failed: {exc}") from exc
+        raise LlmCallError(
+            f"Groq API request failed: {exc}", status_code=_http_status(exc)
+        ) from exc
     finally:
         if owns_client:
             owned_client.close()
@@ -412,7 +451,9 @@ def _call_groq_vision(
             },
         )
     except httpx.HTTPError as exc:
-        raise LlmCallError(f"Groq API vision request failed: {exc}") from exc
+        raise LlmCallError(
+            f"Groq API vision request failed: {exc}", status_code=_http_status(exc)
+        ) from exc
     finally:
         if owns_client:
             owned_client.close()
@@ -455,7 +496,9 @@ def _call_cerebras(
             json=body,
         )
     except httpx.HTTPError as exc:
-        raise LlmCallError(f"Cerebras API request failed: {exc}") from exc
+        raise LlmCallError(
+            f"Cerebras API request failed: {exc}", status_code=_http_status(exc)
+        ) from exc
     finally:
         if owns_client:
             owned_client.close()
@@ -493,7 +536,9 @@ def _call_gemini(
             },
         )
     except httpx.HTTPError as exc:
-        raise LlmCallError(f"Gemini API request failed: {exc}") from exc
+        raise LlmCallError(
+            f"Gemini API request failed: {exc}", status_code=_http_status(exc)
+        ) from exc
     finally:
         if owns_client:
             owned_client.close()
@@ -634,7 +679,9 @@ def _call_claude_vision(
             json=body,
         )
     except httpx.HTTPError as exc:
-        raise LlmCallError(f"Claude API vision request failed: {exc}") from exc
+        raise LlmCallError(
+            f"Claude API vision request failed: {exc}", status_code=_http_status(exc)
+        ) from exc
     finally:
         if owns_client:
             owned_client.close()
@@ -657,7 +704,7 @@ def _call_ollama_vision(
     client: httpx.Client | None = None,
 ) -> str:
     combined_prompt = f"{static_prefix}\n\n{prompt}" if static_prefix else prompt
-    owned_client = client or httpx.Client(timeout=300.0)
+    owned_client = client or httpx.Client(timeout=600.0)
     owns_client = client is None
     try:
         payload = _post_json(
@@ -675,7 +722,8 @@ def _call_ollama_vision(
         raise LlmCallError(
             f"Ollama vision request to {settings.llm.ollama_host!r} failed: {exc}. "
             f"Is Ollama running, and is {model!r} pulled (ollama pull {model})? "
-            "It must also be a vision-capable model."
+            "It must also be a vision-capable model.",
+            status_code=_http_status(exc),
         ) from exc
     finally:
         if owns_client:
@@ -721,7 +769,9 @@ def _call_gemini_vision(
             },
         )
     except httpx.HTTPError as exc:
-        raise LlmCallError(f"Gemini API vision request failed: {exc}") from exc
+        raise LlmCallError(
+            f"Gemini API vision request failed: {exc}", status_code=_http_status(exc)
+        ) from exc
     finally:
         if owns_client:
             owned_client.close()

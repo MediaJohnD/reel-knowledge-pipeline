@@ -463,6 +463,78 @@ def test_call_llm_does_not_sleep_out_a_quota_length_retry_after(tmp_path, monkey
     assert slept == []
 
 
+def test_provider_402_is_flagged_as_an_account_level_error(tmp_path):
+    """A 402 says the account is out of credit, not that this prompt is bad -
+    the 2026-08-16 Cerebras outage. Callers need to tell the two apart, so the
+    status code has to survive the wrap into LlmCallError.
+    """
+    settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="groq"))
+    settings.groq_api_key = "gsk-test"
+
+    with respx.mock:
+        respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+            return_value=httpx.Response(402, json={"error": "payment required"})
+        )
+        with pytest.raises(LlmCallError) as excinfo:
+            call_llm(settings, "prompt text", model="openai/gpt-oss-120b", max_tokens=100)
+
+    assert excinfo.value.status_code == 402
+    assert excinfo.value.is_account_level
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_auth_failures_are_also_account_level(tmp_path, status):
+    settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="groq"))
+    settings.groq_api_key = "gsk-test"
+
+    with respx.mock:
+        respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+            return_value=httpx.Response(status, json={"error": "nope"})
+        )
+        with pytest.raises(LlmCallError) as excinfo:
+            call_llm(settings, "prompt text", model="openai/gpt-oss-120b", max_tokens=100)
+
+    assert excinfo.value.is_account_level
+
+
+def test_server_errors_are_not_account_level(tmp_path):
+    """A 500 is the provider having a bad moment, not the account being shut
+    off - it must stay item-attributable so retries still count against it.
+    """
+    settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="groq"))
+    settings.groq_api_key = "gsk-test"
+
+    with respx.mock:
+        respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+            return_value=httpx.Response(500, json={"error": "boom"})
+        )
+        with pytest.raises(LlmCallError) as excinfo:
+            call_llm(settings, "prompt text", model="openai/gpt-oss-120b", max_tokens=100)
+
+    assert excinfo.value.status_code == 500
+    assert not excinfo.value.is_account_level
+
+
+def test_non_http_failures_have_no_status_and_are_not_account_level(tmp_path):
+    """A connection error never reached the provider, so there is no status to
+    read - is_account_level must not blow up on the None.
+    """
+    settings = Settings(
+        project_root=tmp_path,
+        llm=LlmConfig(provider="ollama", ollama_host="http://localhost:11434"),
+    )
+
+    with respx.mock:
+        respx.post("http://localhost:11434/api/generate").mock(
+            side_effect=httpx.ConnectError("connection refused")
+        )
+        with pytest.raises(LlmCallError) as excinfo:
+            call_llm(settings, "prompt text", model="qwen2.5:14b", max_tokens=100)
+
+    assert excinfo.value.status_code is None
+    assert not excinfo.value.is_account_level
+
+
 def test_http_error_message_includes_the_provider_response_body(tmp_path):
     """httpx's HTTPStatusError string is only "Client error '400 Bad Request'
     for url ..." - the body, which is the part that says *why*, is dropped. The

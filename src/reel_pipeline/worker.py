@@ -45,6 +45,7 @@ from reel_pipeline.downloader import (
 )
 from reel_pipeline.enricher import Enricher
 from reel_pipeline.image_describer import ImageDescriber, get_image_describer
+from reel_pipeline.llm_client import LlmCallError
 from reel_pipeline.logging_setup import get_logger, log_context
 from reel_pipeline.models import (
     ContentItem,
@@ -113,6 +114,10 @@ class RunSummary:
     note_paths: list[str] = field(default_factory=list)
     skill_paths: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # Set when the pass stopped early because the LLM provider account itself
+    # is failing (see WorkerPipeline.process_item). Distinct from `errors`:
+    # those are per-item, this one means the remaining queue was never tried.
+    provider_outage: str | None = None
 
 
 class WorkerPipeline:
@@ -137,6 +142,9 @@ class WorkerPipeline:
         self.enricher = enricher
         self.skill_writer = skill_writer
         self._llm_client = llm_client
+        # Set by process_item() when a provider account-level failure (402/401/
+        # 403) is seen, read by _run_once_locked() to stop the pass.
+        self._provider_outage: str | None = None
 
     def process_item(self, record: StateRecord) -> StateRecord:
         try:
@@ -335,17 +343,29 @@ class WorkerPipeline:
         except Exception as exc:  # noqa: BLE001 - any stage failure must be recorded, not raised
             new_error = describe_exc(exc)
             previous_error = record.error
-            record.attempt_count += 1
             schedule = self.settings.retry.backoff_schedule_minutes
-            if record.attempt_count >= self.settings.retry.max_attempts:
-                record.status = ItemStatus.FAILED_PERMANENT
-                record.next_retry_at = None
-            else:
+            if isinstance(exc, LlmCallError) and exc.is_account_level:
+                # The provider account is dead (no credit, bad key), which is
+                # equally true of every queued item and says nothing about this
+                # URL. Charging it an attempt walks healthy items to
+                # FAILED_PERMANENT for someone else's billing problem - exactly
+                # what cost 22 items during the 2026-08-16 Cerebras 402 outage.
+                # Leave attempt_count alone, retry on the shortest backoff step,
+                # and let run_once() stop the pass rather than burn the queue.
+                self._provider_outage = new_error
                 record.status = ItemStatus.FAILED
-                backoff_index = min(record.attempt_count, len(schedule)) - 1
-                record.next_retry_at = datetime.now(UTC) + timedelta(
-                    minutes=schedule[backoff_index]
-                )
+                record.next_retry_at = datetime.now(UTC) + timedelta(minutes=schedule[0])
+            else:
+                record.attempt_count += 1
+                if record.attempt_count >= self.settings.retry.max_attempts:
+                    record.status = ItemStatus.FAILED_PERMANENT
+                    record.next_retry_at = None
+                else:
+                    record.status = ItemStatus.FAILED
+                    backoff_index = min(record.attempt_count, len(schedule)) - 1
+                    record.next_retry_at = datetime.now(UTC) + timedelta(
+                        minutes=schedule[backoff_index]
+                    )
             record.error = new_error
             # Log a fresh needs-attention line when this is a new failure (first
             # occurrence, or the error changed) - not on every identical retry, which
@@ -642,6 +662,7 @@ class WorkerPipeline:
         actionable = self.queue_manager.get_actionable_items()
 
         summary = RunSummary()
+        self._provider_outage = None
         for record in actionable:
             result = self.process_item(record)
             summary.processed += 1
@@ -655,15 +676,34 @@ class WorkerPipeline:
                 summary.failed += 1
                 if result.error:
                     summary.errors.append(f"{result.content_id}: {result.error}")
+            if self._provider_outage is not None:
+                # Every remaining item would fail the same way, and each one
+                # would first re-download its media into data/tmp/ that the
+                # success-path cleanup then never reaches (181 MB stranded by
+                # 2026-08-20). Stop instead; the untried items stay PENDING.
+                summary.provider_outage = self._provider_outage
+                log_context(
+                    logger,
+                    30,
+                    "provider account failure - stopping this pass",
+                    error=self._provider_outage,
+                    remaining=len(actionable) - summary.processed,
+                )
+                break
         return summary
 
 
 def build_worker(settings: Settings) -> WorkerPipeline:
     """Wire up the real (non-fake) implementations for CLI/webhook use."""
-    # Use Ollama's existing 300-second timeout for the shared client, which is
-    # long enough for every supported LLM and vision provider. This keeps TCP/TLS
+    # 600s (not the hosted-provider-sized 300s originally used here): a cold local
+    # Ollama vision call pays a model-(re)load cost on top of inference - a real
+    # 17-image carousel batch measured ~460s total across 3 batches after a fresh
+    # model load, and Ollama unloads an idle model after ~5 minutes by default, so
+    # 300s was tight enough to legitimately time out a batch that would otherwise
+    # have succeeded (found 2026-08-21, walked a good item to failed_permanent).
+    # Long enough for every supported LLM/vision provider; this keeps TCP/TLS
     # connections alive across all items in a run_once() pass.
-    llm_client = httpx.Client(timeout=300.0)
+    llm_client = httpx.Client(timeout=600.0)
     return WorkerPipeline(
         settings=settings,
         queue_manager=QueueManager(settings),
