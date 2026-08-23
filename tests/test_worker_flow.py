@@ -1287,6 +1287,32 @@ def test_account_level_provider_error_aborts_the_rest_of_the_batch(tmp_path):
     assert statuses == ["failed", "pending", "pending"]
 
 
+def test_terminal_llm_error_gives_up_on_the_first_attempt(tmp_path):
+    """A request-level 4xx cannot change on retry, so the item must be parked
+    at once instead of occupying the queue for the whole backoff schedule.
+
+    Contrast test_non_account_llm_error_still_becomes_failed_permanent above,
+    where a 500 correctly takes the full budget: the point is the distinction,
+    not giving up sooner in general.
+    """
+    settings = make_settings(tmp_path)
+    settings.retry.max_attempts = 5
+    settings.retry.backoff_schedule_minutes = [1, 5, 30, 120, 480]
+    pipeline = build_pipeline(
+        settings, FakeDownloader(), enricher=LlmErrorEnricher(status_code=400)
+    )
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=term400\n", encoding="utf-8"
+    )
+
+    pipeline.run_once()
+
+    (record,) = pipeline.queue_manager.load_state().values()
+    assert record.status is ItemStatus.FAILED_PERMANENT
+    assert record.attempt_count == 1  # not 5 - the other 4 were pure delay
+    assert record.next_retry_at is None
+
+
 def test_non_account_llm_error_still_becomes_failed_permanent(tmp_path):
     """The escape hatch stays narrow: a 500 is still the item's problem as far
     as the retry budget is concerned, so it must still give up eventually.

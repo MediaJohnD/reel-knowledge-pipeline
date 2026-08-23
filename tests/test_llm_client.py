@@ -595,3 +595,53 @@ def test_http_error_body_does_not_leak_an_api_key_the_provider_echoed_back(tmp_p
     # The body still has to arrive - proving it was included, then scrubbed,
     # rather than dropped wholesale (which would pass the leak check trivially).
     assert "Invalid API key" in message
+
+
+def test_request_level_4xx_is_terminal(tmp_path):
+    """A 400 means the provider understood the request and rejected it - the
+    same bytes get the same answer on attempt 5, so the retry budget is pure
+    delay. This is the 2026-08-21 vision 400, which took ~27h to reach a
+    verdict it could have reached at once.
+    """
+    settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="groq"))
+    settings.groq_api_key = "gsk-test"
+
+    with respx.mock:
+        respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+            return_value=httpx.Response(400, json={"error": "bad request"})
+        )
+        with pytest.raises(LlmCallError) as excinfo:
+            call_llm(settings, "prompt text", model="openai/gpt-oss-120b", max_tokens=100)
+
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.is_terminal
+    assert not excinfo.value.is_account_level
+
+
+@pytest.mark.parametrize("status", [408, 429])
+def test_transient_client_errors_are_not_terminal(tmp_path, status):
+    """408 and 429 are 4xx that genuinely change on retry - they must stay on
+    the normal backoff rather than being parked immediately.
+    """
+    settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="groq"))
+    settings.groq_api_key = "gsk-test"
+
+    with respx.mock:
+        respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+            return_value=httpx.Response(status, json={"error": "slow down"})
+        )
+        with pytest.raises(LlmCallError) as excinfo:
+            call_llm(settings, "prompt text", model="openai/gpt-oss-120b", max_tokens=100)
+
+    assert not excinfo.value.is_terminal
+
+
+def test_account_level_and_server_errors_are_not_terminal(tmp_path):
+    """The two categories that already have their own handling must not be
+    swallowed by the terminal branch: an account failure is not this item's
+    fault, and a 500 is worth retrying.
+    """
+    assert not LlmCallError("no credit", status_code=402).is_terminal
+    assert not LlmCallError("auth", status_code=401).is_terminal
+    assert not LlmCallError("boom", status_code=500).is_terminal
+    assert not LlmCallError("connection reset").is_terminal

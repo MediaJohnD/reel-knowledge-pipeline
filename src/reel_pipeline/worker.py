@@ -77,6 +77,29 @@ def describe_exc(exc: BaseException) -> str:
     return str(exc) or repr(exc)
 
 
+def _is_terminal_failure(exc: BaseException) -> bool:
+    """True for failures the retry budget cannot fix, only postpone.
+
+    The retry schedule assumes every failure might be a blip. Some are not: a
+    request-level 4xx from a provider, or an environment that cannot do what
+    was asked, will answer identically on attempt 5 as on attempt 1. Feeding
+    those through the full backoff kept dead items in the queue for ~27h and
+    made needs-attention.txt read as though the pipeline were still trying.
+
+    Deliberately conservative - only failures that are deterministic *by type
+    or status code* qualify, never ones guessed at from message text, so a
+    reworded error can't silently change retry behaviour. Notably absent:
+    yt-dlp's HTTP 403, which looks deterministic and is not (an item that gave
+    up "permanently" at 19:06 on 2026-08-21 succeeded at 19:49 untouched).
+    """
+    if isinstance(exc, LlmCallError):
+        return exc.is_terminal
+    # asyncio raises a bare NotImplementedError when the running loop can't do
+    # what a library asked of it (e.g. spawn a subprocess). That is fixed by
+    # changing config or code, never by waiting for a backoff to elapse.
+    return isinstance(exc, NotImplementedError)
+
+
 class EnrichmentProvider(Protocol):
     def enrich(self, transcript: TranscriptResult, source_url: str) -> EnrichmentResult: ...
 
@@ -355,6 +378,14 @@ class WorkerPipeline:
                 self._provider_outage = new_error
                 record.status = ItemStatus.FAILED
                 record.next_retry_at = datetime.now(UTC) + timedelta(minutes=schedule[0])
+            elif _is_terminal_failure(exc):
+                # Deterministic: waiting out the backoff cannot change the
+                # answer, so spending the remaining attempts on it just parks a
+                # dead item in the queue for another ~27h before reaching the
+                # same verdict. Record the attempt, then stop.
+                record.attempt_count += 1
+                record.status = ItemStatus.FAILED_PERMANENT
+                record.next_retry_at = None
             else:
                 record.attempt_count += 1
                 if record.attempt_count >= self.settings.retry.max_attempts:

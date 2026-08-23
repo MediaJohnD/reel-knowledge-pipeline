@@ -212,6 +212,11 @@ def _strip_groq_reasoning(text: str) -> str:
 # already retries it in place and it is genuinely transient.
 _ACCOUNT_LEVEL_STATUSES = frozenset({401, 402, 403})
 
+# Client-error statuses that ARE worth retrying, so they stay on the normal
+# backoff rather than being treated as terminal below: 408 is a timeout and 429
+# is rate limiting (_post_json() already retries 429 in place).
+_TRANSIENT_CLIENT_STATUSES = frozenset({408, 429})
+
 
 def _http_status(exc: httpx.HTTPError) -> int | None:
     """The provider's HTTP status, or None if the request never got a response
@@ -240,6 +245,26 @@ class LlmCallError(RuntimeError):
     def is_account_level(self) -> bool:
         """True when the failure is about the account rather than this request."""
         return self.status_code in _ACCOUNT_LEVEL_STATUSES
+
+    @property
+    def is_terminal(self) -> bool:
+        """True when retrying this exact request can only fail the same way.
+
+        A request-level 4xx - a malformed prompt, an image the model won't
+        accept, an unknown model name - is deterministic: the same bytes get
+        the same answer in eight hours. Spending the full retry budget on it
+        only delays the inevitable (the 2026-08-21 vision 400 took ~27h to
+        reach a verdict it could have reached immediately) and keeps a dead
+        item sitting in the queue meanwhile.
+
+        Account-level statuses are excluded - they are not about this request
+        at all, see is_account_level - as are the transient client errors.
+        status_code is None for connection failures and for empty-text errors
+        raised after a successful 200, both of which are worth retrying.
+        """
+        if self.status_code is None or self.is_account_level:
+            return False
+        return 400 <= self.status_code < 500 and self.status_code not in _TRANSIENT_CLIENT_STATUSES
 
 
 def _gemini_empty_text_error(payload: dict) -> LlmCallError:
