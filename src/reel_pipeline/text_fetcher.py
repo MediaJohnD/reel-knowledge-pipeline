@@ -15,8 +15,13 @@ against the URL as submitted (no JS execution - not browser automation).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import re
+import sys
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Protocol
 from urllib.parse import urlparse
 
@@ -481,6 +486,47 @@ def _raise_if_challenge_or_login_wall(extracted: str, url: str) -> None:
         )
 
 
+_RENDER_POLICY_LOCK = threading.Lock()
+
+
+@contextmanager
+def _subprocess_capable_event_loop_policy() -> Iterator[None]:
+    """Scope a subprocess-capable asyncio policy to a Playwright call.
+
+    Playwright launches its driver with asyncio.create_subprocess_exec, which
+    Windows' SelectorEventLoop cannot do - it raises a bare, message-less
+    NotImplementedError. `serve-webhook` installs the selector policy
+    process-wide on purpose (cli.py, to silence ProactorEventLoop disconnect
+    spam), which left the render fallback dead under the webhook server while
+    it kept working fine under `run-once` - the asymmetry that made this look
+    like a page-specific failure for a week.
+
+    Swapping the policy here rather than dropping it there keeps that
+    deliberate spam fix intact. It has to be the *policy*: Playwright builds
+    its loop with asyncio.new_event_loop(), which reads the policy and ignores
+    asyncio.set_event_loop(), so a thread-local loop doesn't help.
+
+    # ponytail: a process-wide swap held for the whole browser session and
+    # serialized by a lock - fine at "handful of pages per run" scale. If
+    # renders ever need to run concurrently, move Playwright into its own
+    # process instead of widening this window.
+    """
+    proactor_policy = getattr(asyncio, "WindowsProactorEventLoopPolicy", None)
+    if sys.platform != "win32" or proactor_policy is None:
+        yield
+        return
+    with _RENDER_POLICY_LOCK:
+        previous = asyncio.get_event_loop_policy()
+        if isinstance(previous, proactor_policy):
+            yield
+            return
+        asyncio.set_event_loop_policy(proactor_policy())
+        try:
+            yield
+        finally:
+            asyncio.set_event_loop_policy(previous)
+
+
 class RenderedHtmlFetcher:
     """Read-only headless-Chromium fallback for GenericHtmlFetcher, used only
     when the plain-GET path already produced an app shell (see
@@ -514,7 +560,7 @@ class RenderedHtmlFetcher:
 
         timeout_ms = self.settings.text_capture.render_fallback.timeout_seconds * 1000
         try:
-            with sync_playwright() as playwright:
+            with _subprocess_capable_event_loop_policy(), sync_playwright() as playwright:
                 try:
                     browser = playwright.chromium.launch()
                 except PlaywrightError as exc:
@@ -547,6 +593,17 @@ class RenderedHtmlFetcher:
                 f"rendering {url!r} exceeded "
                 f"{self.settings.text_capture.render_fallback.timeout_seconds}s - "
                 "the page may be slow or may never finish loading"
+            ) from exc
+        except NotImplementedError as exc:
+            # asyncio raises this bare and message-less when the running loop
+            # can't spawn subprocesses, so without translating it the failure
+            # reaches needs-attention.txt as literally "NotImplementedError()"
+            # and the real traceback only exists in the log (2026-08-23).
+            raise TextFetchError(
+                f"failed to render {url!r}: this process's asyncio event loop "
+                "cannot spawn the browser driver subprocess. That is an "
+                "environment problem, not a problem with the page - the render "
+                "fallback needs a subprocess-capable event loop policy."
             ) from exc
         except PlaywrightError as exc:
             raise TextFetchError(f"failed to render {url!r}: {exc}") from exc

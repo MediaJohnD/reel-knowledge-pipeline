@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import sys
 
 import httpx
 import pytest
@@ -838,3 +840,65 @@ def test_dispatching_text_fetcher_routes_drive_to_drive_fetcher(tmp_path, monkey
 def test_get_text_fetcher_returns_dispatching_instance(tmp_path):
     settings = Settings(project_root=tmp_path)
     assert isinstance(get_text_fetcher(settings), DispatchingTextFetcher)
+
+
+def test_rendered_html_fetcher_explains_event_loop_limitation(tmp_path, monkeypatch):
+    """Regression test for a real failure (2026-08-23, threads.com share link).
+
+    asyncio raises NotImplementedError bare and message-less when the loop
+    can't spawn subprocesses, so the failure reached needs-attention.txt as
+    literally "processing failed: NotImplementedError()" - unactionable, with
+    the real traceback only in the webhook log.
+    """
+    import playwright.sync_api as playwright_api
+
+    settings = Settings(project_root=tmp_path)
+
+    def _cannot_spawn_subprocess():
+        raise NotImplementedError
+
+    monkeypatch.setattr(playwright_api, "sync_playwright", _cannot_spawn_subprocess)
+
+    with pytest.raises(TextFetchError, match="cannot spawn the browser driver subprocess"):
+        RenderedHtmlFetcher(settings).fetch("https://example.com/spa", "cid-render-loop")
+
+
+def test_rendered_html_fetcher_scopes_subprocess_capable_policy_then_restores(
+    tmp_path, monkeypatch
+):
+    """`serve-webhook` sets the Windows selector policy process-wide (cli.py),
+    which cannot spawn the subprocess Playwright needs. The fetcher must swap
+    in a subprocess-capable policy for the duration of the call and put the
+    original back - without the swap, Playwright sees the selector policy and
+    the render path is dead under the webhook server.
+    """
+    if sys.platform != "win32":
+        pytest.skip("the selector/proactor policy conflict is Windows-only")
+
+    import playwright.sync_api as playwright_api
+
+    settings = Settings(project_root=tmp_path)
+    rendered_html = (
+        "<html><body><article><p>Rendered content that is comfortably past the "
+        "minimum plausible length so it clears the app-shell check cleanly.</p>"
+        "</article></body></html>"
+    )
+    _install_fake_playwright(monkeypatch, html=rendered_html)
+
+    fake_factory = playwright_api.sync_playwright
+    seen = {}
+
+    def _recording_factory():
+        seen["policy"] = type(asyncio.get_event_loop_policy())
+        return fake_factory()
+
+    monkeypatch.setattr(playwright_api, "sync_playwright", _recording_factory)
+
+    original = asyncio.get_event_loop_policy()
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    try:
+        RenderedHtmlFetcher(settings).fetch("https://example.com/spa", "cid-render-policy")
+        assert seen["policy"] is asyncio.WindowsProactorEventLoopPolicy
+        assert isinstance(asyncio.get_event_loop_policy(), asyncio.WindowsSelectorEventLoopPolicy)
+    finally:
+        asyncio.set_event_loop_policy(original)
