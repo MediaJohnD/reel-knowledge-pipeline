@@ -20,6 +20,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SETTINGS_PATH = PROJECT_ROOT / "config" / "settings.yaml"
 
 
+class MissingLlmCredentialError(RuntimeError):
+    """An optional hosted LLM provider is configured without its API key."""
+
+
 class PathsConfig(BaseModel):
     inbox_dir: str = "data/inbox"
     queue_file: str = "data/inbox/queue.txt"
@@ -50,9 +54,30 @@ class TranscriptionConfig(BaseModel):
     compute_type: str = "default"
 
 
+class WaterfallStep(BaseModel):
+    """One rung of an llm.text_waterfall/vision_waterfall chain - a provider
+    and the model id to use on it. call_llm()/describe_images() try each step
+    in order, moving to the next on any LlmCallError (see llm_client.py).
+    """
+
+    provider: str
+    model: str
+
+
 class LlmConfig(BaseModel):
-    provider: str = "anthropic"  # "anthropic" | "ollama" | "groq" | "gemini" | "cerebras"
+    # "anthropic" | "ollama" | "groq" | "gemini" | "cerebras" | "openrouter" | "mistral"
+    provider: str = "anthropic"
     ollama_host: str = "http://localhost:11434"
+    # Ordered provider+model fallback chain for text calls (enrichment, skill
+    # writing). Empty (the default) means "no waterfall" - call_llm() falls
+    # back to the single `provider` above with whatever model the caller
+    # passed, exactly as before this existed. When non-empty, the `provider`/
+    # per-call `model` are ignored in favor of these steps - see call_llm().
+    text_waterfall: list[WaterfallStep] = Field(default_factory=list)
+    # Same shape, for describe_images() (photo/carousel vision calls). Empty
+    # means "no waterfall" - falls back to image_description.provider (or
+    # llm.provider) with the caller's model, as before.
+    vision_waterfall: list[WaterfallStep] = Field(default_factory=list)
     # Ollama defaults every request to a 4096-token context window regardless of
     # the model's actual capacity, silently truncating (or, for vision requests,
     # erroring) on long transcripts. Set generously, but not blindly: this sizes
@@ -75,8 +100,10 @@ class LlmConfig(BaseModel):
             "anthropic": 1.0,
             "ollama": 0.0,
             "groq": 2.0,
-            "gemini": 2.0,
+            "gemini": 6.0,
             "cerebras": 2.0,
+            "openrouter": 2.0,
+            "mistral": 30.0,
         }
     )
 
@@ -217,6 +244,8 @@ class Settings(BaseModel):
     groq_api_key: str | None = None
     gemini_api_key: str | None = None
     cerebras_api_key: str | None = None
+    openrouter_api_key: str | None = None
+    mistral_api_key: str | None = None
 
     # Instagram requires an authenticated session to download reliably (see
     # docs/runbook.md). Treated like a secret - a cookies file/browser choice is as
@@ -297,7 +326,7 @@ class Settings(BaseModel):
 
     def require_anthropic_api_key(self) -> str:
         if not self.anthropic_api_key:
-            raise RuntimeError(
+            raise MissingLlmCredentialError(
                 "ANTHROPIC_API_KEY is not set. Set it in your environment or .env "
                 "before running enrichment or skill generation."
             )
@@ -305,7 +334,7 @@ class Settings(BaseModel):
 
     def require_groq_api_key(self) -> str:
         if not self.groq_api_key:
-            raise RuntimeError(
+            raise MissingLlmCredentialError(
                 "GROQ_API_KEY is not set. Set it in your environment or .env "
                 "before running enrichment or skill generation with llm.provider: groq."
             )
@@ -313,7 +342,7 @@ class Settings(BaseModel):
 
     def require_gemini_api_key(self) -> str:
         if not self.gemini_api_key:
-            raise RuntimeError(
+            raise MissingLlmCredentialError(
                 "GEMINI_API_KEY is not set. Set it in your environment or .env "
                 "before running enrichment or skill generation with llm.provider: gemini."
             )
@@ -321,11 +350,27 @@ class Settings(BaseModel):
 
     def require_cerebras_api_key(self) -> str:
         if not self.cerebras_api_key:
-            raise RuntimeError(
+            raise MissingLlmCredentialError(
                 "CEREBRAS_API_KEY is not set. Set it in your environment or .env "
                 "before running enrichment or skill generation with llm.provider: cerebras."
             )
         return self.cerebras_api_key
+
+    def require_openrouter_api_key(self) -> str:
+        if not self.openrouter_api_key:
+            raise MissingLlmCredentialError(
+                "OPENROUTER_API_KEY is not set. Set it in your environment or .env "
+                "before running enrichment or skill generation with llm.provider: openrouter."
+            )
+        return self.openrouter_api_key
+
+    def require_mistral_api_key(self) -> str:
+        if not self.mistral_api_key:
+            raise MissingLlmCredentialError(
+                "MISTRAL_API_KEY is not set. Set it in your environment or .env "
+                "before running enrichment or skill generation with llm.provider: mistral."
+            )
+        return self.mistral_api_key
 
     def require_instagram_cookies(self) -> tuple[str, str]:
         """Returns (kind, value): ("file", path) or ("browser", browser_name)."""
@@ -436,6 +481,8 @@ def load_settings(
         groq_api_key=env.get("GROQ_API_KEY") or None,
         gemini_api_key=env.get("GEMINI_API_KEY") or None,
         cerebras_api_key=env.get("CEREBRAS_API_KEY") or None,
+        openrouter_api_key=env.get("OPENROUTER_API_KEY") or None,
+        mistral_api_key=env.get("MISTRAL_API_KEY") or None,
         instagram_cookies_file=env.get("REEL_INSTAGRAM_COOKIES_FILE") or None,
         instagram_cookies_browser=env.get("REEL_INSTAGRAM_COOKIES_BROWSER") or None,
         ytdlp_cookies_file=env.get("REEL_YTDLP_COOKIES_FILE") or None,

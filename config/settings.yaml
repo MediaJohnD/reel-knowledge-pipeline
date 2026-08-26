@@ -40,8 +40,92 @@ transcription:
 # already-running Ollama instance with the model already pulled. Switch to
 # "anthropic" (set ANTHROPIC_API_KEY) for hosted Claude instead.
 llm:
-  provider: groq # anthropic | ollama | groq | gemini | cerebras
+  provider: groq # anthropic | ollama | groq | gemini | cerebras | openrouter | mistral
   ollama_host: http://localhost:11434
+  # Text fallback chain, tried in order on any call failure (dead key, rate
+  # limit, context overflow) - see call_llm()'s docstring in llm_client.py.
+  # `provider` above and enrichment.model/skill_writer.model below are only
+  # used as the *first* step here; edit this list to change the waterfall,
+  # not those.
+  #
+  # Order and models per the 2026-08-25 multi-model waterfall research (see
+  # project memory: project_llm_waterfall_expanded), re-verified 2026-08-26
+  # for Cerebras's free-tier status and for Qwen/Z.ai-family infra location.
+  # Diversifies *within* a key, not just across keys: Groq gets two distinct
+  # free models before falling through, same for Gemini, since each model has
+  # its own separate free-tier quota - a rate-limited gpt-oss-120b still
+  # leaves llama-3.3-70b's quota untouched on the same GROQ_API_KEY.
+  #
+  # Cerebras is deliberately ABSENT here, not an oversight: its no-card free
+  # tier fully sunset 2026-08-17 (confirmed against cerebras.ai's own pricing/
+  # billing docs, not just aggregators) - every account now requires a
+  # verified payment method before any access, free or paid, even the "$5
+  # free credit" is card-gated and expires in 30 days. That's not a rung an
+  # unattended pipeline can rely on, so it's out of the free-tier waterfall
+  # entirely (llm.provider above can still be set to "cerebras" manually if
+  # the owner later adds a funded payment method - that's a real, working
+  # provider, just not a *free* one anymore).
+  #
+  # Re-checked, still excluded (Qwen/Z.ai origin weights are explicitly
+  # allowed by the owner when the SERVING infra is US/EU/Canada/Israel - these
+  # specifically failed that check, not a blanket exclusion): OpenRouter's
+  # "qwen/qwen3-coder:free" resolves to Alibaba's own endpoints per
+  # OpenRouter's own model page ("pricing for the Alibaba endpoints...") -
+  # genuinely Chinese infra, stays out. "z-ai/glm-5.2:free" (OpenRouter, via
+  # Decart) is NOT excluded for being unsafe - Decart is an Israeli company -
+  # but no source discloses which region Decart's OpenRouter-facing GPUs
+  # actually run in (Israel/AWS-somewhere/unknown), so it's unconfirmed rather
+  # than verified; add it once Decart or OpenRouter publish that. Also
+  # skipped, not a China issue: groq/compound* (agentic tool-use scaffolding
+  # burns tokens a plain JSON task doesn't need) and Groq's minimaxai/
+  # minimax-m2.7 (untested preview, no published limits).
+  #
+  # Every step below IS confirmed-safe serving infra: Groq (US, self-hosted
+  # LPUs - including for qwen/qwen3.6-27b in the vision waterfall below, which
+  # runs on Groq's own hardware, not any Alibaba passthrough), Gemini (Google,
+  # no China-region API endpoint exists at all), Mistral (EU-first,
+  # Paris-based), OpenRouter's nvidia/nemotron entry (served directly by
+  # NVIDIA NIM, US infra, confirmed via its provider list on openrouter.ai).
+  text_waterfall:
+    - provider: groq
+      model: openai/gpt-oss-120b
+    - provider: groq
+      model: llama-3.3-70b-versatile
+    - provider: gemini
+      model: gemini-2.5-flash
+    - provider: gemini
+      model: gemini-2.5-flash-lite
+    - provider: mistral
+      model: ministral-8b-latest
+    - provider: mistral
+      model: open-mistral-nemo
+    - provider: openrouter
+      model: nvidia/nemotron-3-super-120b-a12b:free
+  # Vision fallback chain for photo/carousel description (describe_images()).
+  # Same 2026-08-25 research and the same China-infra exclusions apply.
+  # Gemini Flash-Lite first (highest free RPD of the Gemini vision tiers,
+  # cheap, good enough for a photo description), Gemini Flash second (higher
+  # quality, lower RPD), Groq's qwen/qwen3.6-27b third (the only Groq vision
+  # model - a preview that can be pulled without notice, so mid-tier not
+  # primary; Chinese-origin *weights*, but Groq's own US hardware is the
+  # actual serving infra, which is what the policy cares about), Mistral's
+  # Pixtral fourth (real vision, but only ~1 req/sec - the binding constraint,
+  # see llm.min_interval_seconds.mistral), OpenRouter's Gemma vision variant
+  # fifth (served by Google via OpenRouter, confirmed US/EU infra), local
+  # Ollama last as the always-available, unmetered final catch-all.
+  vision_waterfall:
+    - provider: gemini
+      model: gemini-2.5-flash-lite
+    - provider: gemini
+      model: gemini-2.5-flash
+    - provider: groq
+      model: qwen/qwen3.6-27b
+    - provider: mistral
+      model: pixtral-12b-2409
+    - provider: openrouter
+      model: google/gemma-4-31b-it:free
+    - provider: ollama
+      model: mistral-small3.1
   # Ollama defaults to a 4096-token context regardless of the model's real
   # capacity; long transcripts or multi-image carousels can exceed that.
   ollama_num_ctx: 16384
@@ -54,8 +138,10 @@ llm:
     anthropic: 1.0
     ollama: 0.0
     groq: 2.0
-    gemini: 2.0
+    gemini: 6.0 # 10 RPM free tier
     cerebras: 2.0
+    openrouter: 2.0
+    mistral: 30.0 # 2 RPM free tier - the binding limit for the vision fallback
 
 enrichment:
   # Model name meaning depends on llm.provider above - a Cerebras/Groq model id

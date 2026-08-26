@@ -7,7 +7,7 @@ import httpx
 import pytest
 import respx
 
-from reel_pipeline.config import LlmConfig, Settings
+from reel_pipeline.config import LlmConfig, Settings, WaterfallStep
 from reel_pipeline.llm_client import (
     LlmCallError,
     _rate_limit_wait,
@@ -645,3 +645,173 @@ def test_account_level_and_server_errors_are_not_terminal(tmp_path):
     assert not LlmCallError("auth", status_code=401).is_terminal
     assert not LlmCallError("boom", status_code=500).is_terminal
     assert not LlmCallError("connection reset").is_terminal
+
+
+def test_call_llm_waterfall_falls_through_a_dead_provider(tmp_path):
+    """A 402 (dead Cerebras key) on the first step must not fail the call -
+    the next step in text_waterfall should serve it instead.
+    """
+    settings = Settings(
+        project_root=tmp_path,
+        llm=LlmConfig(
+            provider="groq",
+            text_waterfall=[
+                WaterfallStep(provider="cerebras", model="gpt-oss-120b"),
+                WaterfallStep(provider="groq", model="openai/gpt-oss-120b"),
+            ],
+        ),
+    )
+    settings.cerebras_api_key = "dead-key"
+    settings.groq_api_key = "gsk-test"
+
+    with respx.mock:
+        respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
+            return_value=httpx.Response(402, json={"error": "Payment Required"})
+        )
+        respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200, json={"choices": [{"message": {"content": "hello from groq"}}]}
+            )
+        )
+        result = call_llm(settings, "prompt text", model="ignored", max_tokens=100)
+
+    assert result == "hello from groq"
+
+
+def test_call_llm_waterfall_raises_last_error_when_every_step_fails(tmp_path):
+    settings = Settings(
+        project_root=tmp_path,
+        llm=LlmConfig(
+            provider="groq",
+            text_waterfall=[
+                WaterfallStep(provider="cerebras", model="gpt-oss-120b"),
+                WaterfallStep(provider="groq", model="openai/gpt-oss-120b"),
+            ],
+        ),
+    )
+    settings.cerebras_api_key = "dead-key"
+    settings.groq_api_key = "gsk-test"
+
+    with respx.mock:
+        respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
+            return_value=httpx.Response(402, json={"error": "Payment Required"})
+        )
+        respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+            return_value=httpx.Response(429, json={"error": "rate limited"})
+        )
+        with pytest.raises(LlmCallError) as excinfo:
+            call_llm(settings, "prompt text", model="ignored", max_tokens=100)
+
+    # last() step's error is the one surfaced - Groq's 429, not Cerebras' 402.
+    assert excinfo.value.status_code == 429
+
+
+def test_call_llm_waterfall_skips_an_unconfigured_provider(tmp_path):
+    settings = Settings(
+        project_root=tmp_path,
+        llm=LlmConfig(
+            text_waterfall=[
+                WaterfallStep(provider="gemini", model="gemini-2.5-flash"),
+                WaterfallStep(provider="groq", model="openai/gpt-oss-120b"),
+            ]
+        ),
+    )
+    settings.groq_api_key = "gsk-test"
+
+    with respx.mock:
+        route = respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200, json={"choices": [{"message": {"content": "hello from groq"}}]}
+            )
+        )
+        result = call_llm(settings, "prompt text", model="ignored", max_tokens=100)
+
+    assert result == "hello from groq"
+    assert route.call_count == 1
+
+
+def test_call_llm_waterfall_does_not_retry_a_nonfinal_429(tmp_path, monkeypatch):
+    settings = Settings(
+        project_root=tmp_path,
+        llm=LlmConfig(
+            text_waterfall=[
+                WaterfallStep(provider="groq", model="openai/gpt-oss-120b"),
+                WaterfallStep(provider="gemini", model="gemini-2.5-flash"),
+            ]
+        ),
+    )
+    settings.groq_api_key = "gsk-test"
+    settings.gemini_api_key = "gm-test"
+    slept: list[float] = []
+    monkeypatch.setattr("reel_pipeline.llm_client.time.sleep", slept.append)
+
+    with respx.mock:
+        groq_route = respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+            return_value=httpx.Response(429, json={"error": "rate limited"})
+        )
+        respx.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        ).mock(
+            return_value=httpx.Response(
+                200, json={"candidates": [{"content": {"parts": [{"text": "recovered"}]}}]}
+            )
+        )
+        result = call_llm(settings, "prompt text", model="ignored", max_tokens=100)
+
+    assert result == "recovered"
+    assert groq_route.call_count == 1
+    assert slept == []
+
+
+def test_describe_images_waterfall_falls_through(tmp_path):
+    image_path = tmp_path / "photo.jpg"
+    image_path.write_bytes(b"fake-jpeg-bytes")
+    settings = Settings(
+        project_root=tmp_path,
+        llm=LlmConfig(
+            provider="groq",
+            vision_waterfall=[
+                WaterfallStep(provider="gemini", model="gemini-2.5-flash"),
+                WaterfallStep(provider="ollama", model="mistral-small3.1"),
+            ],
+            ollama_host="http://localhost:11434",
+        ),
+    )
+    settings.gemini_api_key = "gm-test"
+
+    with respx.mock:
+        respx.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        ).mock(return_value=httpx.Response(429, json={"error": "rate limited"}))
+        respx.post("http://localhost:11434/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": "a photo of a cat"})
+        )
+        result = describe_images(
+            settings, "describe this", [image_path], model="ignored", max_tokens=100
+        )
+
+    assert result == "a photo of a cat"
+
+
+def test_describe_images_dispatches_to_openrouter(tmp_path):
+    image_path = tmp_path / "photo.jpg"
+    image_path.write_bytes(b"fake-jpeg-bytes")
+    settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="groq"))
+    settings.openrouter_api_key = "sk-or-test"
+
+    with respx.mock:
+        respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200, json={"choices": [{"message": {"content": "a photo of a dog"}}]}
+            )
+        )
+        result = describe_images(
+            settings,
+            "describe this",
+            [image_path],
+            model="google/gemma-4-31b-it:free",
+            max_tokens=100,
+            provider="openrouter",
+        )
+
+    assert result == "a photo of a dog"

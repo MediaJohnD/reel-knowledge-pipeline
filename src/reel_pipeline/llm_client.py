@@ -10,13 +10,32 @@ Dispatches by settings.llm.provider:
 - "groq": Groq's OpenAI-compatible chat completions API (requires GROQ_API_KEY).
 - "gemini": Google's Gemini generateContent API (requires GEMINI_API_KEY).
 - "cerebras": Cerebras' OpenAI-compatible chat completions API (requires
-  CEREBRAS_API_KEY). Free tier: 1M tokens/day. Non-Chinese-operated - see
-  CLAUDE.md's Chinese provider blocklist; stick to non-Chinese-origin models
-  (e.g. gpt-oss-120b) on this provider for the same reason.
+  CEREBRAS_API_KEY). No longer free as of 2026-08-17 - Cerebras retired its
+  no-card free tier; every account now needs a verified payment method before
+  any access (even the "$5 free credit" is card-gated, 30-day expiry). Not
+  in llm.text_waterfall/vision_waterfall for that reason - only usable by
+  setting llm.provider: cerebras directly, with a funded account. Still
+  non-Chinese-operated infra when it is used (see CLAUDE.md's Chinese
+  provider blocklist) - stick to non-Chinese-origin models (e.g. gpt-oss-120b)
+  on this provider for the same reason. See project memory
+  (project_llm_waterfall) for the 2026-08-26 sunset verification.
+- "openrouter": OpenRouter's OpenAI-compatible chat completions API (requires
+  OPENROUTER_API_KEY). Use a ":free"-suffixed model id for the free tier
+  (50 req/day, no credit card).
+- "mistral": Mistral's OpenAI-compatible chat completions API (requires
+  MISTRAL_API_KEY). Free "Experiment" tier: 1B tokens/month, 2 RPM. Pixtral
+  models support vision.
 
 call_llm() is text-only (enrichment, skill generation). describe_images() adds
 image input for vision-capable models (image-post/carousel description) - the
 model configured must actually support vision (see ImageDescriptionConfig).
+
+Both call_llm() and describe_images() support an ordered provider+model
+fallback chain (settings.llm.text_waterfall / vision_waterfall - see
+config.WaterfallStep) instead of a single pinned provider: on any
+LlmCallError, the next configured step is tried immediately, in-process,
+before the call is reported as failed. An empty waterfall (the default)
+preserves the old single-provider behavior exactly.
 
 Prompt caching: call_llm()'s static_prefix param carries the shared,
 repeated instruction text (see the <!-- CACHE:BOUNDARY --> marker in
@@ -31,17 +50,20 @@ from __future__ import annotations
 import base64
 import mimetypes
 import time
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from reel_pipeline.config import Settings
+from reel_pipeline.config import MissingLlmCredentialError, Settings, WaterfallStep
 
 _ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
 _GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 _CEREBRAS_ENDPOINT = "https://api.cerebras.ai/v1/chat/completions"
+_OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+_MISTRAL_ENDPOINT = "https://api.mistral.ai/v1/chat/completions"
 _GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
 # Gemini's key goes in the x-goog-api-key header, never the ?key= query param
 # Google also accepts. httpx puts the full request URL in every HTTPStatusError
@@ -60,6 +82,11 @@ _THINK_CLOSE_TAG = "</think>"
 # processes don't share it, but within one run_once() call (the actual
 # source of the 2026-08-12 Cerebras 429s) it's exactly what's needed.
 _last_call_at: dict[str, float] = {}
+
+# A 429 on a non-final waterfall rung should immediately try its fallback rather
+# than spend 35 seconds making three identical, rate-limited requests. The
+# final rung retains the short in-place retry for the single-provider case.
+_retry_rate_limits: ContextVar[bool] = ContextVar("retry_rate_limits", default=True)
 
 
 def _seconds_to_wait(min_interval: float, elapsed_since_last_call: float | None) -> float:
@@ -160,7 +187,7 @@ def _post_json(client: httpx.Client, url: str, **kwargs: Any) -> dict:
     the request is the only thing that clears them.
     """
     response = client.post(url, **kwargs)
-    for attempt in range(_RATE_LIMIT_RETRIES):
+    for attempt in range(_RATE_LIMIT_RETRIES if _retry_rate_limits.get() else 0):
         if response.status_code != _RATE_LIMIT_STATUS:
             break
         wait = _rate_limit_wait(response, attempt)
@@ -535,6 +562,210 @@ def _call_cerebras(
     return text
 
 
+def _call_openrouter(
+    settings: Settings,
+    prompt: str,
+    *,
+    model: str,
+    max_tokens: int,
+    json_mode: bool = False,
+    client: httpx.Client | None = None,
+) -> str:
+    """OpenRouter's chat completions API is OpenAI-compatible, same shape as
+    Groq/Cerebras. Free-tier models carry a ":free" suffix in their model id
+    (e.g. "meta-llama/llama-3.3-70b-instruct:free") - pick one via
+    llm.text_waterfall, this function doesn't enforce the suffix.
+    """
+    api_key = settings.require_openrouter_api_key()
+    owned_client = client or httpx.Client(timeout=120.0)
+    owns_client = client is None
+    body: dict = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
+    try:
+        payload = _post_json(
+            owned_client,
+            _OPENROUTER_ENDPOINT,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "content-type": "application/json",
+            },
+            json=body,
+        )
+    except httpx.HTTPError as exc:
+        raise LlmCallError(
+            f"OpenRouter API request failed: {exc}", status_code=_http_status(exc)
+        ) from exc
+    finally:
+        if owns_client:
+            owned_client.close()
+
+    choices = payload.get("choices", [])
+    text = choices[0].get("message", {}).get("content", "") if choices else ""
+    if not text:
+        raise LlmCallError(f"OpenRouter API response had no text content: {payload!r}")
+    return text
+
+
+def _call_mistral(
+    settings: Settings,
+    prompt: str,
+    *,
+    model: str,
+    max_tokens: int,
+    json_mode: bool = False,
+    client: httpx.Client | None = None,
+) -> str:
+    api_key = settings.require_mistral_api_key()
+    owned_client = client or httpx.Client(timeout=120.0)
+    owns_client = client is None
+    body: dict = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
+    try:
+        payload = _post_json(
+            owned_client,
+            _MISTRAL_ENDPOINT,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "content-type": "application/json",
+            },
+            json=body,
+        )
+    except httpx.HTTPError as exc:
+        raise LlmCallError(
+            f"Mistral API request failed: {exc}", status_code=_http_status(exc)
+        ) from exc
+    finally:
+        if owns_client:
+            owned_client.close()
+
+    choices = payload.get("choices", [])
+    text = choices[0].get("message", {}).get("content", "") if choices else ""
+    if not text:
+        raise LlmCallError(f"Mistral API response had no text content: {payload!r}")
+    return text
+
+
+def _call_mistral_vision(
+    settings: Settings,
+    prompt: str,
+    image_paths: list[Path],
+    *,
+    model: str,
+    max_tokens: int,
+    static_prefix: str = "",
+    client: httpx.Client | None = None,
+) -> str:
+    """Mistral's vision models (e.g. pixtral-12b-2409) take images the same
+    OpenAI-compatible image_url shape Groq's vision path uses.
+    """
+    combined_prompt = f"{static_prefix}\n\n{prompt}" if static_prefix else prompt
+    api_key = settings.require_mistral_api_key()
+    content: list[dict] = [{"type": "text", "text": combined_prompt}]
+    for path in image_paths:
+        media_type = mimetypes.guess_type(path.name)[0] or _DEFAULT_IMAGE_MEDIA_TYPE
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{media_type};base64,{_encode_image_b64(path)}"},
+            }
+        )
+    owned_client = client or httpx.Client(timeout=180.0)
+    owns_client = client is None
+    try:
+        payload = _post_json(
+            owned_client,
+            _MISTRAL_ENDPOINT,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "content-type": "application/json",
+            },
+            json={
+                "model": model,
+                "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": content}],
+            },
+        )
+    except httpx.HTTPError as exc:
+        raise LlmCallError(
+            f"Mistral API vision request failed: {exc}", status_code=_http_status(exc)
+        ) from exc
+    finally:
+        if owns_client:
+            owned_client.close()
+
+    choices = payload.get("choices", [])
+    text = choices[0].get("message", {}).get("content", "") if choices else ""
+    if not text:
+        raise LlmCallError(f"Mistral API vision response had no text content: {payload!r}")
+    return text
+
+
+def _call_openrouter_vision(
+    settings: Settings,
+    prompt: str,
+    image_paths: list[Path],
+    *,
+    model: str,
+    max_tokens: int,
+    static_prefix: str = "",
+    client: httpx.Client | None = None,
+) -> str:
+    """Same OpenAI-compatible image_url shape as Groq/Mistral vision. Only
+    some OpenRouter models support image input - check the model's page on
+    openrouter.ai/models/<id> for "Input modalities" before adding one here.
+    """
+    combined_prompt = f"{static_prefix}\n\n{prompt}" if static_prefix else prompt
+    api_key = settings.require_openrouter_api_key()
+    content: list[dict] = [{"type": "text", "text": combined_prompt}]
+    for path in image_paths:
+        media_type = mimetypes.guess_type(path.name)[0] or _DEFAULT_IMAGE_MEDIA_TYPE
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{media_type};base64,{_encode_image_b64(path)}"},
+            }
+        )
+    owned_client = client or httpx.Client(timeout=180.0)
+    owns_client = client is None
+    try:
+        payload = _post_json(
+            owned_client,
+            _OPENROUTER_ENDPOINT,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "content-type": "application/json",
+            },
+            json={
+                "model": model,
+                "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": content}],
+            },
+        )
+    except httpx.HTTPError as exc:
+        raise LlmCallError(
+            f"OpenRouter API vision request failed: {exc}", status_code=_http_status(exc)
+        ) from exc
+    finally:
+        if owns_client:
+            owned_client.close()
+
+    choices = payload.get("choices", [])
+    text = choices[0].get("message", {}).get("content", "") if choices else ""
+    if not text:
+        raise LlmCallError(f"OpenRouter API vision response had no text content: {payload!r}")
+    return text
+
+
 def _call_gemini(
     settings: Settings,
     prompt: str,
@@ -576,6 +807,96 @@ def _call_gemini(
     return text
 
 
+def _call_text_provider(
+    settings: Settings,
+    provider: str,
+    prompt: str,
+    *,
+    model: str,
+    max_tokens: int,
+    json_mode: bool,
+    static_prefix: str,
+    client: httpx.Client | None,
+) -> str:
+    """Single-provider text dispatch, shared by call_llm()'s no-waterfall path
+    and its waterfall loop below.
+    """
+    if provider == "ollama":
+        combined = f"{static_prefix}\n\n{prompt}" if static_prefix else prompt
+        return _call_ollama(settings, combined, model=model, max_tokens=max_tokens, client=client)
+    if provider == "anthropic":
+        return _call_claude(
+            settings,
+            prompt,
+            model=model,
+            max_tokens=max_tokens,
+            static_prefix=static_prefix,
+            client=client,
+        )
+    combined = f"{static_prefix}\n\n{prompt}" if static_prefix else prompt
+    if provider == "groq":
+        return _call_groq(
+            settings,
+            combined,
+            model=model,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+            client=client,
+        )
+    if provider == "gemini":
+        return _call_gemini(
+            settings,
+            combined,
+            model=model,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+            client=client,
+        )
+    if provider == "cerebras":
+        return _call_cerebras(
+            settings,
+            combined,
+            model=model,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+            client=client,
+        )
+    if provider == "openrouter":
+        return _call_openrouter(
+            settings,
+            combined,
+            model=model,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+            client=client,
+        )
+    if provider == "mistral":
+        return _call_mistral(
+            settings,
+            combined,
+            model=model,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+            client=client,
+        )
+    raise ValueError(f"Unknown llm provider: {provider!r}")
+
+
+def _require_provider_credential(settings: Settings, provider: str) -> None:
+    """Fail before throttling when a hosted waterfall rung is unavailable."""
+    required_keys = {
+        "anthropic": settings.require_anthropic_api_key,
+        "groq": settings.require_groq_api_key,
+        "gemini": settings.require_gemini_api_key,
+        "cerebras": settings.require_cerebras_api_key,
+        "openrouter": settings.require_openrouter_api_key,
+        "mistral": settings.require_mistral_api_key,
+    }
+    require_key = required_keys.get(provider)
+    if require_key:
+        require_key()
+
+
 def call_llm(
     settings: Settings,
     prompt: str,
@@ -586,64 +907,61 @@ def call_llm(
     static_prefix: str = "",
     client: httpx.Client | None = None,
 ) -> str:
-    """json_mode requests provider-native JSON-only output (Groq's and
-    Cerebras' response_format, Gemini's response_mime_type) instead of relying
-    solely on enricher._extract_json's best-effort fenced-JSON parsing. Only
-    meaningful for groq/gemini/cerebras; ignored by anthropic and ollama,
-    whose JSON reliability already comes from prompting alone.
+    """json_mode requests provider-native JSON-only output (Groq's, Cerebras',
+    OpenRouter's, and Mistral's response_format, Gemini's response_mime_type)
+    instead of relying solely on enricher._extract_json's best-effort
+    fenced-JSON parsing. Only meaningful for those hosted providers; ignored
+    by anthropic and ollama, whose JSON reliability already comes from
+    prompting alone.
 
     static_prefix is the shared, repeated instruction text that precedes the
     per-call variable content (source URL, transcript, etc). Anthropic gets it
     as a separate cache_control-annotated system block (explicit prompt
-    caching - see _call_claude). Groq/Gemini/Ollama get it prepended to the
+    caching - see _call_claude). Every other provider gets it prepended to the
     prompt text instead, since their prefix-caching (automatic for Groq and
-    Gemini, none for Ollama) only pays off if the shared text is a literal
-    prefix of the request.
+    Gemini, none for Ollama/Cerebras/OpenRouter/Mistral) only pays off if the
+    shared text is a literal prefix of the request.
+
+    settings.llm.text_waterfall, when non-empty, overrides both the `provider`
+    and the caller's `model`: each (provider, model) step is tried in order,
+    falling through to the next on any LlmCallError (a dead key, a rate limit,
+    a context overflow), so one exhausted free-tier provider doesn't fail the
+    whole item - see config.WaterfallStep. Only the raw HTTP status decides
+    whether to retry the failing step in place (_post_json's 429 handling);
+    everything else, including terminal 4xx errors, moves straight to the
+    next rung, since a step that can't serve this request at all should not
+    burn a caller's whole retry budget on one dead-end provider.
     """
-    _throttle(settings, settings.llm.provider)
-    if settings.llm.provider == "ollama":
-        combined = f"{static_prefix}\n\n{prompt}" if static_prefix else prompt
-        return _call_ollama(settings, combined, model=model, max_tokens=max_tokens, client=client)
-    if settings.llm.provider == "anthropic":
-        return _call_claude(
-            settings,
-            prompt,
-            model=model,
-            max_tokens=max_tokens,
-            static_prefix=static_prefix,
-            client=client,
-        )
-    if settings.llm.provider == "groq":
-        combined = f"{static_prefix}\n\n{prompt}" if static_prefix else prompt
-        return _call_groq(
-            settings,
-            combined,
-            model=model,
-            max_tokens=max_tokens,
-            json_mode=json_mode,
-            client=client,
-        )
-    if settings.llm.provider == "gemini":
-        combined = f"{static_prefix}\n\n{prompt}" if static_prefix else prompt
-        return _call_gemini(
-            settings,
-            combined,
-            model=model,
-            max_tokens=max_tokens,
-            json_mode=json_mode,
-            client=client,
-        )
-    if settings.llm.provider == "cerebras":
-        combined = f"{static_prefix}\n\n{prompt}" if static_prefix else prompt
-        return _call_cerebras(
-            settings,
-            combined,
-            model=model,
-            max_tokens=max_tokens,
-            json_mode=json_mode,
-            client=client,
-        )
-    raise ValueError(f"Unknown llm.provider: {settings.llm.provider!r}")
+    steps = settings.llm.text_waterfall or [
+        WaterfallStep(provider=settings.llm.provider, model=model)
+    ]
+    last_exc: LlmCallError | MissingLlmCredentialError | None = None
+    for index, step in enumerate(steps):
+        try:
+            _require_provider_credential(settings, step.provider)
+        except MissingLlmCredentialError as exc:
+            last_exc = exc
+            continue
+        _throttle(settings, step.provider)
+        retry_token = _retry_rate_limits.set(index == len(steps) - 1)
+        try:
+            return _call_text_provider(
+                settings,
+                step.provider,
+                prompt,
+                model=step.model,
+                max_tokens=max_tokens,
+                json_mode=json_mode,
+                static_prefix=static_prefix,
+                client=client,
+            )
+        except (LlmCallError, MissingLlmCredentialError) as exc:
+            last_exc = exc
+            continue
+        finally:
+            _retry_rate_limits.reset(retry_token)
+    assert last_exc is not None  # steps is never empty
+    raise last_exc
 
 
 def _encode_image_b64(path: Path) -> str:
@@ -809,6 +1127,88 @@ def _call_gemini_vision(
     return text
 
 
+def _call_vision_provider(
+    settings: Settings,
+    provider: str,
+    prompt: str,
+    image_paths: list[Path],
+    *,
+    model: str,
+    max_tokens: int,
+    static_prefix: str,
+    client: httpx.Client | None,
+) -> str:
+    """Single-provider vision dispatch, shared by describe_images()'s
+    no-waterfall path and its waterfall loop below. Only "ollama", "anthropic",
+    "gemini", "groq", "mistral", and "openrouter" support vision here -
+    Cerebras has no vision path.
+    """
+    if provider == "ollama":
+        return _call_ollama_vision(
+            settings,
+            prompt,
+            image_paths,
+            model=model,
+            max_tokens=max_tokens,
+            static_prefix=static_prefix,
+            client=client,
+        )
+    if provider == "anthropic":
+        return _call_claude_vision(
+            settings,
+            prompt,
+            image_paths,
+            model=model,
+            max_tokens=max_tokens,
+            static_prefix=static_prefix,
+            client=client,
+        )
+    if provider == "gemini":
+        return _call_gemini_vision(
+            settings,
+            prompt,
+            image_paths,
+            model=model,
+            max_tokens=max_tokens,
+            static_prefix=static_prefix,
+            client=client,
+        )
+    if provider == "groq":
+        return _call_groq_vision(
+            settings,
+            prompt,
+            image_paths,
+            model=model,
+            max_tokens=max_tokens,
+            static_prefix=static_prefix,
+            client=client,
+        )
+    if provider == "mistral":
+        return _call_mistral_vision(
+            settings,
+            prompt,
+            image_paths,
+            model=model,
+            max_tokens=max_tokens,
+            static_prefix=static_prefix,
+            client=client,
+        )
+    if provider == "openrouter":
+        return _call_openrouter_vision(
+            settings,
+            prompt,
+            image_paths,
+            model=model,
+            max_tokens=max_tokens,
+            static_prefix=static_prefix,
+            client=client,
+        )
+    raise ValueError(
+        f"Unknown or vision-incapable llm provider: {provider!r}. "
+        "Vision only supports 'ollama', 'anthropic', 'gemini', 'groq', 'mistral', or 'openrouter'."
+    )
+
+
 def describe_images(
     settings: Settings,
     prompt: str,
@@ -820,60 +1220,45 @@ def describe_images(
     client: httpx.Client | None = None,
     provider: str | None = None,
 ) -> str:
-    """provider overrides settings.llm.provider for this call - only "ollama",
-    "anthropic", "gemini", and "groq" support vision here (Cerebras has no
-    vision path), so callers whose text provider is cerebras pass
-    settings.image_description.provider (or default to "ollama") instead of
-    falling through to the text provider. Note Groq vision requires a model
-    that actually supports image input - check `input_modalities` via GET
-    /openai/v1/models, since most Groq text models don't.
+    """provider overrides settings.llm.provider for this call when no
+    vision_waterfall is configured - callers whose text provider is cerebras
+    pass settings.image_description.provider (or default to "ollama") instead
+    of falling through to the text provider.
+
+    settings.llm.vision_waterfall, when non-empty, overrides both `provider`
+    and the caller's `model` the same way text_waterfall does in call_llm() -
+    each (provider, model) step tried in order, falling through to the next on
+    any LlmCallError. See call_llm()'s docstring for the fallthrough rationale.
     """
     if not image_paths:
         raise ValueError("describe_images requires at least one image path")
-    resolved_provider = provider or settings.llm.provider
-    _throttle(settings, resolved_provider)
-    if resolved_provider == "ollama":
-        return _call_ollama_vision(
-            settings,
-            prompt,
-            image_paths,
-            model=model,
-            max_tokens=max_tokens,
-            static_prefix=static_prefix,
-            client=client,
-        )
-    if resolved_provider == "anthropic":
-        return _call_claude_vision(
-            settings,
-            prompt,
-            image_paths,
-            model=model,
-            max_tokens=max_tokens,
-            static_prefix=static_prefix,
-            client=client,
-        )
-    if resolved_provider == "gemini":
-        return _call_gemini_vision(
-            settings,
-            prompt,
-            image_paths,
-            model=model,
-            max_tokens=max_tokens,
-            static_prefix=static_prefix,
-            client=client,
-        )
-    if resolved_provider == "groq":
-        return _call_groq_vision(
-            settings,
-            prompt,
-            image_paths,
-            model=model,
-            max_tokens=max_tokens,
-            static_prefix=static_prefix,
-            client=client,
-        )
-    raise ValueError(
-        f"Unknown or vision-incapable llm provider: {resolved_provider!r}. "
-        "Vision only supports 'ollama', 'anthropic', 'gemini', or 'groq' - set "
-        "image_description.provider in settings.yaml if llm.provider is 'cerebras'."
-    )
+    steps = settings.llm.vision_waterfall or [
+        WaterfallStep(provider=provider or settings.llm.provider, model=model)
+    ]
+    last_exc: LlmCallError | MissingLlmCredentialError | None = None
+    for index, step in enumerate(steps):
+        try:
+            _require_provider_credential(settings, step.provider)
+        except MissingLlmCredentialError as exc:
+            last_exc = exc
+            continue
+        _throttle(settings, step.provider)
+        retry_token = _retry_rate_limits.set(index == len(steps) - 1)
+        try:
+            return _call_vision_provider(
+                settings,
+                step.provider,
+                prompt,
+                image_paths,
+                model=step.model,
+                max_tokens=max_tokens,
+                static_prefix=static_prefix,
+                client=client,
+            )
+        except (LlmCallError, MissingLlmCredentialError) as exc:
+            last_exc = exc
+            continue
+        finally:
+            _retry_rate_limits.reset(retry_token)
+    assert last_exc is not None  # steps is never empty
+    raise last_exc
