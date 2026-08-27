@@ -1,4 +1,4 @@
-.PHONY: install test lint format typecheck audit lockcheck run-once serve-webhook check
+.PHONY: install test lint format format-check typecheck audit lockcheck run-once serve-webhook check
 
 install:
 	uv sync
@@ -12,6 +12,9 @@ lint:
 format:
 	uv run ruff format .
 
+format-check:
+	uv run ruff format --check .
+
 typecheck:
 	uv run pyright
 
@@ -21,7 +24,7 @@ audit:
 lockcheck:
 	uv lock --check
 
-check: lockcheck lint typecheck test audit
+check: lockcheck lint format-check typecheck test audit
 
 run-once:
 	uv run python -m reel_pipeline.cli run-once
