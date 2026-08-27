@@ -1,0 +1,10 @@
+# Python sources are LF in the working tree on every platform, not just in the
+# index. Without this, git's core.autocrlf=true checks them out as CRLF on
+# Windows, and any tool that later writes LF into one leaves the file with
+# mixed endings - which `ruff format --check .` reports as needing reformatting
+# even though the committed content is fine and CI (which checks out LF) is
+# green. Found 2026-08-27 in llm_client.py and test_llm_client.py.
+#
+# Deliberately scoped to *.py: nothing here forces an ending on files that may
+# genuinely need CRLF.
+*.py text eol=lf
