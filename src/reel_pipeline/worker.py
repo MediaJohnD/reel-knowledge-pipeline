@@ -94,6 +94,19 @@ def _is_terminal_failure(exc: BaseException) -> bool:
     """
     if isinstance(exc, LlmCallError):
         return exc.is_terminal
+    if isinstance(exc, EmptyTranscriptError):
+        # Waiting adds no speech to a silent clip and no text to a page that
+        # has none. Every transcript source raises rather than returning an
+        # empty-but-successful result when it is *degraded* - the vision
+        # waterfall re-raises its last LlmCallError (every provider treats an
+        # empty completion as an error), the text fetchers raise TextFetchError
+        # on transport/HTTP/app-shell failures, and whisper raises
+        # TranscriptionError on a decode failure - so an empty transcript means
+        # the source really is empty. Belt and braces: the empty transcript is
+        # cached and last_completed_stage is TRANSCRIBED before this is raised,
+        # so a retry re-reads the same "" from data/tmp/<id>/transcript.json
+        # without re-running the stage that produced it.
+        return True
     # asyncio raises a bare NotImplementedError when the running loop can't do
     # what a library asked of it (e.g. spawn a subprocess). That is fixed by
     # changing config or code, never by waiting for a backoff to elapse.

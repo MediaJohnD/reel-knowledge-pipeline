@@ -1383,7 +1383,14 @@ def test_empty_transcript_is_reported_instead_of_enriched_into_a_note(tmp_path):
 
     state = pipeline.queue_manager.load_state()
     (record,) = state.values()
-    assert record.status != ItemStatus.DONE
+    # Terminal on the first attempt (max_attempts is 5 here): an empty
+    # transcript is deterministic - every stage raises instead of returning an
+    # empty-but-successful result when it's merely degraded, and the empty
+    # transcript is cached before the raise, so attempts 2-5 would re-read the
+    # same "" and write a needs-attention line each time for nothing.
+    assert record.status is ItemStatus.FAILED_PERMANENT
+    assert record.attempt_count == 1
+    assert record.next_retry_at is None
     assert record.note_path is None
 
     needs_attention = pipeline.queue_manager.needs_attention_file.read_text(encoding="utf-8")
