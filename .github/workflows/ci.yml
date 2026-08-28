@@ -22,23 +22,20 @@ jobs:
       - name: Set up Python
         run: uv python install
 
-      - name: Verify lockfile is in sync
-        run: uv lock --check
-
+      # --locked asserts uv.lock is already up to date with pyproject.toml and
+      # errors otherwise. Plain `uv sync` would quietly re-lock, which would let
+      # a stale committed lockfile sail past the `uv lock --check` inside
+      # `make check` below - the check would be inspecting a lockfile this step
+      # had just fixed.
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --locked
 
-      - name: Lint
-        run: uv run ruff check .
-
-      - name: Check formatting
-        run: uv run ruff format --check .
-
-      - name: Typecheck
-        run: uv run pyright
-
-      - name: Test
-        run: uv run pytest
-
-      - name: Dependency vulnerability scan
-        run: uv audit
+      # Deliberately one step calling `make check` rather than one step per
+      # command. The two lists drifted apart once already: CI grew a
+      # `ruff format --check .` step that `make check` never got, so the README's
+      # "make check runs everything CI runs" was quietly false and a formatting
+      # slip passed locally and failed here. With a single list there is nothing
+      # left to keep in sync. The cost is the per-step pass/fail sidebar in the
+      # Actions UI; the failing command and its output are still in the log.
+      - name: Verify
+        run: make check

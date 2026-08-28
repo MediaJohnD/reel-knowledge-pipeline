@@ -103,15 +103,16 @@ external services beyond whichever LLM/transcription backend you configure.
 | `uv lock --check` | Verify `uv.lock` matches `pyproject.toml` |
 
 A `Makefile` wraps the verification commands (`make install`, `make test`, `make check`, etc.) —
-`make check` runs everything CI runs (lockfile check, lint, format check, typecheck,
-test, audit).
+`make check` runs the lockfile check, lint, format check, typecheck, tests and
+audit — and CI runs `make check` itself rather than repeating the list, so the
+two cannot drift apart.
 
 Windows has no `make` by default. Either install one —
 `winget install --id ezwinports.make --exact --scope user` (no elevation needed;
 open a new shell afterwards so the updated `PATH` applies) — or skip it and run
 the table's commands directly. No target does anything but run `uv` commands
-(`check` just runs six of them in order), so the `Makefile` is a convenience,
-not a dependency.
+(`check` just runs six of them in order), so locally the `Makefile` only saves
+typing — CI is the one place that genuinely needs it.
 
 ## Configuration
 
