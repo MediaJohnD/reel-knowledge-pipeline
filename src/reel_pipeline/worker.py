@@ -102,10 +102,11 @@ def _is_terminal_failure(exc: BaseException) -> bool:
         # empty completion as an error), the text fetchers raise TextFetchError
         # on transport/HTTP/app-shell failures, and whisper raises
         # TranscriptionError on a decode failure - so an empty transcript means
-        # the source really is empty. Belt and braces: the empty transcript is
-        # cached and last_completed_stage is TRANSCRIBED before this is raised,
-        # so a retry re-reads the same "" from data/tmp/<id>/transcript.json
-        # without re-running the stage that produced it.
+        # the source really is empty. Terminal here only stops the *automatic*
+        # backoff retries, which would re-read the same source for the same
+        # nothing; an explicit `retry` still re-runs the transcribe stage for
+        # real, because _write_transcript_cache refuses to cache an empty
+        # transcript (see there for why that matters).
         return True
     # asyncio raises a bare NotImplementedError when the running loop can't do
     # what a library asked of it (e.g. spawn a subprocess). That is fixed by
@@ -507,6 +508,36 @@ class WorkerPipeline:
             return None
 
     def _write_transcript_cache(self, content_id: str, transcript: TranscriptResult) -> None:
+        """Caches a transcript for re-use by a later attempt - except an empty
+        one, which is deliberately not cached.
+
+        An empty transcript is about to raise EmptyTranscriptError, which
+        _is_terminal_failure treats as terminal, so the only way back is an
+        explicit `retry`. Caching the empty result would make that retry a
+        no-op: the reuse branch in process_item would hand the same "" straight
+        back to the same raise, and the item would return to FAILED_PERMANENT
+        on attempt 1 forever, with the documented remedy silently unable to
+        remedy anything. Not writing it leaves last_completed_stage pointing at
+        TRANSCRIBED with no artifact behind it, which the "trust but verify"
+        reads in _cached_transcript_result already handle - the stage is
+        skipped only when its output is actually still there. A retry therefore
+        re-runs the transcribe/fetch stage (re-using the cached *download* when
+        one is still on disk; a text item re-fetches the page, since that fetch
+        is the stage).
+
+        Deletes rather than merely skipping the write, so that "no usable
+        cached transcript" and "no transcript.json" are the same thing
+        unconditionally. They can come apart otherwise: this write happens just
+        before last_completed_stage advances to TRANSCRIBED, so a crash in that
+        window leaves a non-empty transcript.json on disk with the stage still
+        DOWNLOADED. The next run re-transcribes (correctly, the stage looks
+        incomplete), and if that run comes back empty, a skipped write would
+        leave the stale non-empty file for the following retry to reuse - and
+        write a note from content this attempt never produced.
+        """
+        if not transcript.text.strip():
+            (self.settings.tmp_dir / content_id / "transcript.json").unlink(missing_ok=True)
+            return
         tmp_dir = self.settings.tmp_dir / content_id
         tmp_dir.mkdir(parents=True, exist_ok=True)
         (tmp_dir / "transcript.json").write_text(transcript.model_dump_json(), encoding="utf-8")

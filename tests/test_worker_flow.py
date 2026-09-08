@@ -1385,9 +1385,9 @@ def test_empty_transcript_is_reported_instead_of_enriched_into_a_note(tmp_path):
     (record,) = state.values()
     # Terminal on the first attempt (max_attempts is 5 here): an empty
     # transcript is deterministic - every stage raises instead of returning an
-    # empty-but-successful result when it's merely degraded, and the empty
-    # transcript is cached before the raise, so attempts 2-5 would re-read the
-    # same "" and write a needs-attention line each time for nothing.
+    # empty-but-successful result when it's merely degraded - so attempts 2-5
+    # would re-read the same source for the same nothing and write a
+    # needs-attention line each time.
     assert record.status is ItemStatus.FAILED_PERMANENT
     assert record.attempt_count == 1
     assert record.next_retry_at is None
@@ -1395,3 +1395,79 @@ def test_empty_transcript_is_reported_instead_of_enriched_into_a_note(tmp_path):
 
     needs_attention = pipeline.queue_manager.needs_attention_file.read_text(encoding="utf-8")
     assert "empty" in needs_attention.lower()
+
+
+class SilentOnceTranscriber:
+    """Empty on the first call, real text afterwards - a source that was
+    genuinely empty when first read and isn't any more (a video re-uploaded
+    with audio, a page that was an empty app shell at the time).
+    """
+
+    def __init__(self):
+        self.calls = 0
+
+    def transcribe(self, media_path: Path, content_id: str) -> TranscriptResult:
+        self.calls += 1
+        text = "  \n  " if self.calls == 1 else "there is speech in this one"
+        return TranscriptResult(content_id=content_id, text=text, language=None, backend="fake")
+
+
+def test_retry_after_an_empty_transcript_re_runs_the_transcribe_stage(tmp_path):
+    """Regression: an empty transcript is terminal, so `retry` is the only way
+    back - and it used to be a no-op. The empty transcript was cached and
+    last_completed_stage set to TRANSCRIBED before the raise, and
+    reset_for_retry deliberately preserves that stage, so the retry hit the
+    reuse branch, handed the same "" to the same check, and returned to
+    FAILED_PERMANENT on attempt 1 again. Forever, for every such item.
+    """
+    settings = make_settings(tmp_path)
+    transcriber = SilentOnceTranscriber()
+    pipeline = build_pipeline(settings, FakeDownloader(), transcriber=transcriber)
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=silent2\n", encoding="utf-8"
+    )
+
+    assert pipeline.run_once().failed == 1
+    (record,) = pipeline.queue_manager.load_state().values()
+    assert record.status is ItemStatus.FAILED_PERMANENT
+    # The empty result must not have been cached, or the retry below reads it
+    # back instead of re-running the stage.
+    assert not (settings.tmp_dir / record.content_id / "transcript.json").is_file()
+
+    assert pipeline.queue_manager.reset_for_retry(content_id=record.content_id) == [
+        record.content_id
+    ]
+    summary = pipeline.run_once()
+
+    assert transcriber.calls == 2, "the retry must actually re-transcribe, not reuse the cache"
+    assert summary.done == 1
+    (record,) = pipeline.queue_manager.load_state().values()
+    assert record.status is ItemStatus.DONE
+    assert record.note_path is not None
+
+
+def test_an_empty_transcript_clears_a_stale_cached_one(tmp_path):
+    """The cache write lands just before last_completed_stage advances to
+    TRANSCRIBED, so a crash in that window leaves a non-empty transcript.json
+    behind a stage that still reads DOWNLOADED. The next run re-transcribes,
+    and if that run is empty, merely skipping the write would leave the stale
+    file for the following retry to reuse - writing a note from content this
+    attempt never produced.
+    """
+    settings = make_settings(tmp_path)
+    pipeline = build_pipeline(settings, FakeDownloader())
+    stale = settings.tmp_dir / "abc123" / "transcript.json"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text(
+        TranscriptResult(
+            content_id="abc123", text="from a previous attempt", language=None, backend="fake"
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+
+    pipeline._write_transcript_cache(
+        "abc123", TranscriptResult(content_id="abc123", text="  \n ", language=None, backend="fake")
+    )
+
+    assert not stale.is_file()
+    assert pipeline._cached_transcript_result("abc123") is None
