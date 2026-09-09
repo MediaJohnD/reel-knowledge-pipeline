@@ -88,7 +88,7 @@ def organize_vault_cmd() -> None:
     not something this pipeline decides). Safe to run repeatedly - already-
     correct notes are skipped.
     """
-    from reel_pipeline.vault_organizer import organize_vault
+    from reel_pipeline.vault_organizer import find_duplicate_notes, organize_vault
 
     settings = get_settings()
     settings.ensure_directories()
@@ -97,10 +97,18 @@ def organize_vault_cmd() -> None:
     changes = organize_vault(settings)
     if not changes:
         typer.echo("vault already organized, no changes")
-        return
-    for change in changes:
-        typer.echo(f"  {change}")
-    typer.echo(f"{len(changes)} note(s) touched")
+    else:
+        for change in changes:
+            typer.echo(f"  {change}")
+        typer.echo(f"{len(changes)} note(s) touched")
+
+    duplicates = find_duplicate_notes(settings)
+    if duplicates:
+        typer.echo(f"{len(duplicates)} duplicate note(s) found:")
+        for finding in duplicates:
+            typer.echo(f"  DUPLICATE: {finding}")
+    else:
+        typer.echo("no duplicate notes found")
 
 
 @app.command("serve-webhook")

@@ -13,6 +13,7 @@ conflict - it's safe regardless of which folder a note lives in.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
 
 from reel_pipeline.config import Settings
@@ -70,3 +71,37 @@ def organize_vault(settings: Settings) -> list[str]:
 
     manager.mutate_state(mutate)
     return changes
+
+
+def find_duplicate_notes(settings: Settings) -> list[str]:
+    """Scans every note under vault_dir for two files sharing a content_id or
+    source_url - the pipeline dedups on ingestion (see validators.normalize_url),
+    so any pair found here means a note was created, edited, or moved outside
+    that path. Read-only: reports for manual review rather than deleting
+    anything, since picking which duplicate is "the real one" isn't safe to
+    automate.
+    """
+    by_content_id: dict[str, list[Path]] = defaultdict(list)
+    by_source_url: dict[str, list[Path]] = defaultdict(list)
+
+    for path in Path(settings.vault_dir).rglob("*.md"):
+        frontmatter = read_frontmatter(path)
+        if not frontmatter:
+            continue
+        content_id = frontmatter.get("content_id")
+        if content_id:
+            by_content_id[content_id].append(path)
+        source_url = frontmatter.get("source_url")
+        if source_url:
+            by_source_url[source_url].append(path)
+
+    findings: list[str] = []
+    for content_id, paths in by_content_id.items():
+        if len(paths) > 1:
+            joined = ", ".join(str(p) for p in paths)
+            findings.append(f"duplicate content_id {content_id!r}: {joined}")
+    for source_url, paths in by_source_url.items():
+        if len(paths) > 1:
+            joined = ", ".join(str(p) for p in paths)
+            findings.append(f"duplicate source_url {source_url!r}: {joined}")
+    return findings
