@@ -89,8 +89,12 @@ llm:
   text_waterfall:
     - provider: groq
       model: openai/gpt-oss-120b
+    # gpt-oss-20b carries its own free quota (1000 RPD / 8000 TPM, same as 120b)
+    # on the same key. Replaced llama-3.3-70b-versatile on 2026-09-11: Groq no
+    # longer serves ANY Llama chat model on this key (live /models listing), so
+    # that rung had been 404ing on every fallthrough.
     - provider: groq
-      model: llama-3.3-70b-versatile
+      model: openai/gpt-oss-20b
     - provider: gemini
       model: gemini-2.5-flash
     - provider: gemini
