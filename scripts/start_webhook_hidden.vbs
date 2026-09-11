@@ -66,7 +66,8 @@ End If
 ' Propagate the server's exit code as wscript.exe's own. Without this the task
 ' always reported "Last Result: 0" and RestartOnFailure (999 x 1 min) never fired -
 ' seen 2026-09-10: at logon uvicorn tried to bind REEL_WEBHOOK_HOST (the Tailscale
-' IP) 23s after boot, before Tailscale had assigned it, exited 1 with "could not
-' bind on any address", and the webhook stayed dead all evening. Now a failed bind
+' IP) 23s after boot, before Tailscale had assigned it, exited 3 (uvicorn's
+' STARTUP_FAILURE) with "could not bind on any address", and the webhook stayed
+' dead all evening. Now a failed bind
 ' is a failed task, and the scheduler retries every minute until Tailscale is up.
 WScript.Quit WshShell.Run("cmd /c uv run python -m reel_pipeline.cli serve-webhook >> data\logs\webhook_stdout.log 2>&1", 0, True)

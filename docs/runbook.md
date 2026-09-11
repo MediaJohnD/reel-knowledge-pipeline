@@ -106,9 +106,13 @@ having to manually relaunch it.
 
 The launcher runs *synchronously* (`WshShell.Run(..., 0, True)`) rather than
 fire-and-forget - the scheduled task's own tracked process lives and dies with
-the server, so the task's restart-on-failure setting (`RestartCount: 999`,
-`RestartInterval: 1 minute`) can actually detect a mid-session crash and bring
-it back up within a minute, not just survive a full reboot. `ExecutionTimeLimit`
+the server - and exits with the server's own exit code
+(`WScript.Quit WshShell.Run(...)`). Both are required for the task's
+restart-on-failure setting (`RestartCount: 999`, `RestartInterval: 1 minute`)
+to detect a crash or a failed startup and bring it back up within a minute:
+without the exit code the task always recorded Last Result 0 and never
+restarted (found 2026-09-10, when a post-reboot bind to the not-yet-up
+Tailscale IP failed and the server stayed dead). `ExecutionTimeLimit`
 is explicitly `PT0S` (unlimited) - if you ever recreate this task from the GUI,
 re-set that, since the GUI default is a 3-day kill switch that would silently
 terminate a long-running personal server.
