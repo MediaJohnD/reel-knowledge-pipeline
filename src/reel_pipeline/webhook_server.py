@@ -76,13 +76,13 @@ _FORM_PAGE = """<!doctype html>
 const SECRET_KEY = 'reel_pipeline_webhook_secret';
 // A Home Screen bookmark can carry ?key=... so the secret survives even if
 // localStorage gets cleared (e.g. the icon is removed and re-added) - re-saved
-// on every load, then stripped from the visible URL so it doesn't linger there.
+// on every load. The URL is deliberately left as-is (not stripped): "Add to
+// Home Screen" captures whatever the address bar shows at that moment, so
+// removing the key here left freshly-saved icons with no key at all - found
+// 2026-09-12, every new Home Screen save still prompted for the secret.
 (function importKeyFromQuery() {
   const key = new URLSearchParams(location.search).get('key');
-  if (key) {
-    localStorage.setItem(SECRET_KEY, key);
-    history.replaceState({}, '', location.pathname);
-  }
+  if (key) localStorage.setItem(SECRET_KEY, key);
 })();
 function setSecret() {
   const value = prompt('Webhook secret (from your .env):', localStorage.getItem(SECRET_KEY) || '');
