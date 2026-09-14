@@ -4,7 +4,12 @@ import sys
 import types
 
 from reel_pipeline.config import DownloadConfig, Settings
-from reel_pipeline.validators import classify_url_kind, normalize_url, validate_url
+from reel_pipeline.validators import (
+    classify_url_kind,
+    compute_content_id,
+    normalize_url,
+    validate_url,
+)
 
 
 def _install_fake_yt_dlp(monkeypatch, *, raises: bool):
@@ -67,6 +72,41 @@ def test_normalize_url_strips_youtube_share_id():
     assert normalize_url("https://youtu.be/vJEy3nP2_C8?is=1BPVF-kZhr8DII5d") == normalize_url(
         "https://youtu.be/vJEy3nP2_C8?is=91J3tJQZAnXszpcn"
     )
+
+
+def test_instagram_share_tokens_do_not_change_content_id():
+    """Regression test: reel DcEXXKGiIQ2 was ingested twice (two vault notes) because
+    ?igsi= and ?stkn= share tokens weren't stripped. Instagram keeps minting new token
+    names, so every Instagram query param except img_index is dropped."""
+    assert compute_content_id(
+        "https://www.instagram.com/reel/DcEXXKGiIQ2/?igsi=Y284ZnUyanU4MHNl"
+    ) == compute_content_id("https://www.instagram.com/reel/DcEXXKGiIQ2/?stkn=MTF4bDlxNnpyaGl6Zg==")
+    assert normalize_url(
+        "https://www.instagram.com/p/abc/?comment_id=1&some_future_token=x"
+    ) == normalize_url("https://instagram.com/p/abc")
+    # Host detection must ignore an explicit port, or the allowlist is bypassed.
+    assert "stkn" not in normalize_url("https://instagram.com:443/p/abc/?stkn=x")
+
+
+def test_instagram_img_index_still_distinguishes_carousel_slides():
+    """GalleryDlDownloader turns img_index into --range and captures only that slide,
+    so different img_index values are different content - but the same slide
+    re-shared with a different token is not."""
+    slide_2 = "https://www.instagram.com/p/DaeWEfhFPjZ/?img_index=2&igsh=MWRmZmpkY243bDNjMw=="
+    assert compute_content_id(slide_2) != compute_content_id(
+        "https://www.instagram.com/p/DaeWEfhFPjZ/?img_index=4&igsh=MWRmZmpkY243bDNjMw=="
+    )
+    assert compute_content_id(slide_2) == compute_content_id(
+        "https://www.instagram.com/p/DaeWEfhFPjZ/?stkn=abc&img_index=2"
+    )
+    # img_index is canonicalized the way the downloader reads it, so URLs that capture
+    # the same slide get the same id: first value wins, leading zeros don't matter, and
+    # a key or value the downloader ignores means "whole post".
+    post = "https://www.instagram.com/p/DaeWEfhFPjZ/"
+    assert compute_content_id(slide_2) == compute_content_id(f"{post}?img_index=2&img_index=4")
+    assert compute_content_id(slide_2) == compute_content_id(f"{post}?img_index=02")
+    assert compute_content_id(post) == compute_content_id(f"{post}?img_index=abc")
+    assert compute_content_id(post) == compute_content_id(f"{post}?IMG_INDEX=2")
 
 
 def make_settings(tmp_path, allowed, blocked=None) -> Settings:

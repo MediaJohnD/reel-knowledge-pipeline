@@ -42,6 +42,23 @@ _STRIP_QUERY_PARAMS = {
 }
 
 
+def parse_img_index(url: str) -> int | None:
+    """Instagram URLs that deep-link into one item of a carousel carry a 0-based
+    "?img_index=N" query param - e.g. a URL pointing at the 8th of 9 clips. Returns
+    None if absent or unparseable, meaning "the whole post, no specific item".
+
+    Shared by GalleryDlDownloader (which slide to download) and normalize_url (which
+    slide the content_id refers to), so the two can't drift apart.
+    """
+    values = [value for key, value in parse_qsl(urlparse(url).query) if key == "img_index"]
+    if not values:
+        return None
+    try:
+        return int(values[0])
+    except ValueError:
+        return None
+
+
 def normalize_url(url: str) -> str:
     """Lowercase scheme/host, drop fragment, drop tracking query params, sort the rest."""
     url = url.strip()
@@ -51,11 +68,23 @@ def normalize_url(url: str) -> str:
     if netloc.startswith("www."):
         netloc = netloc[len("www.") :]
     path = parsed.path.rstrip("/") or ""
-    kept_params = sorted(
-        (key, value)
-        for key, value in parse_qsl(parsed.query)
-        if key.lower() not in _STRIP_QUERY_PARAMS
-    )
+    host = (parsed.hostname or "").removeprefix("www.")
+    if host == "instagram.com" or host.endswith(".instagram.com"):
+        # Instagram share links carry a per-share token whose name keeps changing (igshid,
+        # igsh, igsi, stkn, ...), so a blocklist let each new one mint a fresh content_id
+        # for the same post - reel DcEXXKGiIQ2 was ingested twice via ?igsi= vs ?stkn=.
+        # Allowlist instead: img_index is the only param that changes what gets captured,
+        # kept exactly as the downloader reads it so same-slide URLs share one id.
+        img_index = parse_img_index(url)
+        kept_params: list[tuple[str, str]] = (
+            [] if img_index is None else [("img_index", str(img_index))]
+        )
+    else:
+        kept_params = sorted(
+            (key, value)
+            for key, value in parse_qsl(parsed.query)
+            if key.lower() not in _STRIP_QUERY_PARAMS
+        )
     query = urlencode(kept_params)
     return urlunparse((scheme, netloc, path, "", query, ""))
 

@@ -44,10 +44,11 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 from reel_pipeline.config import Settings
 from reel_pipeline.models import DownloadResult, MediaType
+from reel_pipeline.validators import parse_img_index
 
 _INSTAGRAM_DOMAINS = ("instagram.com",)
 
@@ -195,20 +196,6 @@ def _extract_first_frame(video_path: Path) -> Path:
     return frame_path
 
 
-def _parse_img_index(url: str) -> int | None:
-    """Instagram URLs that deep-link into one item of a carousel carry a 0-based
-    "?img_index=N" query param - e.g. a URL pointing at the 8th of 9 clips. Returns
-    None if absent or unparseable, meaning "the whole post, no specific item".
-    """
-    values = parse_qs(urlparse(url).query).get("img_index")
-    if not values:
-        return None
-    try:
-        return int(values[0])
-    except ValueError:
-        return None
-
-
 class GalleryDlDownloader:
     """Downloads Instagram media via the gallery-dl CLI, using a cookies file or
     browser cookie jar from the account owner's own logged-in session (never a
@@ -236,7 +223,7 @@ class GalleryDlDownloader:
         # extractor.instagram.order-files=asc default (post-display order), this
         # addresses the same item a "?img_index=N" URL was deep-linking to, instead
         # of downloading (and then silently discarding) the whole carousel.
-        img_index = _parse_img_index(url)
+        img_index = parse_img_index(url)
         if img_index is not None:
             command += ["--range", str(img_index + 1)]
 
