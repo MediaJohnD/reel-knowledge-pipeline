@@ -15,6 +15,7 @@ from __future__ import annotations
 import hmac
 import threading
 from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
@@ -174,6 +175,28 @@ def _run_worker_in_background(settings: Settings) -> None:
         _worker_lock.release()
 
 
+def _code_version(project_root: Path) -> str:
+    """Git HEAD as of process start, for /healthz.
+
+    This server is long-lived (a logon-triggered scheduled task) and imports the
+    pipeline modules once, so a fix committed while it runs stays inert until the
+    task restarts. That happened with the source_url token stripping in 4b28ef6:
+    correct in the repo, but two notes written hours later still carried a live
+    ?stkn= because the process predated the commit. Comparing this against
+    `git rev-parse HEAD` makes that gap visible instead of invisible.
+    """
+    git_dir = project_root / ".git"
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+        if head.startswith("ref: "):
+            # ponytail: loose refs only - a packed ref reports "unknown", which is
+            # honest but useless. Shell out to git rev-parse if that ever happens here.
+            head = (git_dir / head.removeprefix("ref: ")).read_text(encoding="utf-8").strip()
+        return head[:12]
+    except OSError:
+        return "unknown"
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     settings.ensure_directories()
@@ -181,6 +204,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="Reel Knowledge Pipeline Webhook")
     app.state.settings = settings
+    code_version = _code_version(settings.project_root)
+    log_context(logger, 20, "webhook server starting", code_version=code_version)
 
     @app.get("/healthz")
     def healthz() -> dict[str, object]:
@@ -207,6 +232,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         last_success_at = max(done_times).isoformat() if done_times else None
         return {
             "status": "ok",
+            "code_version": code_version,
             "queue_depth": queue_depth,
             "failed_count": failed_count,
             "last_success_at": last_success_at,

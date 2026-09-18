@@ -210,6 +210,21 @@ re-runs the same CLI command.
   `last_success_at` (timestamp of the most recent successful item), read
   straight from `state.json`. A stuck worker or growing failure backlog is now
   visible from this endpoint alone.
+- **`code_version` in `/healthz` is the git HEAD the server *started* with.**
+  The webhook server is long-lived (logon-triggered task) and imports the
+  pipeline modules once, so committing a fix does nothing until the task
+  restarts. After any change to code the server imports, restart the task and
+  confirm the SHA moved:
+
+  ```powershell
+  Stop-ScheduledTask -TaskName ReelPipelineWebhook
+  Start-ScheduledTask -TaskName ReelPipelineWebhook
+  curl http://$env:REEL_WEBHOOK_HOST:8787/healthz   # code_version == git rev-parse --short=12 HEAD
+  ```
+
+  This is not hypothetical: 4b28ef6 (strip share/auth tokens from `source_url`)
+  was correct in the repo on 2026-09-17 but two notes written that evening still
+  carried a live `?stkn=`, because the process had been up since 2026-09-16.
 
 ## Rotating secrets
 

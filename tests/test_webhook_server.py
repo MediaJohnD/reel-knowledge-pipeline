@@ -25,10 +25,31 @@ def test_healthz_returns_ok_with_empty_queue_stats(tmp_path):
     assert response.status_code == 200
     assert response.json() == {
         "status": "ok",
+        "code_version": "unknown",  # tmp_path has no .git
         "queue_depth": 0,
         "failed_count": 0,
         "last_success_at": None,
     }
+
+
+def test_healthz_reports_the_git_head_the_process_started_with(tmp_path):
+    """A long-lived server keeps serving the code it imported at startup, so
+    /healthz must pin the SHA from app creation - not re-read it per request,
+    which would hide exactly the staleness this field exists to expose."""
+    git_dir = tmp_path / ".git"
+    (git_dir / "refs" / "heads").mkdir(parents=True)
+    (git_dir / "HEAD").write_text("ref: refs/heads/master\n", encoding="utf-8")
+    (git_dir / "refs" / "heads" / "master").write_text(
+        "4b28ef6" + "a" * 33 + "\n", encoding="utf-8"
+    )
+
+    client = TestClient(create_app(make_settings(tmp_path)))
+    assert client.get("/healthz").json()["code_version"] == "4b28ef6aaaaa"
+
+    (git_dir / "refs" / "heads" / "master").write_text(
+        "deadbeef" + "c" * 32 + "\n", encoding="utf-8"
+    )
+    assert client.get("/healthz").json()["code_version"] == "4b28ef6aaaaa"
 
 
 def test_healthz_reports_queue_depth_failed_count_and_last_success(tmp_path):
