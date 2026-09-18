@@ -15,6 +15,7 @@ import httpx
 from reel_pipeline.config import Settings
 from reel_pipeline.llm_client import LlmCallError, call_llm
 from reel_pipeline.models import EnrichmentResult, TranscriptResult
+from reel_pipeline.validators import sanitize_url
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 _CACHE_BOUNDARY = "<!-- CACHE:BOUNDARY -->"
@@ -80,7 +81,10 @@ class Enricher:
         )
         static_prefix, prompt = render_and_split(
             template,
-            source_url=source_url,
+            # Same leak as the vault, different destination: the raw URL goes into a
+            # prompt sent to a third-party LLM. Host and path are the useful context;
+            # the token isn't.
+            source_url=sanitize_url(source_url),
             transcript=transcript.text,
         )
         try:

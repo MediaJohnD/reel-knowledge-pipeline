@@ -29,6 +29,20 @@ def make_item(content_id="abc123", title="How To Build A Thing") -> ContentItem:
     )
 
 
+def test_note_frontmatter_strips_auth_tokens_from_source_url(tmp_path):
+    """The vault is git-committed and pushed nightly, so a share/auth token in
+    source_url leaves the machine - a real ManyChat JWT did."""
+    settings = Settings(project_root=tmp_path)
+    item = make_item()
+    item.source_url = "https://app.manychat.com/flowPlayerPage?share_hash=abc&mcp_token=eyJ.a.b"
+
+    raw = write_note(settings, item).read_text(encoding="utf-8")
+
+    assert "mcp_token" not in raw
+    frontmatter = yaml.safe_load(raw.split("---\n")[1])
+    assert frontmatter["source_url"] == "https://app.manychat.com/flowPlayerPage?share_hash=abc"
+
+
 def test_slugify_produces_url_safe_lowercase():
     assert slugify("How To Build A Thing!") == "how-to-build-a-thing"
 
@@ -71,7 +85,7 @@ def test_write_note_creates_file_with_required_frontmatter_fields(tmp_path):
     frontmatter = yaml.safe_load(frontmatter_block)
 
     assert frontmatter["title"] == item.enrichment.title
-    assert frontmatter["source_url"] == item.source_url
+    assert frontmatter["source_url"] == "https://youtube.com/watch?v=abc123"
     assert frontmatter["content_id"] == item.content_id
     assert frontmatter["created_at"] == item.created_at.isoformat()
     assert frontmatter["tags"] == item.enrichment.tags

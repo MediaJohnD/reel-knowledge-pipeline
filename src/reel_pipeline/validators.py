@@ -41,6 +41,28 @@ _STRIP_QUERY_PARAMS = {
     "is",
 }
 
+# Query params that carry a credential or per-share token. Only sanitize_url() drops
+# these - see its docstring for why they must stay out of _STRIP_QUERY_PARAMS.
+_SECRET_QUERY_PARAMS = {
+    "mcp_token",
+    "token",
+    "access_token",
+    "auth",
+    "auth_token",
+    "id_token",
+    "api_key",
+    "apikey",
+    "key",
+    "sig",
+    "signature",
+    "secret",
+    "password",
+    "pwd",
+    "session",
+    "session_id",
+    "stkn",
+}
+
 
 def parse_img_index(url: str) -> int | None:
     """Instagram URLs that deep-link into one item of a carousel carry a 0-based
@@ -87,6 +109,25 @@ def normalize_url(url: str) -> str:
         )
     query = urlencode(kept_params)
     return urlunparse((scheme, netloc, path, "", query, ""))
+
+
+def sanitize_url(url: str) -> str:
+    """The normalized URL minus any credential/share-token query param - what we
+    persist in a note or hand to the enrichment LLM.
+
+    A ManyChat URL ingested with `?mcp_token=<JWT>` put a live token (pid/sid, exp a
+    month out) into the vault, which is committed and pushed nightly. Never feed this
+    to compute_content_id or a downloader: the token is often exactly what makes the
+    URL fetch, and the params below are deliberately *not* in _STRIP_QUERY_PARAMS -
+    that set feeds content_id, so adding to it would re-key already-ingested items.
+    """
+    parsed = urlparse(normalize_url(url))
+    kept_params = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query)
+        if key.lower() not in _SECRET_QUERY_PARAMS
+    ]
+    return urlunparse(parsed._replace(query=urlencode(kept_params)))
 
 
 def compute_content_id(url: str) -> str:

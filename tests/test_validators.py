@@ -8,6 +8,7 @@ from reel_pipeline.validators import (
     classify_url_kind,
     compute_content_id,
     normalize_url,
+    sanitize_url,
     validate_url,
 )
 
@@ -86,6 +87,31 @@ def test_instagram_share_tokens_do_not_change_content_id():
     ) == normalize_url("https://instagram.com/p/abc")
     # Host detection must ignore an explicit port, or the allowlist is bypassed.
     assert "stkn" not in normalize_url("https://instagram.com:443/p/abc/?stkn=x")
+
+
+def test_sanitize_url_drops_auth_tokens_without_changing_the_content_id():
+    """Regression test: a ManyChat share link committed a live JWT (mcp_token) to the
+    vault's git remote. The token has to survive normalize_url (content_id stability
+    for anything already ingested) and die in sanitize_url (what gets persisted)."""
+    url = (
+        "https://app.manychat.com/flowPlayerPage"
+        "?share_hash=abc123&mcp_token=eyJhbGciOiJIUzI1NiJ9.payload.sig"
+    )
+
+    sanitized = sanitize_url(url)
+
+    assert sanitized == "https://app.manychat.com/flowPlayerPage?share_hash=abc123"
+    assert "mcp_token" in normalize_url(url)
+    assert compute_content_id(url) != compute_content_id(sanitized)
+
+
+def test_sanitize_url_reuses_the_instagram_allowlist():
+    """Instagram per-share tokens are already gone from normalize_url, so sanitize_url
+    inherits that instead of chasing each new token name (stkn, igsh, igsi, ...)."""
+    assert (
+        sanitize_url("https://www.instagram.com/reel/DcEXXKGiIQ2/?stkn=MTF4bDlxNnpyaGl6Zg==")
+        == "https://instagram.com/reel/DcEXXKGiIQ2"
+    )
 
 
 def test_instagram_img_index_still_distinguishes_carousel_slides():

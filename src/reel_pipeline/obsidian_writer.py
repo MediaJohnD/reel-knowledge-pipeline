@@ -22,6 +22,7 @@ import yaml
 
 from reel_pipeline.config import Settings
 from reel_pipeline.models import ContentItem
+from reel_pipeline.validators import sanitize_url
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
@@ -83,7 +84,10 @@ def note_path(settings: Settings, content_id: str, title: str) -> Path:
 def _render_frontmatter(item: ContentItem) -> str:
     frontmatter = {
         "title": item.enrichment.title,
-        "source_url": item.source_url,
+        # Sanitized here rather than at the ContentItem call site so every caller of
+        # write_note is covered: the vault is git-committed and pushed nightly, so a
+        # share/auth token in a source_url leaves the machine.
+        "source_url": sanitize_url(item.source_url),
         "content_id": item.content_id,
         "created_at": item.created_at.isoformat(),
         "tags": item.enrichment.tags,
