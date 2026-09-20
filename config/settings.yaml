@@ -243,6 +243,11 @@ text_capture:
 webhook:
   host: 127.0.0.1
   port: 8787
+  # serve-webhook waits this long for `host` to become bindable before giving
+  # up. Only bites when host is an address assigned late in boot (a Tailscale
+  # IP), which uvicorn would otherwise treat as fatal ~2s in. 0 disables the
+  # wait and restores fail-fast behaviour.
+  bind_retry_seconds: 300
 
 # Automatic disk/log housekeeping - runs at the top of every run_once() (so it
 # fires on every webhook hit / queue check, no separate cron job needed). Set

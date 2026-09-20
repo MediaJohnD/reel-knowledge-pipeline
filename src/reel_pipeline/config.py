@@ -180,6 +180,11 @@ class TextCaptureConfig(BaseModel):
 class WebhookConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8787
+    # How long serve-webhook waits for `host` to become bindable before giving
+    # up. Only matters when host is an address that appears late in boot - a
+    # Tailscale IP here - where uvicorn would otherwise exit within ~2s of
+    # losing the race. Set to 0 to disable waiting and fail immediately.
+    bind_retry_seconds: int = 300
 
 
 class MaintenanceConfig(BaseModel):
@@ -415,6 +420,7 @@ _ENV_OVERRIDES: dict[str, tuple[str, ...]] = {
     "REEL_TRANSCRIPTION_BACKEND": ("transcription", "backend"),
     "REEL_WEBHOOK_HOST": ("webhook", "host"),
     "REEL_WEBHOOK_PORT": ("webhook", "port"),
+    "REEL_WEBHOOK_BIND_RETRY_SECONDS": ("webhook", "bind_retry_seconds"),
     "REEL_LLM_PROVIDER": ("llm", "provider"),
     "REEL_OLLAMA_HOST": ("llm", "ollama_host"),
     "REEL_LOG_LEVEL": ("log_level",),
