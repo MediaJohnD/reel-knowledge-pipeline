@@ -123,13 +123,13 @@ class SkillWriterConfig(BaseModel):
 
 class ImageDescriptionConfig(BaseModel):
     # Must be a vision-capable model - e.g. an Ollama model tagged "vision" in
-    # `ollama list` (mistral-small3.1, llava, qwen2-vl, ...), any current
+    # `ollama list` (gemma4:12b, mistral-small3.1, llava, ...), any current
     # Claude model (all support image input) when provider is "anthropic", any
     # current Gemini model (all are natively multimodal) when "gemini", or a
     # Groq model whose input_modalities includes "image" (check GET
     # /openai/v1/models - most Groq text models do NOT support images) when
     # "groq".
-    model: str = "mistral-small3.1"
+    model: str = "gemma4:12b"
     max_tokens: int = 1024
     # Vision works on "ollama", "anthropic", "gemini", or "groq"
     # (describe_images() in llm_client.py) - some providers have no vision path wired

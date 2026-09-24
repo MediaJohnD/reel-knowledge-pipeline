@@ -993,6 +993,10 @@ def _call_ollama_vision(
                 "prompt": combined_prompt,
                 "images": [_encode_image_b64(path) for path in image_paths],
                 "stream": False,
+                # Thinking models (gemma4) otherwise spend the whole num_predict
+                # budget on hidden reasoning and return an empty response -
+                # measured 2026-09-24. Non-thinking models accept and ignore it.
+                "think": False,
                 "options": {"num_predict": max_tokens, "num_ctx": settings.llm.ollama_num_ctx},
             },
         )

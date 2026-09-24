@@ -269,6 +269,8 @@ def test_describe_handles_multiple_carousel_images(tmp_path):
     assert result.text == "carousel description"
     sent_payload = json.loads(route.calls[0].request.content)
     assert len(sent_payload["images"]) == 3
+    # thinking models otherwise burn num_predict on hidden reasoning and return ""
+    assert sent_payload["think"] is False
 
 
 def _carousel(tmp_path, count: int) -> list:
