@@ -25,3 +25,6 @@ data/notes/*
 !data/notes/.gitkeep
 data/generated_skills/*
 !data/generated_skills/.gitkeep
+data/review/*
+backups/
+*.bak-*

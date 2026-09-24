@@ -13,6 +13,8 @@ alternative to scraping platforms like Instagram directly.
 from __future__ import annotations
 
 import hmac
+import subprocess
+import sys
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -173,6 +175,46 @@ def _run_worker_in_background(settings: Settings) -> None:
                 break
     finally:
         _worker_lock.release()
+    _run_post_ingest_in_background(settings)
+
+
+# After ingest, run the rest of the nightly chain (review, then vault organize) so a
+# reel/YouTube/link sent during the day is researched and reviewed within minutes, not at
+# 02:15. Same order as the nightly tasks. Single-flight like the worker: a request that
+# lands mid-run sets a flag and the loop runs one more pass. Review needs the
+# run_once lock free, so this only starts after the worker lock is released.
+_post_lock = threading.Lock()
+_post_rerun = threading.Event()
+_POST_STEPS = (
+    ("review", ["scripts/review_new_reels.py", "--apply", "--limit", "10"]),
+    ("organize-vault", ["-m", "reel_pipeline.cli", "organize-vault"]),
+)
+
+
+def _run_post_ingest_in_background(settings: Settings) -> None:
+    if not _post_lock.acquire(blocking=False):
+        _post_rerun.set()
+        return
+    try:
+        while True:
+            _post_rerun.clear()
+            for name, args in _POST_STEPS:
+                try:
+                    proc = subprocess.run(  # noqa: S603 - fixed argv, no user input
+                        [sys.executable, *args],
+                        cwd=settings.project_root,
+                        capture_output=True,
+                        text=True,
+                        timeout=1800,
+                        check=False,
+                    )
+                    log_context(logger, 20 if proc.returncode == 0 else 40, "post-ingest step done", step=name, rc=proc.returncode, tail=(proc.stdout or proc.stderr)[-300:])
+                except Exception as exc:  # noqa: BLE001 - background task must never crash the server
+                    log_context(logger, 40, "post-ingest step failed", step=name, error=str(exc))
+            if not _post_rerun.is_set():
+                break
+    finally:
+        _post_lock.release()
 
 
 def _code_version(project_root: Path) -> str:

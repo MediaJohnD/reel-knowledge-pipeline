@@ -19,6 +19,9 @@ if !organize_rc! NEQ 0 (
   echo Vault organize failed with exit code !organize_rc! >> !logfile!
 )
 
+REM Ledger drift check (never aborts the batch; its result is not organize's).
+uv run python scripts\reconcile_ledger.py --apply >> !logfile! 2>&1
+
 REM Snapshot the vault to git whether or not the organize pass succeeded: the
 REM day's notes are written by the worker, not by organize, so a failed organize
 REM is the case where having a commit matters most. The task's exit code still
