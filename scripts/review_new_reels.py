@@ -734,7 +734,11 @@ def validate(j, names):
             "(not comment/like/follow/watch the reel)"
         )
     toks = {t for n in names for t in tokens(n.split("/")[-1])}
-    if toks and j["verdict"] in ("try-now", "later") and not any(t in j["first_step"].lower() for t in toks):
+    if (
+        toks
+        and j["verdict"] in ("try-now", "later")
+        and not any(t in j["first_step"].lower() for t in toks)
+    ):
         return f"first_step must name the tool or repo (one of {sorted(names)})"
     return None
 
@@ -1246,8 +1250,13 @@ def self_check():
         "confidence": "medium",
     }
     assert validate(dict(good), ["foo-cli"]) is None
-    assert validate(dict(good, verdict="skip", first_step="Nothing to do; no tool here"), ["foo-cli"]) is None
-    assert validate(dict(good, verdict="skip", first_step="Watch the video again"), ["foo-cli"]) and validate(dict(good, verdict="try-now", first_step="Nothing to do"), ["foo-cli"])
+    assert (
+        validate(dict(good, verdict="skip", first_step="Nothing to do; no tool here"), ["foo-cli"])
+        is None
+    )
+    assert validate(
+        dict(good, verdict="skip", first_step="Watch the video again"), ["foo-cli"]
+    ) and validate(dict(good, verdict="try-now", first_step="Nothing to do"), ["foo-cli"])
     assert validate(dict(good, first_step="Comment on the Instagram reel"), ["foo-cli"])
     assert validate(dict(good, first_step="Watch the video again"), []) and validate(
         dict(good, first_step="Install something else"), ["foo-cli"]
