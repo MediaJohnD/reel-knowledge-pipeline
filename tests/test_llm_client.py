@@ -203,28 +203,6 @@ def test_call_llm_groq_truncated_reasoning_raises_instead_of_leaking_fragment(tm
             call_llm(settings, "prompt text", model="qwen/qwen3.6-27b", max_tokens=50)
 
 
-def test_call_llm_dispatches_to_cerebras(tmp_path):
-    settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="cerebras"))
-    settings.cerebras_api_key = "csk-test"
-
-    with respx.mock:
-        respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
-            return_value=httpx.Response(
-                200, json={"choices": [{"message": {"content": "hello from cerebras"}}]}
-            )
-        )
-        result = call_llm(settings, "prompt text", model="gpt-oss-120b", max_tokens=100)
-
-    assert result == "hello from cerebras"
-
-
-def test_call_llm_cerebras_requires_api_key(tmp_path):
-    settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="cerebras"))
-
-    with pytest.raises(RuntimeError, match="CEREBRAS_API_KEY"):
-        call_llm(settings, "prompt text", model="gpt-oss-120b", max_tokens=100)
-
-
 def test_gemini_key_goes_in_a_header_and_never_into_an_error_message(tmp_path):
     """A ?key= query param leaks into httpx's HTTPStatusError message, which
     this module wraps into LlmCallError -> record.error ->
@@ -404,13 +382,13 @@ def test_rate_limit_wait_backs_off_without_a_usable_retry_after():
 def test_call_llm_retries_a_429_and_succeeds(tmp_path, monkeypatch):
     settings = Settings(
         project_root=tmp_path,
-        llm=LlmConfig(provider="cerebras", min_interval_seconds={"cerebras": 0.0}),
+        llm=LlmConfig(provider="groq", min_interval_seconds={"groq": 0.0}),
     )
-    settings.cerebras_api_key = "csk-test"
+    settings.groq_api_key = "gsk-test"
     monkeypatch.setattr("reel_pipeline.llm_client.time.sleep", lambda _seconds: None)
 
     with respx.mock:
-        route = respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
+        route = respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
             side_effect=[
                 httpx.Response(429, headers={"retry-after": "1"}),
                 httpx.Response(200, json={"choices": [{"message": {"content": "recovered"}}]}),
@@ -425,13 +403,13 @@ def test_call_llm_retries_a_429_and_succeeds(tmp_path, monkeypatch):
 def test_call_llm_gives_up_on_a_persistent_429(tmp_path, monkeypatch):
     settings = Settings(
         project_root=tmp_path,
-        llm=LlmConfig(provider="cerebras", min_interval_seconds={"cerebras": 0.0}),
+        llm=LlmConfig(provider="groq", min_interval_seconds={"groq": 0.0}),
     )
-    settings.cerebras_api_key = "csk-test"
+    settings.groq_api_key = "gsk-test"
     monkeypatch.setattr("reel_pipeline.llm_client.time.sleep", lambda _seconds: None)
 
     with respx.mock:
-        route = respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
+        route = respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
             return_value=httpx.Response(429)
         )
         with pytest.raises(LlmCallError, match="429"):
@@ -446,14 +424,14 @@ def test_call_llm_does_not_sleep_out_a_quota_length_retry_after(tmp_path, monkey
     """
     settings = Settings(
         project_root=tmp_path,
-        llm=LlmConfig(provider="cerebras", min_interval_seconds={"cerebras": 0.0}),
+        llm=LlmConfig(provider="groq", min_interval_seconds={"groq": 0.0}),
     )
-    settings.cerebras_api_key = "csk-test"
+    settings.groq_api_key = "gsk-test"
     slept: list[float] = []
     monkeypatch.setattr("reel_pipeline.llm_client.time.sleep", slept.append)
 
     with respx.mock:
-        route = respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
+        route = respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
             return_value=httpx.Response(429, headers={"retry-after": "3600"})
         )
         with pytest.raises(LlmCallError, match="429"):
@@ -465,7 +443,7 @@ def test_call_llm_does_not_sleep_out_a_quota_length_retry_after(tmp_path, monkey
 
 def test_provider_402_is_flagged_as_an_account_level_error(tmp_path):
     """A 402 says the account is out of credit, not that this prompt is bad -
-    the 2026-08-16 Cerebras outage. Callers need to tell the two apart, so the
+    a dead-provider outage. Callers need to tell the two apart, so the
     status code has to survive the wrap into LlmCallError.
     """
     settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="groq"))
@@ -648,7 +626,7 @@ def test_account_level_and_server_errors_are_not_terminal(tmp_path):
 
 
 def test_call_llm_waterfall_falls_through_a_dead_provider(tmp_path):
-    """A 402 (dead Cerebras key) on the first step must not fail the call -
+    """A 402 (dead OpenRouter key) on the first step must not fail the call -
     the next step in text_waterfall should serve it instead.
     """
     settings = Settings(
@@ -656,16 +634,16 @@ def test_call_llm_waterfall_falls_through_a_dead_provider(tmp_path):
         llm=LlmConfig(
             provider="groq",
             text_waterfall=[
-                WaterfallStep(provider="cerebras", model="gpt-oss-120b"),
+                WaterfallStep(provider="openrouter", model="openai/gpt-oss-120b:free"),
                 WaterfallStep(provider="groq", model="openai/gpt-oss-120b"),
             ],
         ),
     )
-    settings.cerebras_api_key = "dead-key"
+    settings.openrouter_api_key = "dead-key"
     settings.groq_api_key = "gsk-test"
 
     with respx.mock:
-        respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
+        respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
             return_value=httpx.Response(402, json={"error": "Payment Required"})
         )
         respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
@@ -684,16 +662,16 @@ def test_call_llm_waterfall_raises_last_error_when_every_step_fails(tmp_path):
         llm=LlmConfig(
             provider="groq",
             text_waterfall=[
-                WaterfallStep(provider="cerebras", model="gpt-oss-120b"),
+                WaterfallStep(provider="openrouter", model="openai/gpt-oss-120b:free"),
                 WaterfallStep(provider="groq", model="openai/gpt-oss-120b"),
             ],
         ),
     )
-    settings.cerebras_api_key = "dead-key"
+    settings.openrouter_api_key = "dead-key"
     settings.groq_api_key = "gsk-test"
 
     with respx.mock:
-        respx.post("https://api.cerebras.ai/v1/chat/completions").mock(
+        respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
             return_value=httpx.Response(402, json={"error": "Payment Required"})
         )
         respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
@@ -702,7 +680,7 @@ def test_call_llm_waterfall_raises_last_error_when_every_step_fails(tmp_path):
         with pytest.raises(LlmCallError) as excinfo:
             call_llm(settings, "prompt text", model="ignored", max_tokens=100)
 
-    # last() step's error is the one surfaced - Groq's 429, not Cerebras' 402.
+    # last() step's error is the one surfaced - Groq's 429, not OpenRouter's 402.
     assert excinfo.value.status_code == 429
 
 

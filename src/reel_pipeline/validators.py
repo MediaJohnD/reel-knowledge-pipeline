@@ -39,6 +39,18 @@ _STRIP_QUERY_PARAMS = {
     "mc_cid",
     "mc_eid",
     "is",
+    # Paid-ad click/creative ids (Meta, LinkedIn, Shopify-style storefronts). Same root
+    # cause as fbclid: rayneo.com/pages/rayneo-io-ai-glasses reached via two different ad
+    # creatives minted two content_ids and two notes for one page.
+    "ad_id",
+    "campaign_id",
+    "utm_id",
+    "dm_ad",
+    "dm_cam",
+    "dm_grp",
+    "dm_net",
+    "li_fat_id",
+    "rcm",
 }
 
 # Query params that carry a credential or per-share token. Only sanitize_url() drops

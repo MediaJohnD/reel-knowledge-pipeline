@@ -386,7 +386,7 @@ class WorkerPipeline:
                 # equally true of every queued item and says nothing about this
                 # URL. Charging it an attempt walks healthy items to
                 # FAILED_PERMANENT for someone else's billing problem - exactly
-                # what cost 22 items during the 2026-08-16 Cerebras 402 outage.
+                # what cost 22 items during the 2026-08-16 402 outage.
                 # Leave attempt_count alone, retry on the shortest backoff step,
                 # and let run_once() stop the pass rather than burn the queue.
                 self._provider_outage = new_error

@@ -9,16 +9,6 @@ Dispatches by settings.llm.provider:
   (`ollama pull <model>`).
 - "groq": Groq's OpenAI-compatible chat completions API (requires GROQ_API_KEY).
 - "gemini": Google's Gemini generateContent API (requires GEMINI_API_KEY).
-- "cerebras": Cerebras' OpenAI-compatible chat completions API (requires
-  CEREBRAS_API_KEY). No longer free as of 2026-08-17 - Cerebras retired its
-  no-card free tier; every account now needs a verified payment method before
-  any access (even the "$5 free credit" is card-gated, 30-day expiry). Not
-  in llm.text_waterfall/vision_waterfall for that reason - only usable by
-  setting llm.provider: cerebras directly, with a funded account. Still
-  non-Chinese-operated infra when it is used (see CLAUDE.md's Chinese
-  provider blocklist) - stick to non-Chinese-origin models (e.g. gpt-oss-120b)
-  on this provider for the same reason. See project memory
-  (project_llm_waterfall) for the 2026-08-26 sunset verification.
 - "openrouter": OpenRouter's OpenAI-compatible chat completions API (requires
   OPENROUTER_API_KEY). Use a ":free"-suffixed model id for the free tier
   (50 req/day, no credit card).
@@ -61,7 +51,6 @@ from reel_pipeline.config import MissingLlmCredentialError, Settings, WaterfallS
 _ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
 _GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
-_CEREBRAS_ENDPOINT = "https://api.cerebras.ai/v1/chat/completions"
 _OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 _MISTRAL_ENDPOINT = "https://api.mistral.ai/v1/chat/completions"
 _GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -80,7 +69,7 @@ _THINK_CLOSE_TAG = "</think>"
 # pass processing many items back-to-back can't burst past a hosted
 # provider's rate limit. Process-local only: separate worker/webhook
 # processes don't share it, but within one run_once() call (the actual
-# source of the 2026-08-12 Cerebras 429s) it's exactly what's needed.
+# source of the 2026-08-12 429s) it's exactly what's needed.
 _last_call_at: dict[str, float] = {}
 
 # A 429 on a non-final waterfall rung should immediately try its fallback rather
@@ -181,7 +170,7 @@ def _post_json(client: httpx.Client, url: str, **kwargs: Any) -> dict:
     """POST and return the parsed JSON body, retrying 429s in place.
 
     Without this, one 429 failed the whole item and pushed it into the retry
-    backlog to be picked up a day later (the recurring ~2/day Cerebras entries
+    backlog to be picked up a day later (the recurring ~2/day 429 entries
     in needs-attention.txt through 2026-08-14). Those were isolated single
     requests, not bursts - _throttle() already spaces bursts out - so retrying
     the request is the only thing that clears them.
@@ -260,7 +249,7 @@ class LlmCallError(RuntimeError):
     as a response, and is None otherwise (connection failures, and the
     empty-text errors raised after a successful 200). It exists so callers can
     tell "this account is dead" from "this item is bad" - the distinction the
-    2026-08-16 Cerebras 402 outage needed and did not have, which walked 22
+    2026-08-16 402 outage needed and did not have, which walked 22
     perfectly good URLs to FAILED_PERMANENT.
     """
 
@@ -518,50 +507,6 @@ def _call_groq_vision(
     return text
 
 
-def _call_cerebras(
-    settings: Settings,
-    prompt: str,
-    *,
-    model: str,
-    max_tokens: int,
-    json_mode: bool = False,
-    client: httpx.Client | None = None,
-) -> str:
-    api_key = settings.require_cerebras_api_key()
-    owned_client = client or httpx.Client(timeout=120.0)
-    owns_client = client is None
-    body: dict = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    if json_mode:
-        body["response_format"] = {"type": "json_object"}
-    try:
-        payload = _post_json(
-            owned_client,
-            _CEREBRAS_ENDPOINT,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "content-type": "application/json",
-            },
-            json=body,
-        )
-    except httpx.HTTPError as exc:
-        raise LlmCallError(
-            f"Cerebras API request failed: {exc}", status_code=_http_status(exc)
-        ) from exc
-    finally:
-        if owns_client:
-            owned_client.close()
-
-    choices = payload.get("choices", [])
-    text = choices[0].get("message", {}).get("content", "") if choices else ""
-    if not text:
-        raise LlmCallError(f"Cerebras API response had no text content: {payload!r}")
-    return text
-
-
 def _call_openrouter(
     settings: Settings,
     prompt: str,
@@ -572,7 +517,7 @@ def _call_openrouter(
     client: httpx.Client | None = None,
 ) -> str:
     """OpenRouter's chat completions API is OpenAI-compatible, same shape as
-    Groq/Cerebras. Free-tier models carry a ":free" suffix in their model id
+    Groq. Free-tier models carry a ":free" suffix in their model id
     (e.g. "meta-llama/llama-3.3-70b-instruct:free") - pick one via
     llm.text_waterfall, this function doesn't enforce the suffix.
     """
@@ -852,15 +797,6 @@ def _call_text_provider(
             json_mode=json_mode,
             client=client,
         )
-    if provider == "cerebras":
-        return _call_cerebras(
-            settings,
-            combined,
-            model=model,
-            max_tokens=max_tokens,
-            json_mode=json_mode,
-            client=client,
-        )
     if provider == "openrouter":
         return _call_openrouter(
             settings,
@@ -888,7 +824,6 @@ def _require_provider_credential(settings: Settings, provider: str) -> None:
         "anthropic": settings.require_anthropic_api_key,
         "groq": settings.require_groq_api_key,
         "gemini": settings.require_gemini_api_key,
-        "cerebras": settings.require_cerebras_api_key,
         "openrouter": settings.require_openrouter_api_key,
         "mistral": settings.require_mistral_api_key,
     }
@@ -907,7 +842,7 @@ def call_llm(
     static_prefix: str = "",
     client: httpx.Client | None = None,
 ) -> str:
-    """json_mode requests provider-native JSON-only output (Groq's, Cerebras',
+    """json_mode requests provider-native JSON-only output (Groq's,
     OpenRouter's, and Mistral's response_format, Gemini's response_mime_type)
     instead of relying solely on enricher._extract_json's best-effort
     fenced-JSON parsing. Only meaningful for those hosted providers; ignored
@@ -919,7 +854,7 @@ def call_llm(
     as a separate cache_control-annotated system block (explicit prompt
     caching - see _call_claude). Every other provider gets it prepended to the
     prompt text instead, since their prefix-caching (automatic for Groq and
-    Gemini, none for Ollama/Cerebras/OpenRouter/Mistral) only pays off if the
+    Gemini, none for Ollama/OpenRouter/Mistral) only pays off if the
     shared text is a literal prefix of the request.
 
     settings.llm.text_waterfall, when non-empty, overrides both the `provider`
@@ -1141,7 +1076,6 @@ def _call_vision_provider(
     """Single-provider vision dispatch, shared by describe_images()'s
     no-waterfall path and its waterfall loop below. Only "ollama", "anthropic",
     "gemini", "groq", "mistral", and "openrouter" support vision here -
-    Cerebras has no vision path.
     """
     if provider == "ollama":
         return _call_ollama_vision(
@@ -1221,7 +1155,7 @@ def describe_images(
     provider: str | None = None,
 ) -> str:
     """provider overrides settings.llm.provider for this call when no
-    vision_waterfall is configured - callers whose text provider is cerebras
+    vision_waterfall is configured - callers whose text provider lacks vision
     pass settings.image_description.provider (or default to "ollama") instead
     of falling through to the text provider.
 

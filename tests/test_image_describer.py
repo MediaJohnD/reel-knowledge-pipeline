@@ -53,12 +53,12 @@ def test_describe_calls_ollama_vision_and_returns_transcript(tmp_path):
 def test_describe_uses_image_description_provider_override_when_text_provider_lacks_vision(
     tmp_path,
 ):
-    # llm.provider="cerebras" has no vision path (see llm_client.describe_images) -
+    # an image_description.provider override must win over llm.provider -
     # image_description.provider="ollama" must override it rather than the call
-    # falling through to cerebras and erroring on every photo/carousel post.
+    # the call must not fall through to the text provider on photo/carousel posts.
     settings = make_settings(
         tmp_path,
-        llm=LlmConfig(provider="cerebras", ollama_host="http://localhost:11434"),
+        llm=LlmConfig(provider="groq", ollama_host="http://localhost:11434"),
         image_description=ImageDescriptionConfig(model="mistral-small3.1", provider="ollama"),
     )
     image_path = tmp_path / "post_1.jpg"
