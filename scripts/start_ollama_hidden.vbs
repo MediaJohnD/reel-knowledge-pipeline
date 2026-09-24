@@ -26,6 +26,11 @@ WshShell.CurrentDirectory = "C:\Users\media\Reel Knowledge Pipeline"
 
 logPath = "data\logs\ollama_stdout.log"
 maxBytes = 5000000
+' A still-running Ollama (e.g. a manual task restart) holds this log open, so the
+' move fails - and an unhandled error in a hidden wscript blocks forever on an
+' invisible dialog, stalling the webhook action queued behind it (seen 2026-09-24).
+' Skip rotation this time; it happens on the next start with the log free.
+On Error Resume Next
 If fso.FileExists(logPath) Then
     If fso.GetFile(logPath).Size > maxBytes Then
         oldPath = logPath & ".1"
@@ -33,6 +38,7 @@ If fso.FileExists(logPath) Then
         fso.MoveFile logPath, oldPath
     End If
 End If
+On Error Goto 0
 
 WshShell.Environment("Process")("OLLAMA_HOST") = "127.0.0.1:11435"
 WshShell.Run "cmd /c ""C:\Users\media\AppData\Local\Programs\Ollama\ollama.exe"" serve >> data\logs\ollama_stdout.log 2>&1", 0, False
