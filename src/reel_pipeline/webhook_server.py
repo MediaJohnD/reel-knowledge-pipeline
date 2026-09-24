@@ -208,7 +208,14 @@ def _run_post_ingest_in_background(settings: Settings) -> None:
                         timeout=1800,
                         check=False,
                     )
-                    log_context(logger, 20 if proc.returncode == 0 else 40, "post-ingest step done", step=name, rc=proc.returncode, tail=(proc.stdout or proc.stderr)[-300:])
+                    log_context(
+                        logger,
+                        20 if proc.returncode == 0 else 40,
+                        "post-ingest step done",
+                        step=name,
+                        rc=proc.returncode,
+                        tail=(proc.stdout or proc.stderr)[-300:],
+                    )
                 except Exception as exc:  # noqa: BLE001 - background task must never crash the server
                     log_context(logger, 40, "post-ingest step failed", step=name, error=str(exc))
             if not _post_rerun.is_set():

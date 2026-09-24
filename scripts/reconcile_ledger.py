@@ -4,6 +4,7 @@ Done records whose note_path is missing: if exactly one vault file has the same
 basename, repoint note_path there (via QueueManager's locked mutate_state);
 otherwise append a line to data/inbox/needs-attention.txt. Never raises out.
 """
+
 import sys
 from pathlib import Path
 
@@ -29,12 +30,18 @@ def plan(records, vault_files):
 
 def self_check():
     import tempfile
+
     with tempfile.TemporaryDirectory() as t:
-        a = Path(t, "a.md"); a.write_text("x")
-        b = Path(t, "sub"); b.mkdir(); (b / "b.md").write_text("x")
-        m, l = plan({"1": str(a), "2": str(Path(t, "old", "b.md")), "3": str(Path(t, "gone.md"))},
-                    [a, b / "b.md"])
-        assert m == {"2": str(b / "b.md")} and l == ["3"], (m, l)
+        a = Path(t, "a.md")
+        a.write_text("x")
+        b = Path(t, "sub")
+        b.mkdir()
+        (b / "b.md").write_text("x")
+        m, lost = plan(
+            {"1": str(a), "2": str(Path(t, "old", "b.md")), "3": str(Path(t, "gone.md"))},
+            [a, b / "b.md"],
+        )
+        assert m == {"2": str(b / "b.md")} and lost == ["3"], (m, lost)
     print("self-check ok")
 
 
@@ -50,27 +57,38 @@ def main(argv):
     qm = QueueManager(s)
     vault_files = list(Path(s.vault_dir).rglob("*.md"))
     # vault_dir is the Reels subfolder; moved notes may sit elsewhere in the vault.
-    vault_files += [f for f in Path(s.vault_dir).parents[1].rglob("*.md") if f not in set(vault_files)]
-    done = {c: (str(r.note_path) if r.note_path else None)
-            for c, r in qm.load_state().items() if str(r.status.value if hasattr(r.status, "value") else r.status) == "done"}
+    vault_files += [
+        f for f in Path(s.vault_dir).parents[1].rglob("*.md") if f not in set(vault_files)
+    ]
+    done = {
+        c: (str(r.note_path) if r.note_path else None)
+        for c, r in qm.load_state().items()
+        if str(r.status.value if hasattr(r.status, "value") else r.status) == "done"
+    }
     moves, lost = plan(done, vault_files)
     for c, p in moves.items():
         print(f"moved {c}: {done[c]} -> {p}")
     for c in lost:
         print(f"lost  {c}: {done[c]}")
-    print(f"done={len(done)} moved={len(moves)} lost={len(lost)} mode={'apply' if apply else 'dry-run'}")
+    mode = "apply" if apply else "dry-run"
+    print(f"done={len(done)} moved={len(moves)} lost={len(lost)} mode={mode}")
     if not apply:
         return
+
     def fix(state):
         for c, p in moves.items():
             state[c].note_path = type(state[c].note_path)(p) if state[c].note_path else p
+
     if moves:
         qm.mutate_state(fix)
     if lost:
         na = ROOT / "data" / "inbox" / "needs-attention.txt"
         old = na.read_text(encoding="utf-8") if na.exists() else ""
-        new = [f"ledger drift: done record {c} note missing: {done[c]}" for c in lost
-               if f"done record {c} note missing" not in old]
+        new = [
+            f"ledger drift: done record {c} note missing: {done[c]}"
+            for c in lost
+            if f"done record {c} note missing" not in old
+        ]
         if new:
             with na.open("a", encoding="utf-8") as f:
                 f.write("\n".join(new) + "\n")
