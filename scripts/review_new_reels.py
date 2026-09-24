@@ -27,7 +27,7 @@ import sys
 import tempfile
 from datetime import UTC, date, datetime
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "data" / "review" / "reviewed.json"
@@ -37,6 +37,7 @@ YTDLP = ROOT / ".venv" / "Scripts" / "yt-dlp.exe"
 CRAWL, SEARX, OLLAMA_MODEL = "http://127.0.0.1:11235", "http://127.0.0.1:8888", "qwen2.5:7b"
 VERDICTS = {"try-now", "later", "skip", "already-have"}
 LOGIN_WALLED = ("instagram.com", "facebook.com", "tiktok.com", "fb.watch")
+YT_DOMAINS = ("youtube.com", "youtu.be")
 URL_RE = re.compile(r"https?://[^\s<>)\]\"'`]+")
 GH_RE = re.compile(r"github\.com/([\w.-]+)/([\w.-]+)")
 OWNERS = {"mediajohnd"}  # vault owner's GitHub logins (lowercase); gh api user adds the live login
@@ -271,6 +272,12 @@ def tokens(name):
 
 def host_of(u):
     return re.sub(r"^https?://(www\.)?", "", u).split("/")[0].lower()
+
+
+def on_domain(u, domains):
+    """URL's real hostname is one of `domains` or a subdomain of one (not a substring match)."""
+    h = (urlsplit(u if "://" in u else f"https://{u}").hostname or "").lower()
+    return any(h == d or h.endswith(f".{d}") for d in domains)
 
 
 def phrase_in(text, name):
@@ -567,7 +574,7 @@ def research(settings, note_text, fm, key, have=()):
         set(),
     )  # desc_links: YouTube description links, must earn relevance
     for u in list(queue):
-        if "youtube.com" in u or "youtu.be" in u:
+        if on_domain(u, YT_DOMAINS):
             y = youtube(u)
             if y:
                 fetched.add(
@@ -603,12 +610,7 @@ def research(settings, note_text, fm, key, have=()):
             tool_repo[name] = f"{gh.group(1)}/{gh_name(gh.group(2))}"
             repos.append(tool_repo[name])
         site = next(
-            (
-                h
-                for h in hits
-                if not GH_RE.search(h[1])
-                and not any(d in h[1] for d in ("youtube.com", "youtu.be"))
-            ),
+            (h for h in hits if not GH_RE.search(h[1]) and not on_domain(h[1], YT_DOMAINS)),
             None,
         )
         if site:
@@ -649,12 +651,9 @@ def research(settings, note_text, fm, key, have=()):
     nsites, cap = 0, MAX_SITES + min(ytn, 15)
     for u, toks in [(u, None) for u in queue] + cands:
         host = host_of(u)
-        if (
-            "github.com" in host
-            or "youtube.com" in host
-            or "youtu.be" in host
-            or norm(u) in {norm(x["url"]) for x in ev["sites"]}
-        ):
+        if on_domain(u, ("github.com", *YT_DOMAINS)) or norm(u) in {
+            norm(x["url"]) for x in ev["sites"]
+        }:
             continue
         if any(host.endswith(d) for d in LOGIN_WALLED):
             ev["unchecked"].append(f"{u} (login-walled, not fetched)")
@@ -1185,6 +1184,12 @@ def now():
 
 def self_check():
     global MANIFEST
+    assert on_domain("https://www.youtube.com/watch?v=x", YT_DOMAINS)
+    assert on_domain("youtu.be/x", YT_DOMAINS)
+    assert on_domain("https://github.com/a/b", ["github.com"])
+    assert not on_domain("https://evil.com/?u=youtube.com", YT_DOMAINS)
+    assert not on_domain("https://github.com.evil.io/a", ["github.com"])
+    assert not on_domain("https://notyoutube.com/x", YT_DOMAINS)
     with tempfile.TemporaryDirectory() as t:
         MANIFEST = Path(t, "review", "reviewed.json")
         m = load_manifest()
