@@ -129,7 +129,7 @@ llm:
     - provider: openrouter
       model: google/gemma-4-31b-it:free
     - provider: ollama
-      model: mistral-small3.1
+      model: gemma4:12b
   # Ollama defaults to a 4096-token context regardless of the model's real
   # capacity; long transcripts or multi-image carousels can exceed that.
   ollama_num_ctx: 16384
@@ -170,11 +170,13 @@ skill_writer:
 # blocklist is about not sending data to Chinese *servers*, not about a model's
 # origin, and Groq self-hosts everything on US/EU/SA infrastructure - so it is a
 # real fallback, not a banned one. Ollama stays the default here simply because
-# it is local, free, and already working. mistral-small3.1 is served by the
+# it is local, free, and already working. gemma4:12b (replaced mistral-small3.1
+# 2026-09-24: fits fully on the 16GB GPU, ~3x faster, far fewer hallucinated
+# details in a blind-scored benchmark) is served by the
 # Ollama instance named in REEL_OLLAMA_HOST (port 11435 on this machine), not
 # the default 11434.
 image_description:
-  model: mistral-small3.1
+  model: gemma4:12b
   max_tokens: 1024
   provider: ollama
   # A carousel longer than this is described in several calls and the results

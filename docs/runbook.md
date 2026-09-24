@@ -59,9 +59,9 @@ automatically by `downloader.py` and routed to `image_describer.py` instead
 of `transcriber.py`. This requires a **vision-capable** model:
 
 - **Ollama**: `image_description.model` in `config/settings.yaml` (default
-  `mistral-small3.1`) must be a model tagged with vision support - check with
+  `gemma4:12b`) must be a model tagged with vision support - check with
   `ollama list` (look for `vision` in a model's capabilities) or pull one
-  (`ollama pull mistral-small3.1`, `llava`, `qwen2-vl`, etc.).
+  (`ollama pull gemma4:12b`, `mistral-small3.1`, `llava`, etc.).
 - **Claude**: any current model already supports image input, so no separate
   config is needed beyond `enrichment.model`/`skill_writer.model`.
 
