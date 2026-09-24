@@ -42,6 +42,7 @@ Calibration rules (apply before choosing try-now):
 - If the note is a technique or workflow that runs on Claude Code, the Claude API, Claude skills
   or MCP servers listed in ALREADY HAVE, and needs no new tool, the verdict is `already-have`.
 - Set `confidence: low` whenever evidence is indirect; low confidence can never be try-now.
+- A tool that proxies or routes the owner's prompts or data through third-party services (LLM routers, gateways, aggregators, free-tier pools) is `later` unless EVIDENCE shows how it handles data and provider terms; never `try-now` on the note's claims about free or unlimited usage.
 - If unsure between try-now and later, choose `later`. If unsure between later and skip, choose `skip` when the note is a promo, course, or lead magnet.
 
 When only the note's own claims support a point, say so in `risk` and choose `later` or
