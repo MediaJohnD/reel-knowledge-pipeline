@@ -12,7 +12,7 @@ Respond with **only** one JSON object (no fences) with exactly these keys:
 - `effort`: short phrase (e.g. "30 min", "1 day").
 - `cost`: short phrase (e.g. "free", "free tier, then $X/mo") - only what the evidence states.
 - `risk`: one sentence (security, ToS, maintenance, stale repo, unverified claims).
-- `first_step`: one concrete, safe action ON THE TOOL ITSELF, naming it (e.g. "Install X from <repo> and run <command>", "Read <docs page> and test <feature>"). Never a social action: no comment/like/follow/subscribe/watch/share of the reel, video, post or creator.
+- `first_step`: one concrete, safe action ON THE TOOL ITSELF, naming it (e.g. "Install X from <repo> and run <command>", "Read <docs page> and test <feature>"). Never a social action: no comment/like/follow/subscribe/watch/share of the reel, video, post or creator. For `skip` and `already-have`, use a short string such as "None - no actionable tool"; never null or empty.
 - `evidence`: array of URLs you relied on, copied exactly from `fetched_urls`. Any URL not in `fetched_urls` is discarded by code. Prefer github.com, package registries and official domains. Never cite a login page, an unrelated page, or the reel/video itself as proof of a claim.
   For install commands (npx/npm/pip/uv tool/cargo) name only packages you saw in EVIDENCE; code rejects packages missing from the registry. Prefer `gh repo clone owner/repo` or the README's own command.
 - `tools_used`: array (code overwrites it with the tools that really ran; give your best list).
