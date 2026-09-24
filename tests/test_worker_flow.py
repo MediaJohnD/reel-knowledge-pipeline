@@ -1201,7 +1201,7 @@ def test_run_once_does_not_warn_when_state_size_is_below_threshold(tmp_path, cap
 class LlmErrorEnricher:
     """Every enrichment call fails with a provider HTTP error.
 
-    Models the 2026-08-16 Cerebras outage: with status 402 the account is out
+    Models a provider outage: with status 402 the account is out
     of credit, which is true for every item equally and says nothing about any
     one URL.
     """
@@ -1213,7 +1213,7 @@ class LlmErrorEnricher:
     def enrich(self, transcript: TranscriptResult, source_url: str) -> EnrichmentResult:
         self.calls += 1
         raise LlmCallError(
-            f"Cerebras API request failed: Client error '{self.status_code}'",
+            f"Provider API request failed: Client error '{self.status_code}'",
             status_code=self.status_code,
         )
 

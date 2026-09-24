@@ -25,9 +25,9 @@ transcription:
   openai_model: whisper-1
 
 # LLM used for enrichment and skill generation. "groq" is free and far faster than
-# local Ollama inference - originally Cerebras (switched 2026-08-09 because
+# local Ollama inference (switched 2026-08-09 because
 # qwen3:14b enrichment on this machine's GPU was the pipeline's actual bottleneck),
-# moved to Groq 2026-08-20 after the Cerebras account began returning HTTP 402
+# moved to Groq 2026-08-20 after the previous hosted account began returning HTTP 402
 # Payment Required on every call from 2026-08-16, which burned 22 items down to
 # failed_permanent before it was caught.
 # Model is openai/gpt-oss-120b (OpenAI open-weight). Note the "Chinese provider"
@@ -35,13 +35,13 @@ transcription:
 # origin: Groq self-hosts every model it serves, so its Chinese-origin weights
 # (e.g. qwen/qwen3.6-27b) are allowed too. gpt-oss-120b is chosen here on merit.
 # NOTE: Groq requires the "openai/" prefix on the model id - a bare "gpt-oss-120b"
-# (the id Cerebras uses for the same weights) 404s on Groq. Verified live 2026-08-20.
+# (the id other hosts use for the same weights) 404s on Groq. Verified live 2026-08-20.
 # "ollama" runs fully locally (no API key, no cost, slower) against an
 # already-running Ollama instance with the model already pulled. Switch to
 # "anthropic" (set ANTHROPIC_API_KEY) for hosted Claude instead.
 llm:
-  provider: groq # anthropic | ollama | groq | gemini | cerebras | openrouter | mistral
-  ollama_host: http://localhost:11434
+  provider: groq # anthropic | ollama | groq | gemini | openrouter | mistral
+  ollama_host: http://127.0.0.1:11435
   # Text fallback chain, tried in order on any call failure (dead key, rate
   # limit, context overflow) - see call_llm()'s docstring in llm_client.py.
   # `provider` above and enrichment.model/skill_writer.model below are only
@@ -50,21 +50,11 @@ llm:
   #
   # Order and models per the 2026-08-25 multi-model waterfall research (see
   # project memory: project_llm_waterfall_expanded), re-verified 2026-08-26
-  # for Cerebras's free-tier status and for Qwen/Z.ai-family infra location.
+  # for free-tier status and for Qwen/Z.ai-family infra location.
   # Diversifies *within* a key, not just across keys: Groq gets two distinct
   # free models before falling through, same for Gemini, since each model has
   # its own separate free-tier quota - a rate-limited gpt-oss-120b still
   # leaves llama-3.3-70b's quota untouched on the same GROQ_API_KEY.
-  #
-  # Cerebras is deliberately ABSENT here, not an oversight: its no-card free
-  # tier fully sunset 2026-08-17 (confirmed against cerebras.ai's own pricing/
-  # billing docs, not just aggregators) - every account now requires a
-  # verified payment method before any access, free or paid, even the "$5
-  # free credit" is card-gated and expires in 30 days. That's not a rung an
-  # unattended pipeline can rely on, so it's out of the free-tier waterfall
-  # entirely (llm.provider above can still be set to "cerebras" manually if
-  # the owner later adds a funded payment method - that's a real, working
-  # provider, just not a *free* one anymore).
   #
   # Re-checked, still excluded (Qwen/Z.ai origin weights are explicitly
   # allowed by the owner when the SERVING infra is US/EU/Canada/Israel - these
@@ -105,6 +95,10 @@ llm:
       model: open-mistral-nemo
     - provider: openrouter
       model: nvidia/nemotron-3-super-120b-a12b:free
+    # Local unmetered last resort (verified live 2026-09-24 on :11435). Added
+    # because the chain previously had no Ollama rung at all.
+    - provider: ollama
+      model: qwen2.5:7b
   # Vision fallback chain for photo/carousel description (describe_images()).
   # Same 2026-08-25 research and the same China-infra exclusions apply.
   # Gemini Flash-Lite first (highest free RPD of the Gemini vision tiers,
@@ -123,7 +117,7 @@ llm:
     - provider: gemini
       model: gemini-2.5-flash
     - provider: groq
-      model: qwen/qwen3.6-27b
+      model: qwen/qwen3.8-27b
     - provider: mistral
       model: pixtral-12b-2409
     - provider: openrouter
@@ -136,19 +130,18 @@ llm:
   # Minimum seconds between consecutive calls to each provider - run_once()
   # has no natural pacing between items, so re-processing a backlog can fire
   # a dozen+ calls in under a minute and trip a hosted free-tier rate limit
-  # (happened against Cerebras on 2026-08-12). Ollama is local/unmetered, so
+  # (happened on 2026-08-12). Ollama is local/unmetered, so
   # it's unthrottled; the hosted providers all get a few seconds of spacing.
   min_interval_seconds:
     anthropic: 1.0
     ollama: 0.0
     groq: 2.0
     gemini: 6.0 # 10 RPM free tier
-    cerebras: 2.0
     openrouter: 2.0
     mistral: 30.0 # 2 RPM free tier - the binding limit for the vision fallback
 
 enrichment:
-  # Model name meaning depends on llm.provider above - a Cerebras/Groq model id
+  # Model name meaning depends on llm.provider above - a Groq model id
   # here, an Ollama model tag, an Anthropic model id, or a Gemini model id.
   model: openai/gpt-oss-120b
   max_tokens: 4096
@@ -245,6 +238,11 @@ text_capture:
 webhook:
   host: 127.0.0.1
   port: 8787
+  # serve-webhook waits this long for `host` to become bindable before giving
+  # up. Only bites when host is an address assigned late in boot (a Tailscale
+  # IP), which uvicorn would otherwise treat as fatal ~2s in. 0 disables the
+  # wait and restores fail-fast behaviour.
+  bind_retry_seconds: 300
 
 # Automatic disk/log housekeeping - runs at the top of every run_once() (so it
 # fires on every webhook hit / queue check, no separate cron job needed). Set
