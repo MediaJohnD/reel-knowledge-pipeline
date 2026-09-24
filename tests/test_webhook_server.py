@@ -199,6 +199,7 @@ def test_concurrent_background_triggers_never_run_worker_concurrently(tmp_path, 
             return FakeSummary()
 
     monkeypatch.setattr(webhook_server, "build_worker", lambda settings: FakeWorker())
+    monkeypatch.setattr(webhook_server, "_run_post_ingest_in_background", lambda settings: None)
 
     t1 = threading.Thread(target=webhook_server._run_worker_in_background, args=(settings,))
     t1.start()
@@ -210,6 +211,30 @@ def test_concurrent_background_triggers_never_run_worker_concurrently(tmp_path, 
 
     assert max_concurrent == 1  # never ran two run_once() calls at the same time
     assert run_count == 2  # but t2's trigger still caused a drain pass, not silently lost
+
+
+def test_post_ingest_runs_review_then_organize_and_survives_failure(tmp_path, monkeypatch):
+    """After ingest the review stage then vault organize run (not only at 02:15); a
+    failing step must not stop the next one or raise out of the background task."""
+    settings = make_settings(tmp_path)
+    calls = []
+
+    class Proc:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def fake_run(argv, **kw):
+        calls.append(argv[1:])
+        if "scripts/review_new_reels.py" in argv:
+            raise OSError("boom")
+        return Proc()
+
+    monkeypatch.setattr(webhook_server.subprocess, "run", fake_run)
+    webhook_server._run_post_ingest_in_background(settings)
+
+    assert calls[0][0] == "scripts/review_new_reels.py" and "--apply" in calls[0]
+    assert calls[1] == ["-m", "reel_pipeline.cli", "organize-vault"]
 
 
 def test_webhook_rejects_resubmission_of_a_failed_permanent_url(tmp_path, monkeypatch):

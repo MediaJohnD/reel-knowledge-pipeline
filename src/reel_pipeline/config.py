@@ -65,7 +65,7 @@ class WaterfallStep(BaseModel):
 
 
 class LlmConfig(BaseModel):
-    # "anthropic" | "ollama" | "groq" | "gemini" | "cerebras" | "openrouter" | "mistral"
+    # "anthropic" | "ollama" | "groq" | "gemini" | "openrouter" | "mistral"
     provider: str = "anthropic"
     ollama_host: str = "http://localhost:11434"
     # Ordered provider+model fallback chain for text calls (enrichment, skill
@@ -92,7 +92,7 @@ class LlmConfig(BaseModel):
     # Minimum seconds between consecutive calls to a given provider - worker.py
     # processes actionable items back-to-back with no natural pacing (a backlog
     # re-queue can fire a dozen+ LLM calls in under a minute), which is exactly
-    # what tripped a Cerebras 429 on 2026-08-12. Ollama is local with no vendor
+    # what tripped a hosted-provider 429 on 2026-08-12. Ollama is local with no vendor
     # rate limit, so it defaults to 0 (no throttling). Missing keys also default
     # to 0 via .get() in llm_client.py, not an error.
     min_interval_seconds: dict[str, float] = Field(
@@ -101,7 +101,6 @@ class LlmConfig(BaseModel):
             "ollama": 0.0,
             "groq": 2.0,
             "gemini": 6.0,
-            "cerebras": 2.0,
             "openrouter": 2.0,
             "mistral": 30.0,
         }
@@ -133,9 +132,9 @@ class ImageDescriptionConfig(BaseModel):
     model: str = "mistral-small3.1"
     max_tokens: int = 1024
     # Vision works on "ollama", "anthropic", "gemini", or "groq"
-    # (describe_images() in llm_client.py) - Cerebras has no vision path wired
+    # (describe_images() in llm_client.py) - some providers have no vision path wired
     # in here. Defaults to null, meaning "use llm.provider" - only set this
-    # when llm.provider is switched to something vision-incapable (cerebras)
+    # when llm.provider is switched to something vision-incapable (e.g. a text-only provider)
     # so image/carousel posts keep working on ollama instead of erroring.
     provider: str | None = None
     # Images per vision request. A carousel longer than this is split across
@@ -180,6 +179,11 @@ class TextCaptureConfig(BaseModel):
 class WebhookConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8787
+    # How long serve-webhook waits for `host` to become bindable before giving
+    # up. Only matters when host is an address that appears late in boot - a
+    # Tailscale IP here - where uvicorn would otherwise exit within ~2s of
+    # losing the race. Set to 0 to disable waiting and fail immediately.
+    bind_retry_seconds: int = 300
 
 
 class MaintenanceConfig(BaseModel):
@@ -243,7 +247,6 @@ class Settings(BaseModel):
     openai_api_key: str | None = None
     groq_api_key: str | None = None
     gemini_api_key: str | None = None
-    cerebras_api_key: str | None = None
     openrouter_api_key: str | None = None
     mistral_api_key: str | None = None
 
@@ -348,14 +351,6 @@ class Settings(BaseModel):
             )
         return self.gemini_api_key
 
-    def require_cerebras_api_key(self) -> str:
-        if not self.cerebras_api_key:
-            raise MissingLlmCredentialError(
-                "CEREBRAS_API_KEY is not set. Set it in your environment or .env "
-                "before running enrichment or skill generation with llm.provider: cerebras."
-            )
-        return self.cerebras_api_key
-
     def require_openrouter_api_key(self) -> str:
         if not self.openrouter_api_key:
             raise MissingLlmCredentialError(
@@ -415,6 +410,7 @@ _ENV_OVERRIDES: dict[str, tuple[str, ...]] = {
     "REEL_TRANSCRIPTION_BACKEND": ("transcription", "backend"),
     "REEL_WEBHOOK_HOST": ("webhook", "host"),
     "REEL_WEBHOOK_PORT": ("webhook", "port"),
+    "REEL_WEBHOOK_BIND_RETRY_SECONDS": ("webhook", "bind_retry_seconds"),
     "REEL_LLM_PROVIDER": ("llm", "provider"),
     "REEL_OLLAMA_HOST": ("llm", "ollama_host"),
     "REEL_LOG_LEVEL": ("log_level",),
@@ -480,7 +476,6 @@ def load_settings(
         openai_api_key=env.get("OPENAI_API_KEY") or None,
         groq_api_key=env.get("GROQ_API_KEY") or None,
         gemini_api_key=env.get("GEMINI_API_KEY") or None,
-        cerebras_api_key=env.get("CEREBRAS_API_KEY") or None,
         openrouter_api_key=env.get("OPENROUTER_API_KEY") or None,
         mistral_api_key=env.get("MISTRAL_API_KEY") or None,
         instagram_cookies_file=env.get("REEL_INSTAGRAM_COOKIES_FILE") or None,

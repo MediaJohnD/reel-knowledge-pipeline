@@ -89,6 +89,28 @@ def test_instagram_share_tokens_do_not_change_content_id():
     assert "stkn" not in normalize_url("https://instagram.com:443/p/abc/?stkn=x")
 
 
+def test_paid_ad_click_ids_do_not_change_content_id():
+    """Regression test: the same storefront page reached through two different Meta ad
+    creatives carried different ad_id/campaign_id/dm_*/utm_id values and was ingested as
+    two notes (rayneo-io-ai-glasses, 2026-09-18). Same root cause as fbclid above."""
+    page = "https://rayneo.com/pages/rayneo-io-ai-glasses"
+    creative_a = (
+        f"{page}?ad_id=1202555039891&campaign_id=1202554218066"
+        "&dm_ad=1202555039891&dm_cam=1202554218066&utm_id=1202554218066"
+    )
+    creative_b = (
+        f"{page}?ad_id=9999999999999&campaign_id=8888888888888"
+        "&dm_ad=9999999999999&dm_grp=7777777777777&dm_net=f&utm_id=8888888888888"
+    )
+
+    assert compute_content_id(creative_a) == compute_content_id(creative_b)
+    assert compute_content_id(creative_a) == compute_content_id(page)
+    # LinkedIn's first-party ad cookie id rides along on shared post links.
+    assert normalize_url("https://example.com/x?li_fat_id=abc&rcm=def") == normalize_url(
+        "https://example.com/x"
+    )
+
+
 def test_sanitize_url_drops_auth_tokens_without_changing_the_content_id():
     """Regression test: a ManyChat share link committed a live JWT (mcp_token) to the
     vault's git remote. The token has to survive normalize_url (content_id stability

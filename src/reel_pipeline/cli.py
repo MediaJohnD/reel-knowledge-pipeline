@@ -8,7 +8,11 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import errno
+import socket
 import sys
+import time
+from collections.abc import Callable
 
 import typer
 
@@ -17,6 +21,67 @@ from reel_pipeline.logging_setup import configure_logging, get_logger, resolve_l
 
 app = typer.Typer(help="Reel Knowledge Pipeline CLI", no_args_is_help=True)
 logger = get_logger(__name__)
+
+
+def _wait_for_bindable(
+    host: str,
+    port: int,
+    timeout: float,
+    poll_interval: float = 2.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Block until (host, port) is bindable, or re-raise the bind error at `timeout`.
+
+    uvicorn treats an address that doesn't exist *yet* as fatal: it logs
+    "could not bind on any address" and exits (code 3) about two seconds in.
+    This machine binds `REEL_WEBHOOK_HOST` to a Tailscale IP, and at logon the
+    Tailscale service may not have assigned it yet - so the server lost a race
+    with its own network stack and died. Seen 2026-09-10, and again 2026-09-20.
+
+    Recovery used to live entirely outside the process, in Task Scheduler's
+    restart-on-failure. That is not a safe thing to depend on here: it stopped
+    after two attempts on 2026-09-20 and left the server down for hours while
+    the address became bindable in between, and it cannot be audited on this
+    machine because the TaskScheduler/Operational log is disabled. Waiting
+    in-process turns a not-yet-assigned address into a slow start instead of a
+    failed one, and needs nothing external to be configured correctly.
+
+    Only EADDRNOTAVAIL is waited on - that specifically means "this address does
+    not exist on this host". Every other error, EADDRINUSE above all, returns
+    immediately so uvicorn still reports a genuinely occupied port the way it
+    always has. Set `timeout` to 0 to disable waiting entirely.
+
+    A probe bind is inherently advisory: the port could be taken in the moment
+    between this check and uvicorn's own bind. That is fine - uvicorn then fails
+    exactly as it does today.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.bind((host, port))
+            return
+        except OSError as exc:
+            if exc.errno != errno.EADDRNOTAVAIL:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.error(
+                    "bind address never became available",
+                    extra={"context": {"host": host, "port": port, "waited_seconds": timeout}},
+                )
+                raise
+            logger.warning(
+                "bind address not available yet, waiting",
+                extra={
+                    "context": {
+                        "host": host,
+                        "port": port,
+                        "seconds_remaining": round(remaining, 1),
+                    }
+                },
+            )
+            sleep(min(poll_interval, remaining))
 
 
 @app.command("run-once")
@@ -127,6 +192,14 @@ def serve_webhook() -> None:
         # Avoid noisy ERROR-level ConnectionResetError spam from ProactorEventLoop's
         # known ProactorBasePipeTransport._call_connection_lost bug on abrupt client disconnects.
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+    # Must precede uvicorn.run: uvicorn exits rather than waiting for a bind
+    # address that hasn't been assigned yet. See _wait_for_bindable.
+    _wait_for_bindable(
+        settings.webhook.host,
+        settings.webhook.port,
+        timeout=settings.webhook.bind_retry_seconds,
+    )
 
     fastapi_app = create_app(settings)
     uvicorn.run(fastapi_app, host=settings.webhook.host, port=settings.webhook.port)

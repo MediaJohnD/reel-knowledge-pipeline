@@ -114,6 +114,14 @@ the table's commands directly. No target does anything but run `uv` commands
 (`check` just runs six of them in order), so locally the `Makefile` only saves
 typing — CI is the one place that genuinely needs it.
 
+### Ledger drift check
+
+`scripts/reconcile_ledger.py` compares each done record's `note_path` with the vault. A note that
+was moved (unique basename match) is re-pointed in `state.json`; one that is missing everywhere is
+appended to `data/inbox/needs-attention.txt`. Dry-run by default (`--apply` writes, `--self-check`
+tests); `organize-vault.bat` runs it with `--apply` after the organize step. To re-run failed
+items: `uv run python -m reel_pipeline.cli retry --all-failed-permanent`, then `run-once`.
+
 ## Configuration
 
 Non-secret settings live in [`config/settings.yaml`](config/settings.yaml)
@@ -204,6 +212,11 @@ docs/                    architecture, runbook, acceptance tests
 The full policy this repository is built against — including the reasoning
 behind each platform decision — is documented in [`CLAUDE.md`](CLAUDE.md).
 
+## Reel review (auto)
+
+`scripts\review_new_reels.py` reviews every done Reel note not yet in `data\review\reviewed.json`: it researches URLs/repos/tools (gh, Context7 when a key works, crawl4ai, SearXNG, yt-dlp), condenses with local Ollama, gets a verdict from the free LLM waterfall, and appends a `## Review (auto, DATE)` section to the note plus a row in the vault's `20-Resources\comparisons\Reel Review Digest.md`. Scheduled daily 02:15 as task "Reel Review" (`run-review.bat`, log in `data\logs\review-*.log`); unchecked facts are labelled unchecked.
+
+On demand: `uv run python scripts\review_new_reels.py` (dry run) - add `--apply --limit 5`, or `--note <file.md>` for one note.
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup, the
