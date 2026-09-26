@@ -250,7 +250,9 @@ def comment_queue_login() -> None:
 @comment_queue_app.command("run")
 def comment_queue_run(
     apply: bool = typer.Option(False, "--apply", help="Really follow/comment. Default: dry-run."),
-    max_items: int = typer.Option(1, "--max", min=1, help="Reels to act on this run."),
+    max_items: int = typer.Option(
+        1, "--max", min=0, help="Reels to follow/comment this run. 0 = only check DMs."
+    ),
 ) -> None:
     """Work the comment queue within the rate limits. Exits 2 on a halt."""
     from filelock import FileLock, Timeout

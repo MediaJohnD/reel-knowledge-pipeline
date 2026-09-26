@@ -323,6 +323,27 @@ def test_dm_button_press_then_link() -> None:
     assert rec["links"] == ["https://x.dev"] and rec["status"] == cg.LINK_RECEIVED
 
 
+def test_dm_without_link_keeps_waiting_for_the_link() -> None:
+    # Live 2026-09-26: the bot's button doesn't render on the web, only its text.
+    page, q, clock = FakePage(), _queued(), Clock()
+    page.following = True
+    page.bot_reply = [Message("Click below and I'll send you the setup")]
+    _runner(page, q, clock=clock).run(max_items=1)
+    clock.sleep(600)
+    report = _runner(page, q, clock=clock).run(max_items=0)
+    rec = q["items"]["c1"]
+    assert rec["status"] == cg.COMMENTED and any("without a link" in x for x in report.lines)
+    page.thread = page.thread + [Message("https://github.com/s/g")]  # owner tapped it
+    _runner(page, q, clock=clock).run(max_items=0)
+    assert rec["status"] == cg.LINK_RECEIVED and rec["links"] == ["https://github.com/s/g"]
+
+
+def test_max_zero_only_checks_dms() -> None:
+    page, q = FakePage(), _queued()
+    _runner(page, q).run(max_items=0)
+    assert page.actions == [] and q["items"]["c1"]["status"] == cg.PENDING
+
+
 def test_dm_timeout_after_48h() -> None:
     page, q, clock = FakePage(), _queued(), Clock()
     page.following = True

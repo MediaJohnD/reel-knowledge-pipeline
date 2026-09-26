@@ -565,10 +565,19 @@ class Runner:
                 new = self._press_buttons(rec, new)
             links = extract_links([m.text for m in new], [h for m in new for h in m.hrefs])
             text = "\n".join(m.text for m in new if m.text.strip())
-            if links or text:
+            if links:
                 rec["links"], rec["dm_text"] = links, text
                 _set(rec, LINK_RECEIVED, self.now(), f"{len(links)} link(s)")
                 self.report.say(f"{cid}: DM from @{rec['creator']}: {len(links)} link(s)")
+            elif text and text != rec.get("dm_text"):
+                # Bot buttons ("Click below 👇") don't render on instagram.com: keep
+                # waiting and have the owner tap it in the app; the link comes next.
+                rec["dm_text"] = text
+                _event(rec, self.now(), "DM without a link yet")
+                self.report.say(
+                    f"{cid}: @{rec['creator']} replied without a link; tap its button "
+                    "in the Instagram app, the next run picks up the link"
+                )
             elif since > timedelta(hours=self.cfg.dm_timeout_hours):
                 _set(rec, DM_TIMEOUT, self.now())
                 self.report.say(f"{cid}: no DM after {self.cfg.dm_timeout_hours} h")
