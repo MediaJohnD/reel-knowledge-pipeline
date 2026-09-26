@@ -772,14 +772,38 @@ class IgBrowser:
         self._page.wait_for_timeout(self.settle_ms)
 
 
-def login(profile_dir: str, wait: Callable[[], object]) -> str | None:
+def login(
+    profile_dir: str,
+    wait: Callable[[], object],
+    say: Callable[[str], object] = print,
+    browser: Callable[[str], Any] = IgBrowser,
+    tries: int = 5,
+) -> str | None:
     """Open the login page in the dedicated profile; the owner logs in by hand.
-    Returns the handle the profile is logged in as afterwards."""
-    with IgBrowser(profile_dir) as b:
+    Returns the handle the profile is logged in as afterwards.
+
+    Never navigates while the window is off instagram.com: "Continue with
+    Facebook" runs its 2FA on facebook.com, and a goto there cuts it off."""
+    from playwright.sync_api import Error as PlaywrightError
+
+    with browser(profile_dir) as b:
         b.goto("https://www.instagram.com/accounts/login/")
-        wait()
-        b.goto("https://www.instagram.com/")
-        return b.owner_handle()
+        for _ in range(tries):
+            wait()
+            host = (urlparse(b.url()).hostname or "").lower()
+            if host == "instagram.com" or host.endswith(".instagram.com"):
+                try:
+                    b.goto("https://www.instagram.com/")
+                    if handle := b.owner_handle():
+                        return handle
+                except PlaywrightError:
+                    pass  # a login redirect raced our navigation; ask again
+            say(
+                "Not logged in yet. Finish every step in the Chrome window "
+                "(including any Facebook / 2FA check) until you see your Instagram feed, "
+                "then press Enter again."
+            )
+        return None
 
 
 # --------------------------------------------------------------------------- delivery

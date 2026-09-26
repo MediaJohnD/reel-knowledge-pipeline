@@ -323,3 +323,38 @@ def test_same_creator_is_held_back() -> None:
     assert q["items"]["c1"]["status"] == cg.COMMENTED
     assert q["items"]["c2"]["status"] == cg.PENDING
     assert page.actions == ["comment:SCRAPE"]
+
+
+class _LoginBrowser:
+    """Chrome sits on Facebook's 2FA page for the first Enter."""
+
+    def __init__(self, urls: list[str]):
+        self.urls, self.gotos = urls, []
+
+    def __call__(self, profile_dir: str) -> _LoginBrowser:
+        return self
+
+    def __enter__(self) -> _LoginBrowser:
+        return self
+
+    def __exit__(self, *a: object) -> None:
+        pass
+
+    def goto(self, url: str) -> None:
+        self.gotos.append(url)
+
+    def url(self) -> str:
+        return self.urls.pop(0)
+
+    def owner_handle(self) -> str:
+        return "mediajohnd"
+
+
+def test_login_never_navigates_away_from_facebook_2fa() -> None:
+    b = _LoginBrowser(
+        ["https://www.facebook.com/two_step_verification/two_factor/", "https://www.instagram.com/"]
+    )
+    said: list[str] = []
+    assert cg.login("p", lambda: None, said.append, b) == "mediajohnd"
+    assert len(said) == 1  # asked to finish 2FA once
+    assert b.gotos == ["https://www.instagram.com/accounts/login/", "https://www.instagram.com/"]

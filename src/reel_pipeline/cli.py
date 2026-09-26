@@ -234,7 +234,7 @@ def comment_queue_login() -> None:
 
     settings = _ig_settings()
     assert settings.ig_browser_profile and settings.ig_owner_handle
-    typer.echo("Log into Instagram in the Chrome window, then come back and press Enter.")
+    typer.echo("Log into Instagram in the Chrome window. When you see your feed, press Enter here.")
     try:
         handle = cg.login(settings.ig_browser_profile, lambda: input())
     except cg.BrowserSetupError as exc:
