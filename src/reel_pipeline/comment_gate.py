@@ -663,11 +663,16 @@ class IgBrowser:
         return [t for t in loc.all_inner_texts() if t.strip()]
 
     def owner_handle(self) -> str | None:
-        link = self._page.get_by_role("link", name="Profile", exact=True)
-        if link.count() == 0:
-            return None
-        m = _HANDLE_HREF.match(link.first.get_attribute("href") or "")
-        return m.group(1) if m else None
+        # The sidebar's own-profile link (there is no link named "Profile" as of
+        # 2026-09-26); feed authors' links all sit inside <main>.
+        hrefs = self._page.locator("a[href]").evaluate_all(
+            "els => els.filter(e => !e.closest('main')).map(e => e.getAttribute('href'))"
+        )
+        for href in hrefs:
+            m = _HANDLE_HREF.match(href or "")
+            if m and m.group(1).lower() not in _RESERVED:
+                return m.group(1)
+        return None
 
     def reel_info(self) -> tuple[str | None, str]:
         page = self._page
