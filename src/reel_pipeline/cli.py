@@ -294,5 +294,40 @@ def comment_queue_run(
         lock.release()
 
 
+@comment_queue_app.command("link")
+def comment_queue_link(
+    reel: str = typer.Argument(..., help="Queue item: content_id (or prefix) or reel shortcode."),
+    urls: list[str] = typer.Argument(..., help="Link(s) copied from the DM in the app."),  # noqa: B008
+) -> None:
+    """Hand over a DM link by hand. Bot link cards don't render on instagram.com."""
+    from filelock import FileLock
+
+    from reel_pipeline import comment_gate as cg
+
+    settings = get_settings()
+    path = cg.queue_path(settings)
+    with FileLock(str(path) + ".lock", timeout=0):
+        q = cg.load_queue(path)
+        hits = [
+            (cid, r) for cid, r in q["items"].items()
+            if cid.startswith(reel) or f"/{reel}" in r["reel_url"]
+        ]  # fmt: skip
+        if len(hits) != 1:
+            typer.echo(f"{len(hits)} queue items match {reel!r}; need exactly 1", err=True)
+            raise typer.Exit(code=1)
+        cid, rec = hits[0]
+        links = cg.extract_links(urls, [])
+        if not links:
+            typer.echo("no usable http(s) link given", err=True)
+            raise typer.Exit(code=1)
+        now = datetime.now(UTC)
+        rec["links"], rec["dm_text"] = links, rec.get("dm_text") or ""
+        cg._set(rec, cg.LINK_RECEIVED, now, f"{len(links)} link(s) given by hand")
+        for line in cg.deliver(settings, q, now):
+            typer.echo(line)
+        cg.save_queue(path, q)
+        typer.echo(f"queue page: {cg.write_queue_page(settings, q)}")
+
+
 if __name__ == "__main__":
     app()
