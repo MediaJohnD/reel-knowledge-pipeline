@@ -358,3 +358,25 @@ def test_login_never_navigates_away_from_facebook_2fa() -> None:
     assert cg.login("p", lambda: None, said.append, b) == "mediajohnd"
     assert len(said) == 1  # asked to finish 2FA once
     assert b.gotos == ["https://www.instagram.com/accounts/login/", "https://www.instagram.com/"]
+
+
+def test_post_url_avoids_the_reels_feed() -> None:
+    assert (
+        cg.post_url("https://instagram.com/reel/Da0HEBruHzG")
+        == "https://www.instagram.com/p/Da0HEBruHzG/"
+    )
+    assert (
+        cg.post_url("https://www.instagram.com/reels/Da0HEBruHzG/?x=1")
+        == "https://www.instagram.com/p/Da0HEBruHzG/"
+    )
+    assert (
+        cg.post_url("https://instagram.com/p/Dbh2V4pj-m0?img_index=1")
+        == "https://www.instagram.com/p/Dbh2V4pj-m0/"
+    )
+
+
+def test_parse_og_description_reads_the_posts_own_author() -> None:
+    og = "3,653 likes, 5,250 comments - zachdoesai_ on July 15, 2026: "
+    og += '"Comment “TRADE” for the link\n\n#ai".'
+    assert cg.parse_og_description(og) == ("zachdoesai_", "Comment “TRADE” for the link\n\n#ai")
+    assert cg.parse_og_description("Instagram") == (None, "Instagram")

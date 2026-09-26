@@ -435,7 +435,8 @@ class Runner:
         )
 
     def _fail(self, cid: str, rec: dict[str, Any], prior: str, exc: Exception) -> None:
-        rec["attempts"] += 1
+        if self.apply:  # a dry-run read error never burns an attempt
+            rec["attempts"] += 1
         status = FAILED if rec["attempts"] >= self.cfg.max_attempts else prior
         _set(rec, status, self.now(), f"{type(exc).__name__}: {exc}")
         self.report.say(f"{cid}: error ({exc}); attempts={rec['attempts']}")
@@ -445,7 +446,7 @@ class Runner:
         """Follow then comment on one reel. False = budget spent, stop the run."""
         prior = rec["status"]
         try:
-            self._goto(rec["reel_url"])
+            self._goto(post_url(rec["reel_url"]))
             author, caption = self.page.reel_info()
             if not author:
                 raise RuntimeError("could not read the reel's author")
@@ -527,7 +528,7 @@ class Runner:
             rec["thread_url"] = thread
             msgs = self.page.read_thread()
             rec["dm_marker"] = msgs[-1].key if msgs else None
-        self._goto(rec["reel_url"])
+        self._goto(post_url(rec["reel_url"]))
         self._owner_ok()
         if self.page.comment_visible(self.owner, rec["keyword"]):
             _set(rec, COMMENTED, self.now(), "our comment was already there")
@@ -605,6 +606,25 @@ _RESERVED = {"explore", "reels", "reel", "direct", "accounts", "p", "stories", "
 _HANDLE_HREF = re.compile(r"^/([A-Za-z0-9._]{1,30})/$")
 
 
+_SHORTCODE = re.compile(r"/(?:p|reels?|tv)/([A-Za-z0-9_-]+)")
+_OG = re.compile(r' - ([A-Za-z0-9._]{1,30}) on [^:]+: "(.*)"\.?\s*$', re.S)
+
+
+def post_url(url: str) -> str:
+    """The single-post page for a reel. /reel/ links redirect into the Reels feed,
+    which shows other creators' reels (and comment boxes) on the same page."""
+    m = _SHORTCODE.search(urlparse(url).path)
+    if not m:
+        raise ValueError(f"no post shortcode in {url}")
+    return f"https://www.instagram.com/p/{m.group(1)}/"
+
+
+def parse_og_description(og: str) -> tuple[str | None, str]:
+    """'N likes, N comments - handle on July 15, 2026: "caption".' -> (handle, caption)"""
+    m = _OG.search(og)
+    return (m.group(1), m.group(2)) if m else (None, og)
+
+
 class BrowserSetupError(RuntimeError):
     """Chrome, Playwright or the logged-in profile is missing."""
 
@@ -675,36 +695,26 @@ class IgBrowser:
         return None
 
     def reel_info(self) -> tuple[str | None, str]:
-        page = self._page
-        author = None
-        hrefs = page.locator("main a[href]").evaluate_all(
-            "els => els.map(e => e.getAttribute('href'))"
+        # og:description names the post's own author; page links can belong to
+        # other creators (suggested posts), so they are never used to guess.
+        meta = self._page.locator('meta[property="og:description"]')
+        return parse_og_description(
+            meta.first.get_attribute("content") or "" if meta.count() else ""
         )
-        for href in hrefs:
-            m = _HANDLE_HREF.match(href or "")
-            if m and m.group(1).lower() not in _RESERVED:
-                author = m.group(1)
-                break
-        caption = ""
-        h1 = page.locator("main h1")
-        if h1.count():
-            caption = h1.first.inner_text()
-        if not caption:
-            meta = page.locator('meta[property="og:description"], meta[name="description"]')
-            if meta.count():
-                caption = meta.first.get_attribute("content") or ""
-        return author, caption
 
-    def _follow_button(self) -> Any:
-        name = re.compile(r"^(Follow|Follow Back|Following|Requested)$")
-        return self._page.locator("header").get_by_role("button", name=name)
+    def _follow_button(self) -> tuple[Any, str] | None:
+        # Matched on innerText: the accessible name and textContent both carry
+        # the chevron icon's SVG title ("FollowingDown chevron icon", 2026-09-26).
+        btns = self._page.locator("header button")
+        texts = btns.evaluate_all("els => els.map(e => e.innerText.trim())")
+        for i, text in enumerate(texts):
+            if text in ("Follow", "Follow Back", "Following", "Requested"):
+                return btns.nth(i), "follow" if text == "Follow Back" else text.lower()
+        return None
 
     def follow_state(self) -> str:
-        btn = self._follow_button()
-        if btn.count() == 0:
-            return "unknown"
-        label = btn.first.inner_text().strip().lower()
-        return "follow" if label == "follow back" else label
+        found = self._follow_button()
+        return found[1] if found else "unknown"
 
     def comment_visible(self, handle: str, text: str) -> bool:
         return bool(
@@ -762,7 +772,10 @@ class IgBrowser:
     # -- write (the only three)
 
     def click_follow(self) -> None:
-        self._follow_button().filter(has_text=re.compile(r"^Follow( Back)?$")).first.click()
+        found = self._follow_button()
+        if not found or found[1] != "follow":
+            raise RuntimeError(f"no Follow button (state {found[1] if found else 'unknown'})")
+        found[0].click()
         self._page.wait_for_timeout(self.settle_ms)
 
     def post_comment(self, text: str) -> None:
