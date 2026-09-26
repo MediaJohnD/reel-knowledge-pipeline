@@ -724,7 +724,8 @@ class IgBrowser:
                     const want = text.toLowerCase();
                     for (const a of document.querySelectorAll(`a[href="/${handle}/"]`)) {
                         let el = a;
-                        for (let i = 0; i < 5 && el; i++, el = el.parentElement) {
+                        // Live DOM (2026-09-26): the comment text sits 6 levels up.
+                        for (let i = 0; i < 8 && el; i++, el = el.parentElement) {
                             if ((el.innerText || '').toLowerCase().includes(want)) return true;
                         }
                     }
