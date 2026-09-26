@@ -1018,8 +1018,9 @@ def gate_verdict(j, keyword, queue_status):
 
 
 def apply_comment_gate(settings, cid, text, fm, a):
-    """Override skip for a gated reel; queue it for `cli comment-queue` when the
-    research found no independent copy of the resource. Instagram only."""
+    """Override skip for a gated reel and queue it for `cli comment-queue`
+    (Instagram only). Research "indep" pages are any site the judge may cite,
+    not the gated resource itself, so they never cancel the comment."""
     from reel_pipeline import comment_gate as cg
 
     kw = cg.detect_comment_gate(re.split(r"\r?\n\r?\n## Review \(auto,", text)[0])
@@ -1030,7 +1031,7 @@ def apply_comment_gate(settings, cid, text, fm, a):
     path = cg.queue_path(settings)
     gate_verdict(a["j"], kw, cg.queue_status(cg.load_queue(path), cid))
     url = str(fm.get("source_url") or "")
-    if a["j"]["verdict"] != "comment-for-link" or a["indep"]:
+    if a["j"]["verdict"] != "comment-for-link":
         return
     if not on_domain(url, ["instagram.com"]):
         return print(f"  {cid}: comment-for-link on {url}; comment by hand (Instagram only)")
@@ -1082,7 +1083,6 @@ def analyse(settings, text, fm, key):
             "ev": ev,
             "used": used,
             "fetched": sorted(fetched),
-            "indep": sorted(indep),
         }
     return {
         "status": "reviewed",
@@ -1090,7 +1090,6 @@ def analyse(settings, text, fm, key):
         "ev": ev,
         "used": j["tools_used"],
         "fetched": sorted(fetched),
-        "indep": sorted(indep),
         "error": None,
     }
 
@@ -1235,10 +1234,10 @@ def rereview(settings, note, state, key):
     text = p.read_bytes().decode("utf-8")
     fm = read_frontmatter(p) or {}
     a = analyse(settings, text, fm, key)
-    res = result_of(a, p)
     if a["status"] == "reviewed":
         apply_comment_gate(settings, cid, text, fm, a)
         write_review(settings, cid, p, text, fm, a, replace=True)
+    res = result_of(a, p)  # after the gate, so the manifest records its verdict
     m = load_manifest()
     res.update(reviewed_at=now(), attempts=m["items"].get(cid, {}).get("attempts", 0) + 1)
     m["items"][cid] = res
@@ -1295,7 +1294,7 @@ def backfill_comment_gates(settings, state, key, apply):
         elif r["verdict"] == "skip":
             rereview(settings, str(p), state, key)
         else:  # already comment-for-link, only the enqueue was missed
-            a = {"j": {"verdict": "comment-for-link"}, "indep": r.get("indep", [])}
+            a = {"j": {"verdict": "comment-for-link"}}
             apply_comment_gate(settings, cid, text, read_frontmatter(p) or {}, a)
     print(f"{'APPLY' if apply else 'DRY-RUN'}: {n} gated reel(s) to backfill")
 
