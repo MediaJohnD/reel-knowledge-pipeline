@@ -289,6 +289,28 @@ def test_crash_mid_comment_is_never_retried() -> None:
     assert page.actions == ["comment:SCRAPE"]
 
 
+def test_already_following_comments_without_the_follow_wait() -> None:
+    page, q, clock = FakePage(), _queued(), Clock()
+    page.following = True
+    _runner(page, q, clock=clock).run(max_items=1)
+    assert page.actions == ["comment:SCRAPE"]
+    assert clock.t - T0 < timedelta(minutes=1)
+
+
+def test_error_after_comment_click_is_never_retried() -> None:
+    class PostTimesOut(FakePage):
+        def post_comment(self, text: str) -> None:
+            self.actions.append(f"comment:{text}")
+            raise RuntimeError("Post button click timed out")
+
+    page, q = PostTimesOut(), _queued()
+    page.following = True
+    _runner(page, q).run(max_items=1)
+    assert q["items"]["c1"]["status"] == cg.VERIFY_COMMENT
+    _runner(page, q).run(max_items=1)
+    assert page.actions == ["comment:SCRAPE"]
+
+
 def test_dm_button_press_then_link() -> None:
     page, q, clock = FakePage(), _queued(), Clock()
     page.following = True

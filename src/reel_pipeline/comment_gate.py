@@ -462,19 +462,17 @@ class Runner:
                 return self._dry_run(cid, rec)
 
             self._owner_ok()
-            if rec["status"] in (PENDING, FOLLOWING):
-                if not self._follow(cid, rec):
-                    return False
-                wait = self.rng.uniform(*self._follow_wait())
-                self.report.say(f"{cid}: waiting {wait:.0f}s between follow and comment")
-                self.sleep(wait)
+            if rec["status"] in (PENDING, FOLLOWING) and not self._follow(cid, rec):
+                return False
             return self._comment(cid, rec)
         except Halted:
             if rec["status"] == COMMENTING:
                 _set(rec, VERIFY_COMMENT, self.now(), "halt after comment click")
             raise
         except Exception as exc:  # per-item: log, count, move on
-            self._fail(cid, rec, prior if prior != COMMENTING else VERIFY_COMMENT, exc)
+            # A failure after the COMMENTING write-ahead may have posted: never retry.
+            posted = COMMENTING in (prior, rec["status"])
+            self._fail(cid, rec, VERIFY_COMMENT if posted else prior, exc)
             return True
 
     def _follow_wait(self) -> tuple[float, float]:
@@ -515,6 +513,9 @@ class Runner:
         _set(rec, FOLLOWED, self.now())
         self.save()
         self.report.say(f"{cid}: followed @{rec['creator']}")
+        wait = self.rng.uniform(*self._follow_wait())  # only after a real follow
+        self.report.say(f"{cid}: waiting {wait:.0f}s between follow and comment")
+        self.sleep(wait)
         return True
 
     def _comment(self, cid: str, rec: dict[str, Any]) -> bool:
@@ -737,28 +738,33 @@ class IgBrowser:
         if known_url:
             self.goto(known_url)
             return known_url if self._thread_is(creator) else None
-        for box in (
-            "https://www.instagram.com/direct/inbox/",
-            "https://www.instagram.com/direct/requests/",
-        ):
-            self.goto(box)
-            hrefs = self._page.locator('a[href^="/direct/t/"]').evaluate_all(
-                "els => els.map(e => e.getAttribute('href'))"
-            )
-            # ponytail: inbox rows show display names, not handles, so open the top
-            # threads one by one; a creator further down than 10 is a dm-timeout.
-            for href in list(dict.fromkeys(hrefs))[:10]:
-                self.goto("https://www.instagram.com" + href)
-                if self._thread_is(creator):
-                    return self._page.url
-        return None
+        # The profile's Message button opens a chat panel that links to the
+        # existing thread (2026-09-26). Only this creator's thread is ever opened;
+        # searching the inbox would open (and mark seen) unrelated threads. No
+        # link yet = no thread yet: every later message is then new.
+        self.goto(f"https://www.instagram.com/{creator}/")
+        btn = self._page.locator("header [role=button]")
+        labels = btn.evaluate_all("els => els.map(e => e.innerText.trim())")
+        if labels.count("Message") != 1:
+            return None
+        btn.nth(labels.index("Message")).click()
+        self._page.wait_for_timeout(self.settle_ms)
+        hrefs = self._page.locator('a[href^="/direct/t/"]').evaluate_all(
+            "els => els.map(e => e.getAttribute('href'))"
+        )
+        if len(set(hrefs)) != 1:
+            return None
+        url = "https://www.instagram.com" + hrefs[0]
+        self.goto(url)
+        return url if self._thread_is(creator) else None
 
     def _thread_is(self, creator: str) -> bool:
         return self._page.locator(f'a[href="/{creator}/"]').count() > 0
 
     def read_thread(self) -> list[Message]:
         out: list[Message] = []
-        for row in self._page.locator("[role=row]").all():
+        # One [role=article] per message in the open thread (2026-09-26).
+        for row in self._page.locator("main [role=article]").all():
             text = row.inner_text().strip()
             hrefs = row.locator("a[href]").evaluate_all("els => els.map(e => e.href)")
             buttons = [b.strip() for b in row.get_by_role("button").all_inner_texts() if b.strip()]
@@ -782,7 +788,15 @@ class IgBrowser:
         box = self._page.locator('textarea[aria-label^="Add a comment"]').first
         box.click()
         box.fill(text)
-        self._page.get_by_role("button", name="Post", exact=True).first.click()
+        # Post appears only after typing, inside the textarea's own form
+        # (2026-09-26); never click a page-wide "Post".
+        post = box.locator("xpath=ancestor::form[1]").get_by_role("button", name="Post", exact=True)
+        post.wait_for(timeout=10_000)
+        if post.count() != 1:
+            raise RuntimeError(
+                f"expected one Post button in the comment form, found {post.count()}"
+            )
+        post.click()
         self._page.wait_for_timeout(self.settle_ms * 2)
 
     def press_button(self, label: str) -> None:
