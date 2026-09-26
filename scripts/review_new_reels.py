@@ -495,10 +495,22 @@ def context7(name, key):
 
 
 def youtube(url):
-    out = _run([str(YTDLP), "--skip-download", "--dump-json", "--no-warnings", url], 90)
+    # a playlist URL dumps one JSON doc per entry; review only the first (metadata, subs)
+    out = _run(
+        [
+            str(YTDLP),
+            "--skip-download",
+            "--dump-json",
+            "--no-warnings",
+            "--playlist-items",
+            "1",
+            url,
+        ],
+        90,
+    )
     if not out:
         return None
-    j = json.loads(out)
+    j = json.loads(out.splitlines()[0])
     USED.add("yt-dlp")
     desc = j.get("description") or ""
     caps = ""
@@ -511,6 +523,8 @@ def youtube(url):
                 "--sub-langs",
                 "en.*",
                 "--no-warnings",
+                "--playlist-items",
+                "1",
                 "-o",
                 str(Path(t, "s")),
                 url,
