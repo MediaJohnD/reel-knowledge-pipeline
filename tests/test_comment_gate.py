@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import random
 from datetime import UTC, datetime, timedelta
 
@@ -336,6 +337,59 @@ def test_dm_without_link_keeps_waiting_for_the_link() -> None:
     page.thread = page.thread + [Message("https://github.com/s/g")]  # owner tapped it
     _runner(page, q, clock=clock).run(max_items=0)
     assert rec["status"] == cg.LINK_RECEIVED and rec["links"] == ["https://github.com/s/g"]
+
+
+def _node(mid: str, ts: int, user: str, content: dict) -> dict:
+    return {"node": {"message_id": mid, "timestamp_ms": str(ts), "content": content,
+                     "sender": {"user_dict": {"username": user}}}}  # fmt: skip
+
+
+def test_parse_slide_messages_reads_bot_cards() -> None:
+    # Shape captured live 2026-09-26 (newest first); the web draws none of the buttons.
+    card = {"__typename": "SlideMessageXMAContent", "xma": {
+        "title_text": "Here's your SWAP guide!", "target_url": None,
+        "cta_buttons": [{"title": "Access Here", "cta_type": "xma_web_url",
+                         "action_url": "https://my.manychat.com/r?act=1"}]}}  # fmt: skip
+    quick = {"__typename": "SlideMessageXMAContent", "xma": {
+        "title_text": "Want it?", "cta_buttons": [
+            {"title": "Send the FULL setup!", "cta_type": "postback",
+             "action_url": None}]}}  # fmt: skip
+    thread = {"thread_key": "42", "slide_messages": {"edges": [
+        _node("m3", 3000, "me", {"__typename": "SlideMessageText", "text_body": "links?"}),
+        _node("m2", 2000, "creator", card),
+        _node("m1", 1000, "creator", quick),
+        _node("m0", 900, "", {"__typename": "SlideMessageAdminText"}),
+    ]}}  # fmt: skip
+    other = {"thread_key": "7", "slide_messages": {"edges": [_node("x", 1, "z", card)]}}
+    body = json.dumps({"data": {"a": thread, "b": other}})
+    msgs = cg.parse_slide_messages([body, "not json"], "42")
+    assert [m.id for m in msgs] == ["m1", "m2", "m3"]
+    assert msgs[0].taps == ["Send the FULL setup!"] and msgs[0].hrefs == []
+    assert msgs[1].hrefs == ["https://my.manychat.com/r?act=1"] and msgs[1].sender == "creator"
+
+
+def test_dm_ignores_owner_messages_and_reports_taps() -> None:
+    page, q, clock = FakePage(), _queued(), Clock()
+    page.following = True
+    page.thread = []
+    page.bot_reply = []
+    _runner(page, q, clock=clock).run(max_items=1)
+    clock.sleep(600)
+    ms = int(clock.t.timestamp() * 1000)
+    page.thread = [
+        Message("old https://old.dev", sender="creator", ts=ms - 10**9, id="o"),
+        Message("Want it?", sender="creator", ts=ms, id="a", taps=["Send the FULL setup!"]),
+        Message("https://mine.dev", sender="me", ts=ms + 1, id="b"),
+    ]
+    report = _runner(page, q, clock=clock).run(max_items=0)
+    rec = q["items"]["c1"]
+    assert rec["status"] == cg.COMMENTED
+    assert any("'Send the FULL setup!'" in x for x in report.lines)
+    page.thread.append(
+        Message("t", ["https://my.manychat.com/r?x"], sender="creator", ts=ms + 2, id="c")
+    )
+    _runner(page, q, clock=clock).run(max_items=0)
+    assert rec["links"] == ["https://my.manychat.com/r?x"]
 
 
 def test_max_zero_only_checks_dms() -> None:

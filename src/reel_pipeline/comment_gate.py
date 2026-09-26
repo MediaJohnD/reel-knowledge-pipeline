@@ -294,10 +294,67 @@ class Message:
     text: str
     hrefs: list[str] = field(default_factory=list)
     buttons: list[str] = field(default_factory=list)
+    sender: str = ""  # username; "" when unknown (DOM fallback)
+    ts: int = 0  # epoch ms; 0 when unknown
+    id: str = ""
+    taps: list[str] = field(default_factory=list)  # bot buttons only the app can press
 
     @property
     def key(self) -> str:
-        return hashlib.sha1(self.text.encode("utf-8")).hexdigest()[:12]
+        return self.id or hashlib.sha1(self.text.encode("utf-8")).hexdigest()[:12]
+
+
+def _walk(obj: Any) -> Iterable[dict[str, Any]]:
+    if isinstance(obj, dict):
+        yield obj
+        for v in obj.values():
+            yield from _walk(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _walk(v)
+
+
+def parse_slide_messages(bodies: Iterable[str], thread_key: str) -> list[Message]:
+    """Messages of one DM thread from the page's own /api/graphql responses.
+
+    instagram.com never draws bot cards (ManyChat "Access Here" links, quick
+    replies): only their title shows. The card data, links included, is in the
+    graphql payload the page already loaded (seen 2026-09-26). Oldest first.
+    """
+    seen: dict[str, Message] = {}
+    for body in bodies:
+        try:
+            docs = [json.loads(body)]
+        except ValueError:
+            docs = []
+            for line in body.splitlines():
+                try:
+                    docs.append(json.loads(line))
+                except ValueError:
+                    pass
+        for d in (d for doc in docs for d in _walk(doc)):
+            if str(d.get("thread_key")) != thread_key or not isinstance(
+                d.get("slide_messages"), dict
+            ):
+                continue
+            for edge in d["slide_messages"].get("edges") or []:
+                n = (edge or {}).get("node") or {}
+                c = n.get("content") or {}
+                if c.get("__typename") == "SlideMessageAdminText":
+                    continue  # "... messaged you about a comment" log line
+                xma = c.get("xma") or {}
+                ctas = xma.get("cta_buttons") or []
+                text = c.get("text_body") or n.get("text_body") or xma.get("title_text") or ""
+                hrefs = [b["action_url"] for b in ctas if b.get("action_url")]
+                if xma.get("target_url"):
+                    hrefs.append(xma["target_url"])
+                sender = ((n.get("sender") or {}).get("user_dict") or {}).get("username") or ""
+                mid = n.get("message_id") or n.get("id") or ""
+                seen[mid] = Message(
+                    text, hrefs, sender=sender, ts=int(n.get("timestamp_ms") or 0), id=mid,
+                    taps=[b["title"] for b in ctas if b.get("title") and not b.get("action_url")],
+                )  # fmt: skip
+    return sorted(seen.values(), key=lambda m: m.ts)
 
 
 class Page(Protocol):
@@ -331,6 +388,20 @@ class RunReport:
     def say(self, line: str) -> None:
         self.lines.append(line)
         logger.info("comment-gate: " + line)
+
+
+def _new_replies(msgs: list[Message], rec: dict[str, Any], owner: str) -> list[Message]:
+    """The creator's messages since our comment. Timestamps when the page gave
+    them (a marker from an older reader version may never match), else the
+    snapshot marker. The owner's own messages never count."""
+    at = rec.get("commented_at")
+    if at and msgs and all(m.ts for m in msgs):
+        # Slack: the snapshot is taken before posting, commented_at after.
+        cutoff = (_dt(at) - timedelta(minutes=2)).timestamp() * 1000
+        new = [m for m in msgs if m.ts >= cutoff]
+    else:
+        new = _after_marker(msgs, rec["dm_marker"])
+    return [m for m in new if m.sender.lower() != owner]
 
 
 def _after_marker(msgs: list[Message], marker: str | None) -> list[Message]:
@@ -561,26 +632,30 @@ class Runner:
             new: list[Message] = []
             if thread:
                 rec["thread_url"] = thread
-                new = _after_marker(self.page.read_thread(), rec["dm_marker"])
+                new = _new_replies(self.page.read_thread(), rec, self.owner)
                 new = self._press_buttons(rec, new)
             links = extract_links([m.text for m in new], [h for m in new for h in m.hrefs])
             text = "\n".join(m.text for m in new if m.text.strip())
+            taps = ", ".join(repr(t) for m in new for t in m.taps)
+            tap = f"tap {taps}" if taps else "tap its button"
             if links:
                 rec["links"], rec["dm_text"] = links, text
                 _set(rec, LINK_RECEIVED, self.now(), f"{len(links)} link(s)")
-                self.report.say(f"{cid}: DM from @{rec['creator']}: {len(links)} link(s)")
+                self.report.say(f"{cid}: DM from @{rec['creator']}: {', '.join(links)}")
             elif text and text != rec.get("dm_text"):
-                # Bot buttons ("Click below 👇") don't render on instagram.com: keep
+                # Quick replies are postbacks the web client can't send: keep
                 # waiting and have the owner tap it in the app; the link comes next.
                 rec["dm_text"] = text
                 _event(rec, self.now(), "DM without a link yet")
                 self.report.say(
-                    f"{cid}: @{rec['creator']} replied without a link; tap its button "
+                    f"{cid}: @{rec['creator']} replied without a link; {tap} "
                     "in the Instagram app, the next run picks up the link"
                 )
             elif since > timedelta(hours=self.cfg.dm_timeout_hours):
                 _set(rec, DM_TIMEOUT, self.now())
                 self.report.say(f"{cid}: no DM after {self.cfg.dm_timeout_hours} h")
+            elif taps:
+                self.report.say(f"{cid}: still waiting: {tap} in @{rec['creator']}'s DM (app)")
             self.save()
         except Halted:
             raise
@@ -606,7 +681,7 @@ class Runner:
             self._check()
             _event(rec, self.now(), f"pressed {labels[-1]!r}")
             self.sleep(self.rng.uniform(20, 40))
-            new = _after_marker(self.page.read_thread(), rec["dm_marker"])
+            new = _new_replies(self.page.read_thread(), rec, self.owner)
         return new
 
 
@@ -653,6 +728,7 @@ class IgBrowser:
         self._pw: Any = None
         self._ctx: Any = None
         self._page: Any = None
+        self._gql: list[str] = []
 
     def __enter__(self) -> IgBrowser:
         from playwright.sync_api import Error as PlaywrightError
@@ -671,6 +747,20 @@ class IgBrowser:
                 f"(is Chrome installed, and is that profile already open?): {exc}"
             ) from exc
         self._page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
+        # Keep the DM payloads the page loads anyway (read_thread); no requests
+        # of our own.
+
+        def keep(res: Any) -> None:
+            if "/api/graphql" not in res.url:
+                return
+            try:
+                body = res.text()
+            except PlaywrightError:
+                return
+            if "slide_messages" in body:
+                self._gql.append(body)
+
+        self._page.on("response", keep)
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -682,6 +772,7 @@ class IgBrowser:
     # -- read
 
     def goto(self, url: str) -> None:
+        self._gql.clear()
         self._page.goto(url, wait_until="domcontentloaded", timeout=45_000)
         self._page.wait_for_timeout(self.settle_ms)
 
@@ -772,17 +863,29 @@ class IgBrowser:
         return self._page.locator(f'a[href="/{creator}/"]').count() > 0
 
     def read_thread(self) -> list[Message]:
+        m = re.search(r"/direct/t/(\d+)", self._page.url)
+        for _ in range(10):  # the payload can land after domcontentloaded
+            msgs = parse_slide_messages(self._gql, m.group(1)) if m else []
+            if msgs:
+                return msgs
+            self._page.wait_for_timeout(1000)
+        # Fallback: the rendered rows (no bot links, no sender). One evaluate, so
+        # a re-render mid-read can't time out a per-row locator.
+        rows = self._page.evaluate(
+            """() => [...document.querySelectorAll('main [role=article]')].map(r => ({
+                text: r.innerText.trim(),
+                hrefs: [...r.querySelectorAll('a[href]')].map(a => a.href),
+                buttons: [...r.querySelectorAll('[role=button]')]
+                    .map(b => b.innerText.trim()).filter(Boolean),
+            }))"""
+        )
         out: list[Message] = []
-        # One [role=article] per message in the open thread (2026-09-26).
-        for row in self._page.locator("main [role=article]").all():
-            text = row.inner_text().strip()
-            hrefs = row.locator("a[href]").evaluate_all("els => els.map(e => e.href)")
-            buttons = [b.strip() for b in row.get_by_role("button").all_inner_texts() if b.strip()]
+        for r in rows:
             # Profile/post links inside a row are Instagram chrome, not the resource;
             # l.instagram.com is the outbound-link wrapper and is kept.
-            hrefs = [h for h in hrefs if "instagram.com/" not in h or "l.instagram.com" in h]
-            if text or hrefs:
-                out.append(Message(text, hrefs, buttons))
+            hrefs = [h for h in r["hrefs"] if "instagram.com/" not in h or "l.instagram.com" in h]
+            if r["text"] or hrefs:
+                out.append(Message(r["text"], hrefs, r["buttons"]))
         return out
 
     # -- write (the only three)
