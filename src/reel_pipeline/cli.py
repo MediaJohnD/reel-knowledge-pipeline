@@ -13,6 +13,7 @@ import socket
 import sys
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 
 import typer
 
@@ -203,6 +204,92 @@ def serve_webhook() -> None:
 
     fastapi_app = create_app(settings)
     uvicorn.run(fastapi_app, host=settings.webhook.host, port=settings.webhook.port)
+
+
+comment_queue_app = typer.Typer(
+    help="Comment-gated reels: follow, comment the keyword, read the DM (Instagram).",
+    no_args_is_help=True,
+)
+app.add_typer(comment_queue_app, name="comment-queue")
+
+
+def _ig_settings():  # noqa: ANN202 - Settings, imported lazily like the other commands
+    settings = get_settings()
+    settings.ensure_directories()
+    configure_logging(settings.logs_dir, level=resolve_log_level(settings.log_level))
+    if not settings.ig_browser_profile or not settings.ig_owner_handle:
+        typer.echo(
+            "Set REEL_IG_BROWSER_PROFILE and REEL_IG_OWNER_HANDLE in .env first "
+            "(see .env.example).",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    return settings
+
+
+@comment_queue_app.command("login")
+def comment_queue_login() -> None:
+    """Open the dedicated Chrome profile so you can log into Instagram by hand."""
+    from reel_pipeline import comment_gate as cg
+
+    settings = _ig_settings()
+    assert settings.ig_browser_profile and settings.ig_owner_handle
+    typer.echo("Log into Instagram in the Chrome window, then come back and press Enter.")
+    try:
+        handle = cg.login(settings.ig_browser_profile, lambda: input())
+    except cg.BrowserSetupError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    want = settings.ig_owner_handle.lstrip("@").lower()
+    if (handle or "").lower() != want:
+        typer.echo(f"Logged in as {handle!r}, expected {want!r}.", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"Logged in as @{handle}. The profile is ready.")
+
+
+@comment_queue_app.command("run")
+def comment_queue_run(
+    apply: bool = typer.Option(False, "--apply", help="Really follow/comment. Default: dry-run."),
+    max_items: int = typer.Option(1, "--max", min=1, help="Reels to act on this run."),
+) -> None:
+    """Work the comment queue within the rate limits. Exits 2 on a halt."""
+    from filelock import FileLock, Timeout
+
+    from reel_pipeline import comment_gate as cg
+
+    settings = _ig_settings()
+    assert settings.ig_browser_profile and settings.ig_owner_handle
+    path = cg.queue_path(settings)
+    try:
+        lock = FileLock(str(path) + ".lock", timeout=0)
+        lock.acquire()
+    except Timeout as exc:
+        typer.echo("another comment-queue run is in progress", err=True)
+        raise typer.Exit(code=1) from exc
+    try:
+        q = cg.load_queue(path)
+        try:
+            with cg.IgBrowser(settings.ig_browser_profile) as browser:
+                report = cg.Runner(
+                    browser, q, settings.comment_gate, settings.ig_owner_handle, apply,
+                    save=lambda: cg.save_queue(path, q),
+                ).run(max_items)  # fmt: skip
+        except cg.BrowserSetupError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from exc
+        for line in report.lines:
+            typer.echo(line)
+        if apply:
+            for line in cg.deliver(settings, q, datetime.now(UTC)):
+                typer.echo(line)
+        cg.save_queue(path, q)
+        typer.echo(f"queue page: {cg.write_queue_page(settings, q)}")
+        if not apply:
+            typer.echo("dry-run: nothing was followed, commented or pressed. Add --apply to act.")
+        if report.halted:
+            raise typer.Exit(code=2)
+    finally:
+        lock.release()
 
 
 if __name__ == "__main__":

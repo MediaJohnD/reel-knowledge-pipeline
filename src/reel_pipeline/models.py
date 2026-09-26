@@ -45,6 +45,7 @@ class QueueSource(StrEnum):
 
     QUEUE_FILE = "queue_file"
     WEBHOOK = "webhook"
+    COMMENT_GATE = "comment_gate"  # a link a creator sent by DM (comment_gate.py)
 
 
 class StateRecord(BaseModel):

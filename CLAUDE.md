@@ -32,6 +32,19 @@ The system supports:
   `text_fetcher.py`; `downloader.py` (yt-dlp/gallery-dl) is untouched and
   still the only thing that ever uses cookies. See
   `docs/superpowers/specs/2026-08-10-js-rendered-text-capture-design.md`.
+- Second scoped exception, 2026-09-26 (owner sign-off given explicitly):
+  `comment_gate.py` drives a headed Chrome on a dedicated persistent profile
+  (`REEL_IG_BROWSER_PROFILE`) that the owner logs into by hand, to get links
+  from "comment KEYWORD for the link" reels: follow the creator, comment the
+  keyword, read the DM, press allowlisted quick-reply buttons. It is
+  owner-run only (`cli comment-queue run`, never the worker or webhook) and
+  dry-run by default (`--apply` to act). Hard rate limits live in
+  `comment_gate:` in `config/settings.yaml`: 3 writes per 15 min, random
+  3-6 min gaps, 3 comments/day in the first week. It halts for 24 h on any
+  challenge or action-blocked dialog. Code never sees or types the password,
+  never reuses the yt-dlp/gallery-dl cookies, and uses no anti-detection
+  tooling. Confined to `comment_gate.py`. See
+  `docs/superpowers/specs/2026-09-26-comment-gated-links-design.md`.
 - Instagram is explicitly enabled as of 2026-07-11 - a deliberate, scoped exception to the
   general "no Instagram by default" baseline, made for the project owner's own real account
   (no burner) at low volume ("a handful of reels that matter", not bulk/scheduled scraping).

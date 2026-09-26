@@ -995,8 +995,54 @@ def upsert_digest_row(settings, title, cid, j, note_path):
     # no duplicate rows
     text = "".join(line for line in text.splitlines(True) if f"| `{cid}` |" not in line)
     i = text.index(sep) + len(sep)
-    digest.parent.mkdir(parents=True, exist_ok=True)
-    digest.write_text(text[:i] + row + text[i:], encoding="utf-8")
+    from reel_pipeline.comment_gate import atomic_write  # comment-queue also writes the vault
+
+    atomic_write(digest, text[:i] + row + text[i:])
+
+
+def gate_verdict(j, keyword, queue_status):
+    """A "comment X for the link" reel is never a skip - the link is one comment away.
+
+    Runs after finalize()'s rules. Once the DM links are in the note
+    (link-received onward), the judge has seen the real resource and its verdict
+    stands. -> True if overridden."""
+    from reel_pipeline import comment_gate as cg
+
+    if keyword is None or queue_status in (cg.LINK_RECEIVED, cg.NEEDS_REREVIEW, cg.REREVIEWED):
+        return False
+    if j["verdict"] != "skip":
+        return False
+    j["verdict"] = "comment-for-link"
+    j["cap_reason"] = f"link is gated behind a comment ({keyword or 'keyword unknown'})"
+    return True
+
+
+def apply_comment_gate(settings, cid, text, fm, a):
+    """Override skip for a gated reel; queue it for `cli comment-queue` when the
+    research found no independent copy of the resource. Instagram only."""
+    from reel_pipeline import comment_gate as cg
+
+    kw = cg.detect_comment_gate(re.split(r"\r?\n\r?\n## Review \(auto,", text)[0])
+    if kw is None or not a["j"]:
+        return
+    import filelock
+
+    path = cg.queue_path(settings)
+    gate_verdict(a["j"], kw, cg.queue_status(cg.load_queue(path), cid))
+    url = str(fm.get("source_url") or "")
+    if a["j"]["verdict"] != "comment-for-link" or a["indep"]:
+        return
+    if not on_domain(url, ["instagram.com"]):
+        return print(f"  {cid}: comment-for-link on {url}; comment by hand (Instagram only)")
+    try:
+        # comment-queue run holds this for its whole run; don't write under it.
+        with filelock.FileLock(str(path) + ".lock", timeout=5):
+            q = cg.load_queue(path)
+            if cg.enqueue(q, cid, url, kw, datetime.now(UTC)):
+                cg.save_queue(path, q)
+                print(f"  {cid}: queued for comment-queue (keyword {kw or '?'})")
+    except filelock.Timeout:
+        print(f"  {cid}: comment-queue busy; run --backfill-comment-gates later to queue it")
 
 
 def lock_free(settings):
@@ -1036,6 +1082,7 @@ def analyse(settings, text, fm, key):
             "ev": ev,
             "used": used,
             "fetched": sorted(fetched),
+            "indep": sorted(indep),
         }
     return {
         "status": "reviewed",
@@ -1043,6 +1090,7 @@ def analyse(settings, text, fm, key):
         "ev": ev,
         "used": j["tools_used"],
         "fetched": sorted(fetched),
+        "indep": sorted(indep),
         "error": None,
     }
 
@@ -1098,6 +1146,7 @@ def review_one(settings, cid, rec, apply, key):
     a = analyse(settings, text, fm, key)
     if a["status"] == "needs-human":
         return result_of(a, p)  # nothing written to the note or digest
+    apply_comment_gate(settings, cid, text, fm, a)
     write_review(settings, cid, p, text, fm, a)
     return result_of(a, p)
 
@@ -1188,12 +1237,67 @@ def rereview(settings, note, state, key):
     a = analyse(settings, text, fm, key)
     res = result_of(a, p)
     if a["status"] == "reviewed":
+        apply_comment_gate(settings, cid, text, fm, a)
         write_review(settings, cid, p, text, fm, a, replace=True)
     m = load_manifest()
     res.update(reviewed_at=now(), attempts=m["items"].get(cid, {}).get("attempts", 0) + 1)
     m["items"][cid] = res
     save_manifest(m)
     print(f"  {cid}: {res['status']} {res.get('verdict', '')} {res.get('error') or ''}")
+    return res
+
+
+def rereview_delivered(settings, state, key, apply):
+    """Re-review reels whose DM links comment-queue has written into the note."""
+    import filelock
+
+    from reel_pipeline import comment_gate as cg
+
+    path = cg.queue_path(settings)
+    q = cg.load_queue(path)
+    todo = [cid for cid, r in q["items"].items() if r["status"] == cg.NEEDS_REREVIEW]
+    for cid in todo:
+        note = cg.find_note(settings, cid, state)
+        if not apply or note is None:
+            why = "note not found" if note is None else "would re-review"
+            print(f"  {cid}: DM links delivered; {why}")
+            continue
+        res = rereview(settings, str(note), state, key)
+        if res and res["status"] == "reviewed":
+            with filelock.FileLock(str(path) + ".lock", timeout=600):
+                q = cg.load_queue(path)
+                cg._set(q["items"][cid], cg.REREVIEWED, datetime.now(UTC))
+                cg.save_queue(path, q)
+
+
+def backfill_comment_gates(settings, state, key, apply):
+    """Reels reviewed before comment-gate detection existed: re-review the gated
+    skips (the prompt no longer calls a comment CTA a lead magnet), and queue
+    comment-for-link reels a busy queue made us miss. Idempotent."""
+    from reel_pipeline import comment_gate as cg
+    from reel_pipeline.obsidian_writer import read_frontmatter
+
+    m, q = load_manifest(), cg.load_queue(cg.queue_path(settings))
+    n = 0
+    for cid, r in list(m["items"].items()):
+        if r.get("verdict") not in ("skip", "comment-for-link") or cid in q["items"]:
+            continue
+        p = find_note(settings, r.get("note_path") or "")
+        if p is None:
+            continue
+        text = p.read_bytes().decode("utf-8")
+        kw = cg.detect_comment_gate(re.split(r"\r?\n\r?\n## Review \(auto,", text)[0])
+        if kw is None:
+            continue
+        n += 1
+        if not apply:
+            print(f"  {cid}: gated ({kw or 'keyword unknown'}), verdict {r['verdict']}: {p.name}")
+        elif r["verdict"] == "skip":
+            rereview(settings, str(p), state, key)
+        else:  # already comment-for-link, only the enqueue was missed
+            a = {"j": {"verdict": "comment-for-link"}, "indep": r.get("indep", [])}
+            apply_comment_gate(settings, cid, text, read_frontmatter(p) or {}, a)
+    print(f"{'APPLY' if apply else 'DRY-RUN'}: {n} gated reel(s) to backfill")
 
 
 def now():
@@ -1478,10 +1582,23 @@ def self_check():
         and parse_json("no json") is None
         and parse_json('{"a": 1}') == {"a": 1}
     )
+    # 11 comment-gated reels are never a skip until the DM links are in the note
+    from reel_pipeline import comment_gate as cg
+
+    kw = cg.detect_comment_gate('Comment "PROMPTS" and I will DM you the link')
+    assert kw == "PROMPTS", kw
+    assert cg.detect_comment_gate("Great tool, link in bio") is None
+    j = {"verdict": "skip"}
+    assert gate_verdict(j, kw, None) and j["verdict"] == "comment-for-link"
+    for st in (cg.LINK_RECEIVED, cg.NEEDS_REREVIEW, cg.REREVIEWED):
+        assert not gate_verdict({"verdict": "skip"}, kw, st)
+    assert not gate_verdict({"verdict": "skip"}, None, None)
+    assert not gate_verdict({"verdict": "try-now"}, kw, None)
     print("self-check ok")
 
 
 def main(argv):
+    sys.path.insert(0, str(ROOT / "src"))  # before self_check: it imports comment_gate
     if "--self-check" in argv:
         return self_check()
 
@@ -1489,7 +1606,6 @@ def main(argv):
         return argv[argv.index(f) + 1] if f in argv else d
 
     apply, limit = "--apply" in argv, int(arg("--limit", 10))
-    sys.path.insert(0, str(ROOT / "src"))
     from reel_pipeline.config import load_settings
 
     settings = load_settings()
@@ -1507,6 +1623,9 @@ def main(argv):
         return rereview(settings, arg("--rereview"), state, key)
     if arg("--seed"):
         return seed(settings, arg("--seed"), state)
+    if "--backfill-comment-gates" in argv:
+        return backfill_comment_gates(settings, state, key, apply)
+    rereview_delivered(settings, state, key, apply)
     if arg("--note"):
         want = Path(arg("--note")).name.lower()
         state = {

@@ -261,6 +261,35 @@ Cookies expire and need periodic refresh (re-export or just stay logged in for
 option B). This is documented as a real, accepted tradeoff for low-volume
 personal use - see the guardrail note above.
 
+## Comment-gated reels ("comment KEYWORD for the link")
+
+The reviewer (`scripts/review_new_reels.py`) never marks these `skip`. It gives
+them the verdict `comment-for-link`. On Instagram, when research found no
+independent copy of the resource, it also queues them in
+`data/review/comment_queue.json`. You can see the queue in the vault as
+`Reel Comment Queue.md`.
+
+One-time setup:
+1. Set `REEL_IG_BROWSER_PROFILE` (a folder outside the repo, used only for this)
+   and `REEL_IG_OWNER_HANDLE` in `.env`.
+2. `uv run python -m reel_pipeline.cli comment-queue login`. A Chrome window
+   opens; log into Instagram by hand, then press Enter in the terminal.
+
+Working the queue (run it yourself; nothing schedules it):
+- `uv run python -m reel_pipeline.cli comment-queue run`: a dry-run. It opens each
+  reel and reports what it would do, with no follows, comments or clicks.
+- `... comment-queue run --apply --max 1`: this one really acts. It follows the
+  creator, waits (20-90 min in week 1), comments the keyword, then on a later run
+  reads the DM, presses an allowlisted "Send link" button if needed, and writes
+  the links into the note.
+- Run it again every so often. Every step waits for its rate-limit slot, so
+  running it more often never goes faster than the limits in `comment_gate:`.
+- Exit code 2 means a halt: Instagram showed a challenge or an "action blocked"
+  dialog. Everything stops for 24 h. Open the profile by hand and resolve it.
+- The next `review_new_reels.py --apply` re-reviews reels whose links arrived.
+  `review_new_reels.py --backfill-comment-gates` lists the older gated `skip`
+  reels, and `--apply` re-reviews them.
+
 ## Facebook and LinkedIn setup (cookies, optional)
 
 Facebook (like Instagram) generally requires an authenticated session for

@@ -32,6 +32,9 @@ Verdict rubric. Base rate from a deep read of 308 reels: about 14% try-now, 33% 
   cost is uncertain, or the only support is the note's own claims.
 - `skip`: hype/course/lead-magnet, no verifiable tool, off-topic, unsafe, ToS-violating,
   or a duplicate of something better already owned.
+  A "comment KEYWORD and I'll send you the link" call to action is NOT by itself a
+  lead magnet: the pipeline comments to get that link, so judge the resource on the
+  evidence you have, the same as any other reel.
 Calibration rules (apply before choosing try-now):
 - try-now needs a DISCRETE installable tool/package/skill that the note itself is about, and a
   first_step you can run today. A catalog, awesome-list, index, course, prompt pack, framework
@@ -43,7 +46,8 @@ Calibration rules (apply before choosing try-now):
   or MCP servers listed in ALREADY HAVE, and needs no new tool, the verdict is `already-have`.
 - Set `confidence: low` whenever evidence is indirect; low confidence can never be try-now.
 - A tool that proxies or routes the owner's prompts or data through third-party services (LLM routers, gateways, aggregators, free-tier pools) is `later` unless EVIDENCE shows how it handles data and provider terms; never `try-now` on the note's claims about free or unlimited usage.
-- If unsure between try-now and later, choose `later`. If unsure between later and skip, choose `skip` when the note is a promo, course, or lead magnet.
+- If unsure between try-now and later, choose `later`. If unsure between later and skip, choose `skip` when the note is a promo, course, or lead magnet (a
+  comment-for-the-link call to action alone does not make it one).
 
 When only the note's own claims support a point, say so in `risk` and choose `later` or
 `skip`, never `try-now`. If evidence says "unchecked" or "unavailable", say "unchecked".

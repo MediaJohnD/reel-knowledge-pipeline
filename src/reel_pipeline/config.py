@@ -176,6 +176,29 @@ class TextCaptureConfig(BaseModel):
     render_fallback: RenderFallbackConfig = Field(default_factory=RenderFallbackConfig)
 
 
+class CommentGateConfig(BaseModel):
+    # Comment-gated links (comment_gate.py). Limits are deliberately far below
+    # every third-party estimate of Instagram's (unpublished) limits, and spaced
+    # so there are no bursts - see
+    # docs/superpowers/specs/2026-09-26-comment-gated-links-design.md.
+    queue_file: str = "data/review/comment_queue.json"
+    window_minutes: int = Field(default=15, ge=1)
+    window_max_writes: int = Field(default=3, ge=1)
+    gap_min_seconds: float = 180
+    gap_max_seconds: float = 360
+    daily_max_writes: int = 15
+    daily_max_comments: int = 8
+    first_week_days: int = 7
+    first_week_daily_max_comments: int = 3
+    follow_wait_seconds: tuple[float, float] = (60, 180)
+    first_week_follow_wait_seconds: tuple[float, float] = (1200, 5400)
+    dm_min_wait_seconds: int = 120
+    dm_timeout_hours: int = 48
+    halt_hours: int = 24
+    max_attempts: int = 3
+    max_button_presses: int = 2
+
+
 class WebhookConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8787
@@ -240,6 +263,7 @@ class Settings(BaseModel):
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
     retry: RetryConfig = Field(default_factory=RetryConfig)
+    comment_gate: CommentGateConfig = Field(default_factory=CommentGateConfig)
 
     # Secrets - never sourced from settings.yaml, only environment variables.
     webhook_secret: str | None = None
@@ -263,6 +287,11 @@ class Settings(BaseModel):
     # never-in-settings.yaml treatment as the Instagram cookies above.
     ytdlp_cookies_file: str | None = None
     ytdlp_cookies_browser: str | None = None
+
+    # comment_gate.py's dedicated, hand-logged-in browser profile (outside the
+    # repo) and the handle it must be logged in as - checked before every action.
+    ig_browser_profile: str | None = None
+    ig_owner_handle: str | None = None
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -471,6 +500,7 @@ def load_settings(
         webhook=WebhookConfig(**raw.get("webhook", {})),
         maintenance=MaintenanceConfig(**raw.get("maintenance", {})),
         retry=RetryConfig(**raw.get("retry", {})),
+        comment_gate=CommentGateConfig(**raw.get("comment_gate", {})),
         webhook_secret=env.get("REEL_WEBHOOK_SECRET") or None,
         anthropic_api_key=env.get("ANTHROPIC_API_KEY") or None,
         openai_api_key=env.get("OPENAI_API_KEY") or None,
@@ -482,6 +512,8 @@ def load_settings(
         instagram_cookies_browser=env.get("REEL_INSTAGRAM_COOKIES_BROWSER") or None,
         ytdlp_cookies_file=env.get("REEL_YTDLP_COOKIES_FILE") or None,
         ytdlp_cookies_browser=env.get("REEL_YTDLP_COOKIES_BROWSER") or None,
+        ig_browser_profile=env.get("REEL_IG_BROWSER_PROFILE") or None,
+        ig_owner_handle=env.get("REEL_IG_OWNER_HANDLE") or None,
     )
 
 
