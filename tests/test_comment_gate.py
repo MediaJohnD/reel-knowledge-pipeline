@@ -437,6 +437,25 @@ def test_same_creator_is_held_back() -> None:
     assert page.actions == ["comment:SCRAPE"]
 
 
+def test_held_back_reel_does_not_use_the_slot() -> None:
+    """The creator is unknown until the reel page loads; a held reel mustn't stall the queue."""
+
+    class TwoCreators(FakePage):
+        def reel_info(self) -> tuple[str | None, str]:
+            return ("other" if self.current.endswith("/C/") else "creator"), self.caption
+
+    page, q = TwoCreators(), _queued()
+    page.following = True
+    page.bot_reply = []
+    q["items"]["c1"]["creator"] = "creator"
+    q["items"]["c1"]["status"] = cg.COMMENTED
+    cg.enqueue(q, "c2", "https://www.instagram.com/reel/B/", "scrape", T0)
+    cg.enqueue(q, "c3", "https://www.instagram.com/reel/C/", "scrape", T0)
+    _runner(page, q).run(max_items=1)
+    assert q["items"]["c2"]["status"] == cg.PENDING
+    assert q["items"]["c3"]["status"] == cg.COMMENTED
+
+
 class _LoginBrowser:
     """Chrome sits on Facebook's 2FA page for the first Enter."""
 

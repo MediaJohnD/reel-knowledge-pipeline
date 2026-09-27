@@ -508,7 +508,10 @@ class Runner:
                 if rec["status"] in TO_ACT and not self._creator_busy(cid, rec):
                     if not self._act(cid, rec):
                         break
-                    done += 1
+                    # _act may learn the creator only on the reel page and hold it
+                    # back; that reel must not use up the run's slot.
+                    if not self._creator_busy(cid, rec):
+                        done += 1
             for cid, rec in list(self.q["items"].items()):
                 if rec["status"] in AWAITING_DM:
                     self._poll_dm(cid, rec)
