@@ -153,7 +153,18 @@ def extract_links(texts: Iterable[str], hrefs: Iterable[str] = ()) -> list[str]:
     return out
 
 
-_REDIRECTORS = ("manychat.com", "bit.ly", "tinyurl.com", "t.co")
+_REDIRECTORS = ("manychat.com", "instantdm.com", "cosmofeed.com", "bit.ly", "tinyurl.com", "t.co")
+# Creator promo links bots append to the real resource; not gated content.
+_PROFILE = re.compile(
+    r"https?://(www\.)?(youtube\.com/(channel/|@)|linkedin\.com/in/|(instagram|tiktok|x|twitter)"
+    r"\.com/@?[\w.]+/?$)"
+)
+_OG_URL = re.compile(r'<meta property="og:url" content="([^"]+)"')
+
+
+def _is_redirector(url: str) -> bool:
+    host = urlparse(url).hostname or ""
+    return any(host == d or host.endswith("." + d) for d in _REDIRECTORS)
 
 
 def _final_url(url: str) -> str:
@@ -161,26 +172,32 @@ def _final_url(url: str) -> str:
 
     from reel_pipeline.validators import sanitize_url  # drops ManyChat's mcp_token JWT
 
-    return sanitize_url(str(httpx.get(url, follow_redirects=True, timeout=20).url))
+    resp = httpx.get(url, follow_redirects=True, timeout=20)
+    final = str(resp.url)
+    if _is_redirector(final):  # JS "open in app" page (InstantDM): target is in og:url
+        m = _OG_URL.search(resp.text)
+        final = m.group(1) if m else final
+    return sanitize_url(final)
 
 
 def resolve_links(links: list[str], final_url: Callable[[str], str] = _final_url) -> list[str]:
-    """Follow known redirectors (ManyChat, shorteners) and drop links that land on
-    a page already in the list, so one DM doesn't ingest the same page twice."""
+    """Follow known redirectors (ManyChat, InstantDM, shorteners), drop creator
+    profile links, and drop links that land on a page already in the list, so one
+    DM doesn't ingest the same page twice."""
     from reel_pipeline.validators import normalize_url
 
     out: list[str] = []
     seen: set[str] = set()
     for u in links:
-        host = urlparse(u).hostname or ""
-        if any(host == d or host.endswith("." + d) for d in _REDIRECTORS):
+        if _is_redirector(u):
             try:
                 u = final_url(u)
             except Exception as exc:  # unresolvable: keep the redirect, let ingestion try
                 logger.warning(f"comment-gate: could not resolve {u}: {exc}")
-        if normalize_url(u) not in seen:
-            seen.add(normalize_url(u))
-            out.append(u)
+        if _PROFILE.match(u) or normalize_url(u) in seen:
+            continue
+        seen.add(normalize_url(u))
+        out.append(u)
     return out
 
 

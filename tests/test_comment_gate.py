@@ -78,7 +78,8 @@ def test_resolve_links_dedupes_redirects() -> None:
             return hops[u]
         raise OSError("offline")
 
-    links = ["https://github.com/a/b", "https://x.dev/", *hops, "https://bit.ly/dead"]
+    promo = ["https://www.youtube.com/channel/UC0", "https://www.linkedin.com/in/seb-1/"]
+    links = ["https://github.com/a/b", "https://x.dev/", *hops, "https://bit.ly/dead", *promo]
     assert cg.resolve_links(links, final) == [
         "https://github.com/a/b", "https://x.dev/", "https://bit.ly/dead"
     ]  # fmt: skip
