@@ -153,6 +153,37 @@ def extract_links(texts: Iterable[str], hrefs: Iterable[str] = ()) -> list[str]:
     return out
 
 
+_REDIRECTORS = ("manychat.com", "bit.ly", "tinyurl.com", "t.co")
+
+
+def _final_url(url: str) -> str:
+    import httpx
+
+    from reel_pipeline.validators import sanitize_url  # drops ManyChat's mcp_token JWT
+
+    return sanitize_url(str(httpx.get(url, follow_redirects=True, timeout=20).url))
+
+
+def resolve_links(links: list[str], final_url: Callable[[str], str] = _final_url) -> list[str]:
+    """Follow known redirectors (ManyChat, shorteners) and drop links that land on
+    a page already in the list, so one DM doesn't ingest the same page twice."""
+    from reel_pipeline.validators import normalize_url
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for u in links:
+        host = urlparse(u).hostname or ""
+        if any(host == d or host.endswith("." + d) for d in _REDIRECTORS):
+            try:
+                u = final_url(u)
+            except Exception as exc:  # unresolvable: keep the redirect, let ingestion try
+                logger.warning(f"comment-gate: could not resolve {u}: {exc}")
+        if normalize_url(u) not in seen:
+            seen.add(normalize_url(u))
+            out.append(u)
+    return out
+
+
 def quick_reply_allowed(label: str) -> bool:
     label = label.strip()
     return 0 < len(label) < 30 and bool(_QUICK_REPLY.search(label))
@@ -1004,6 +1035,7 @@ def deliver(settings: Settings, q: dict[str, Any], now: datetime) -> list[str]:
     out: list[str] = []
     with FileLock(str(settings.inbox_dir / "state.run_once.lock"), timeout=600):
         for cid, rec in ready:
+            rec["links"] = resolve_links(rec["links"])
             rec["link_ids"] = [
                 qm.add_url(u, QueueSource.COMMENT_GATE).content_id for u in rec["links"]
             ]

@@ -69,6 +69,21 @@ def test_unwrap_and_extract_links() -> None:
     assert links == ["https://github.com/a/b"]
 
 
+def test_resolve_links_dedupes_redirects() -> None:
+    hops = {"https://my.manychat.com/r?act=1": "https://github.com/a/b",
+            "https://my.manychat.com/r?act=2": "https://x.dev"}  # fmt: skip
+
+    def final(u: str) -> str:
+        if u in hops:
+            return hops[u]
+        raise OSError("offline")
+
+    links = ["https://github.com/a/b", "https://x.dev/", *hops, "https://bit.ly/dead"]
+    assert cg.resolve_links(links, final) == [
+        "https://github.com/a/b", "https://x.dev/", "https://bit.ly/dead"
+    ]  # fmt: skip
+
+
 def test_quick_reply_allowlist() -> None:
     assert cg.quick_reply_allowed("Send me the link")
     assert cg.quick_reply_allowed("YES")
