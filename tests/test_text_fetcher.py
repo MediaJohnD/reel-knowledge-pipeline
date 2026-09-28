@@ -322,6 +322,30 @@ def test_notion_fetcher_extracts_main_text(tmp_path):
 
 
 @respx.mock
+def test_google_doc_uses_text_export(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    export = "https://docs.google.com/document/d/AbC-1_x/export?format=txt"
+    respx.get(export).mock(
+        return_value=httpx.Response(
+            200, text="﻿Startup team guide", headers={"content-type": "text/plain"}
+        )
+    )
+    fetcher = GenericHtmlFetcher(settings)
+
+    result = fetcher.fetch("https://docs.google.com/document/d/AbC-1_x/edit?usp=sharing", "c")
+    assert result.text == "Startup team guide"
+    assert result.backend == "gdocs-export"
+
+    respx.get(export).mock(
+        return_value=httpx.Response(
+            200, text="<html>Sign in</html>", headers={"content-type": "text/html"}
+        )
+    )
+    with pytest.raises(TextFetchError, match="isn't public"):
+        fetcher.fetch("https://docs.google.com/document/d/AbC-1_x/edit", "c")
+
+
+@respx.mock
 def test_notion_fetcher_raises_clear_error_when_extraction_is_empty(tmp_path):
     # render_fallback disabled: this test targets the plain-GET/app-shell
     # heuristic specifically, not the render fallback (covered separately

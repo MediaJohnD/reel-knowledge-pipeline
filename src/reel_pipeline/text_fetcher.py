@@ -419,7 +419,11 @@ class DriveFetcher:
 _APP_SHELL_MARKERS = (
     "javascript must be enabled",
     "please enable javascript",
+    "javascript isn't enabled",  # Google Docs/Sheets/Slides
 )
+# A shared Docs/Slides editor URL serves only a JS app shell; the document's
+# own public plain-text export endpoint serves the content (2026-09-28).
+_GOOGLE_DOC_RE = re.compile(r"https?://docs\.google\.com/(document|presentation)/d/([\w-]+)")
 # Below this length, extracted text is more likely to be app-shell boilerplate
 # (a stray noscript/meta fragment) than real page content - real pages,
 # even short ones, run well past this once trafilatura strips markup.
@@ -644,11 +648,17 @@ class GenericHtmlFetcher:
         self._rendered = RenderedHtmlFetcher(settings)
 
     def fetch(self, url: str, content_id: str) -> TranscriptResult:
+        google_doc = _GOOGLE_DOC_RE.match(url)
+        fetch_url = (
+            f"https://docs.google.com/{google_doc[1]}/d/{google_doc[2]}/export?format=txt"
+            if google_doc
+            else url
+        )
         owned_client = self._client or httpx.Client(timeout=30.0, follow_redirects=True)
         owns_client = self._client is None
         try:
             try:
-                response = owned_client.get(url)
+                response = owned_client.get(fetch_url)
             except httpx.HTTPError as exc:
                 raise TextFetchError(f"failed to fetch page {url!r}: {exc}") from exc
             if response.status_code != 200:
@@ -657,6 +667,20 @@ class GenericHtmlFetcher:
         finally:
             if owns_client:
                 owned_client.close()
+
+        if google_doc:
+            # A private doc redirects to Google's sign-in HTML instead.
+            text = html.lstrip("﻿").strip()
+            if not response.headers.get("content-type", "").startswith("text/plain") or not text:
+                raise TextFetchError(f"Google doc {url!r} isn't public - no text export")
+            return TranscriptResult(
+                content_id=content_id,
+                text=text,
+                content_kind="text",
+                language=None,
+                backend="gdocs-export",
+                duration_seconds=None,
+            )
 
         extracted = (trafilatura.extract(html) or "").strip()
         # A challenge/login-wall page can arrive as a plain HTTP 200 the
