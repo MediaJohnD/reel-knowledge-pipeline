@@ -17,15 +17,20 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import html as html_lib
+import io
 import re
 import sys
 import threading
+import zipfile
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlparse
 
 import httpx
+import pypdf
 import trafilatura
 
 from reel_pipeline.config import Settings
@@ -354,10 +359,9 @@ class DriveFetcher:
     like an HTML export. No OAuth, no API key, no browser - a plain GET,
     same trust profile as GenericHtmlFetcher.
 
-    v1 known limitation, documented rather than silently wrong: binary
-    document formats (PDF, PPTX, DOCX, ...) aren't parsed - they fail with a
-    clear "binary format not supported" error rather than garbage text or a
-    silent empty note. Also not handled: Drive's "can't scan this file for
+    Binary files (PDF, PPTX, DOCX, ...) are saved into the vault's
+    `attachments/` folder and embedded in the note, with best-effort text
+    extraction for PDF/DOCX/PPTX. Not handled: Drive's "can't scan this file for
     viruses" interstitial page that appears for files too large for that
     scan (roughly >25MB) instead of the raw bytes - out of scope for the
     "handful of shared items" volume this project is built for.
@@ -390,12 +394,8 @@ class DriveFetcher:
 
         try:
             text = response.content.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise TextFetchError(
-                f"Drive file {url!r} is a binary format (PDF/PPTX/DOCX/etc.) - "
-                "not supported yet, this pipeline only reads plain text/markdown/HTML "
-                "Drive files"
-            ) from exc
+        except UnicodeDecodeError:
+            return self._attach_binary(response, file_id, content_id)
 
         stripped = text.strip()
         if stripped.lower().startswith(("<!doctype html", "<html")):
@@ -414,6 +414,55 @@ class DriveFetcher:
             backend="drive-download",
             duration_seconds=None,
         )
+
+    def _attach_binary(
+        self, response: httpx.Response, file_id: str, content_id: str
+    ) -> TranscriptResult:
+        """Save a binary file (PDF/PPTX/DOCX/...) into the vault's attachments
+        folder and embed it, so Obsidian renders the original; extract what
+        text we can so enrichment has something to read (2026-09-28)."""
+        match = re.search(r'filename="([^"]+)"', response.headers.get("content-disposition", ""))
+        name = Path(match[1]).name if match else f"{file_id}.bin"
+        # ponytail: same-name files from different items overwrite each other;
+        # prefix content_id if that ever happens.
+        dest = self.settings.vault_dir / "attachments" / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(response.content)
+        extracted = _binary_text(response.content, name)
+        text = f"![[{name}]]\n\n" + (extracted or f"(Attached file {name}; no text extracted.)")
+        return TranscriptResult(
+            content_id=content_id,
+            text=text,
+            content_kind="text",
+            language=None,
+            backend="drive-attachment",
+            duration_seconds=None,
+        )
+
+
+def _binary_text(data: bytes, name: str) -> str:
+    """Best-effort plain text from a PDF/DOCX/PPTX; '' for anything else."""
+    suffix = Path(name).suffix.lower()
+    try:
+        if suffix == ".pdf":
+            reader = pypdf.PdfReader(io.BytesIO(data))
+            return "\n\n".join((p.extract_text() or "").strip() for p in reader.pages).strip()
+        if suffix in (".docx", ".pptx"):
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                parts = sorted(
+                    (
+                        n
+                        for n in z.namelist()
+                        if re.match(r"(word/document|ppt/slides/slide\d+)\.xml$", n)
+                    ),
+                    key=lambda n: int(re.sub(r"\D", "", n) or 0),
+                )
+                xml = "\n".join(z.read(n).decode("utf-8", "replace") for n in parts)
+            xml = re.sub(r"</(w:p|a:p)>", "\n", xml)
+            return html_lib.unescape(re.sub(r"<[^>]+>", "", xml)).strip()
+    except Exception:  # a corrupt/encrypted file still gets attached
+        return ""
+    return ""
 
 
 _APP_SHELL_MARKERS = (

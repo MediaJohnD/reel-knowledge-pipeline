@@ -742,14 +742,29 @@ def test_drive_fetcher_extracts_html_export_via_trafilatura(tmp_path):
 
 
 @respx.mock
-def test_drive_fetcher_raises_clear_error_on_binary_file(tmp_path):
+def test_drive_fetcher_attaches_binary_file_to_vault(tmp_path):
+    import io
+    import zipfile
+
     settings = Settings(project_root=tmp_path)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("word/document.xml", "<w:p><w:t>Setup &amp; guide</w:t></w:p>")
+    docx = buf.getvalue()
     respx.get("https://drive.google.com/uc?export=download&id=abc789").mock(
-        return_value=httpx.Response(200, content=b"\x89PNG\r\n\x1a\n\x00\x01\xff\xfe")
+        return_value=httpx.Response(
+            200, content=docx, headers={"content-disposition": 'attachment; filename="Guide.docx"'}
+        )
     )
 
-    with pytest.raises(TextFetchError, match="binary format"):
-        DriveFetcher(settings).fetch("https://drive.google.com/file/d/abc789/view", "cid-drive3")
+    result = DriveFetcher(settings).fetch(
+        "https://drive.google.com/file/d/abc789/view", "cid-drive3"
+    )
+
+    assert (settings.vault_dir / "attachments" / "Guide.docx").read_bytes() == docx
+    assert result.text.startswith("![[Guide.docx]]")
+    assert "Setup & guide" in result.text
+    assert result.backend == "drive-attachment"
 
 
 def test_drive_fetcher_raises_clear_error_when_no_file_id_in_url(tmp_path):
