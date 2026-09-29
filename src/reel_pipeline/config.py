@@ -186,6 +186,7 @@ class CommentGateConfig(BaseModel):
     window_max_writes: int = Field(default=3, ge=1)
     gap_min_seconds: float = 180
     gap_max_seconds: float = 360
+    day_start_hour: int = Field(default=7, ge=0, le=23)  # daily budgets reset here, local time
     daily_max_writes: int = 15
     daily_max_comments: int = 8
     first_week_days: int = 7

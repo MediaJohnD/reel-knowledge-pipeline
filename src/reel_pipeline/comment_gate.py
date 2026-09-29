@@ -301,11 +301,19 @@ def first_week(q: dict[str, Any], now: datetime, cfg: CommentGateConfig) -> bool
     return start is None or now < _dt(start) + timedelta(days=cfg.first_week_days)
 
 
+def day_start(now: datetime, cfg: CommentGateConfig) -> datetime:
+    """Start of the current budget day: the last `day_start_hour` o'clock, machine-local."""
+    local = now.astimezone()
+    start = local.replace(hour=cfg.day_start_hour, minute=0, second=0, microsecond=0)
+    return start if local >= start else start - timedelta(days=1)
+
+
 def write_wait(q: dict[str, Any], now: datetime, cfg: CommentGateConfig, kind: str) -> float | None:
     """Seconds to wait before a write of `kind` ("follow"/"comment"/"button"),
-    or None when the rolling 24 h budget is spent (the run should stop)."""
+    or None when today's budget (since `day_start`) is spent (the run should stop)."""
     writes = [(_dt(w["at"]), w["kind"]) for w in q["writes"]]
-    day = [w for w in writes if w[0] > now - timedelta(hours=24)]
+    start = day_start(now, cfg)
+    day = [w for w in writes if w[0] >= start]
     if len(day) >= cfg.daily_max_writes:
         return None
     comment_cap = (
@@ -621,7 +629,7 @@ class Runner:
             self.save()
             return True
         if not self._wait_for("follow"):
-            self.report.say("24 h budget spent, stopping")
+            self.report.say("daily budget spent (resets 07:00), stopping")
             return False
         self._owner_ok()
         _set(rec, FOLLOWING, self.now())
@@ -642,7 +650,7 @@ class Runner:
 
     def _comment(self, cid: str, rec: dict[str, Any]) -> bool:
         if not self._wait_for("comment"):
-            self.report.say("24 h comment budget spent, stopping")
+            self.report.say("daily comment budget spent (resets 07:00), stopping")
             return False
         # Snapshot the DM thread so only replies after our comment count.
         thread = self.page.open_thread(rec["creator"], rec["thread_url"])

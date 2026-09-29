@@ -512,3 +512,16 @@ def test_parse_og_description_reads_the_posts_own_author() -> None:
     og += '"Comment “TRADE” for the link\n\n#ai".'
     assert cg.parse_og_description(og) == ("zachdoesai_", "Comment “TRADE” for the link\n\n#ai")
     assert cg.parse_og_description("Instagram") == (None, "Instagram")
+
+
+def test_daily_budget_resets_at_day_start_hour() -> None:
+    cfg, q = CommentGateConfig(), _q()
+    q["first_apply_at"] = T0.isoformat()
+    evening = datetime(2026, 9, 28, 23, 30).astimezone()  # machine-local
+    q["writes"] = [
+        {"at": (evening - timedelta(minutes=m)).isoformat(), "kind": "comment"} for m in range(5)
+    ]
+    assert cg.write_wait(q, evening, cfg, "comment") is None  # week-1 cap spent
+    morning = datetime(2026, 9, 29, 7, 0).astimezone()
+    assert cg.write_wait(q, morning - timedelta(minutes=1), cfg, "comment") is None
+    assert cg.write_wait(q, morning, cfg, "comment") == 0  # new day at 07:00

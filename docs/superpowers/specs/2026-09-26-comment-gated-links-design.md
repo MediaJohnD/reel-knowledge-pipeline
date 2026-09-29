@@ -109,7 +109,7 @@ one:
      comment from our handle is only a best-effort extra check.
    - Rate limits (in `config/settings.yaml`, `comment_gate:` block): max 3 write actions
      (follow or comment) per rolling 15 minutes, random 3 to 6 minute gap between write
-     actions, max 15 write actions and 8 comments per rolling 24 h. For the first 7 days
+     actions, max 15 write actions and 8 comments per day (the day resets at `day_start_hour`, 07:00 local; rolling 24 h until 2026-09-28). For the first 7 days
      after the first `--apply`, max 3 comments per rolling 24 h. A follow counts toward the
      limit. Dry-run consumes no budget.
    - Browser: the installed Chrome via `channel="chrome"`, not stock Playwright Chromium.

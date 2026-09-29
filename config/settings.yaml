@@ -254,7 +254,8 @@ comment_gate:
   window_max_writes: 3            # follows + comments + button presses
   gap_min_seconds: 180            # random gap between any two writes
   gap_max_seconds: 360
-  daily_max_writes: 15            # rolling 24 h
+  day_start_hour: 7               # daily caps reset at 07:00 local time
+  daily_max_writes: 15
   daily_max_comments: 8
   first_week_days: 7
   first_week_daily_max_comments: 5
