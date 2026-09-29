@@ -259,7 +259,7 @@ comment_gate:
   first_week_days: 7
   first_week_daily_max_comments: 5
   follow_wait_seconds: [60, 180]  # follow -> comment, after the first week
-  first_week_follow_wait_seconds: [1200, 5400]
+  first_week_follow_wait_seconds: [120, 240]
   dm_min_wait_seconds: 120
   dm_timeout_hours: 48
   halt_hours: 24                  # any challenge / action-blocked stops everything
