@@ -37,7 +37,9 @@ The system supports:
   (`REEL_IG_BROWSER_PROFILE`) that the owner logs into by hand, to get links
   from "comment KEYWORD for the link" reels: follow the creator, comment the
   keyword, read the DM, press allowlisted quick-reply buttons. It is
-  owner-run only (`cli comment-queue run`, never the worker or webhook) and
+  owner-run only (`cli comment-queue run`, never the worker or webhook; since
+  2026-10-02 the owner-created Task Scheduler task "Reel Comment Queue" runs it
+  daily at 10:00 local, the rate limits still apply) and
   dry-run by default (`--apply` to act). Hard rate limits live in
   `comment_gate:` in `config/settings.yaml`: 3 writes per 15 min, random
   3-6 min gaps, 5 comments per day (the day resets at 07:00 local) in the first week (raised from 3 on 2026-09-28 at the owner's request). It halts for 24 h on any
