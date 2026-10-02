@@ -258,7 +258,7 @@ comment_gate:
   daily_max_writes: 15
   daily_max_comments: 8
   first_week_days: 7
-  first_week_daily_max_comments: 5
+  first_week_daily_max_comments: 8
   follow_wait_seconds: [60, 180]  # follow -> comment, after the first week
   first_week_follow_wait_seconds: [120, 240]
   dm_min_wait_seconds: 120

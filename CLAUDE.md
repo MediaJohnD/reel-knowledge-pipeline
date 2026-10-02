@@ -42,7 +42,7 @@ The system supports:
   daily at 10:00 local, the rate limits still apply) and
   dry-run by default (`--apply` to act). Hard rate limits live in
   `comment_gate:` in `config/settings.yaml`: 3 writes per 15 min, random
-  3-6 min gaps, 5 comments per day (the day resets at 07:00 local) in the first week (raised from 3 on 2026-09-28 at the owner's request). It halts for 24 h on any
+  3-6 min gaps, 8 comments per day (the day resets at 07:00 local) in the first week (raised from 3 on 2026-09-28, to 8 on 2026-10-02, at the owner's request). It halts for 24 h on any
   challenge or action-blocked dialog. Code never sees or types the password,
   never reuses the yt-dlp/gallery-dl cookies, and uses no anti-detection
   tooling. Confined to `comment_gate.py`. See
