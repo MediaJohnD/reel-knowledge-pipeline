@@ -28,7 +28,7 @@ one:
 - Allowed actions, Instagram only, the owner's own account: follow the creator of a queued
   reel, post exactly the keyword the creator asked for on that reel, read the DM thread with
   that creator, and press a DM quick-reply button only when its label is on a short
-  allowlist (see DM reading). Nothing else: no likes, no other comments, no DMs typed by us,
+  allowlist (see DM reading). Nothing else: no likes, no other comments, no DMs typed by us (one exception since 2026-10-02: the reel's keyword, typed back once when the bot asks for it, `reply_keyword`),
   no unfollows, no browsing feeds.
 - Login is done by the owner by hand, once, in a dedicated persistent browser profile. Code
   never sees or types a password and does not reuse the yt-dlp/gallery-dl cookie config.

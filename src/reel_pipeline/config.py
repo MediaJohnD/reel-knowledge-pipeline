@@ -198,6 +198,7 @@ class CommentGateConfig(BaseModel):
     halt_hours: int = 24
     max_attempts: int = 3
     max_button_presses: int = 2
+    reply_keyword: bool = True  # type the keyword back once when the bot asks for it
 
 
 class WebhookConfig(BaseModel):

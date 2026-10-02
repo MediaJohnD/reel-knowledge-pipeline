@@ -222,6 +222,12 @@ class FakePage:
         self.actions.append(f"press:{label}")
         self.thread = self.thread + [Message("https://l.instagram.com/?u=https%3A%2F%2Fx.dev")]
 
+    def send_dm(self, text: str) -> None:
+        self.actions.append(f"dm:{text}")
+        self.thread = self.thread + self.dm_reply
+
+    dm_reply: list[Message] = []
+
 
 class Clock:
     def __init__(self) -> None:
@@ -353,6 +359,39 @@ def test_dm_without_link_keeps_waiting_for_the_link() -> None:
     page.thread = page.thread + [Message("https://github.com/s/g")]  # owner tapped it
     _runner(page, q, clock=clock).run(max_items=0)
     assert rec["status"] == cg.LINK_RECEIVED and rec["links"] == ["https://github.com/s/g"]
+
+
+def test_bot_asking_for_keyword_gets_it_once() -> None:
+    # Live 2026-10-02 (@nateherkai): after the app tap, the bot wants the keyword typed.
+    page, q, clock = FakePage(), _queued(), Clock()
+    page.following = True
+    page.bot_reply = [Message("Awesome! Just reply with the keyword from the post"),
+                      Message("Type the keyword here")]  # fmt: skip
+    page.dm_reply = []  # bot slow to answer
+    _runner(page, q, clock=clock).run(max_items=1)
+    clock.sleep(600)
+    _runner(page, q, clock=clock).run(max_items=0)
+    clock.sleep(600)
+    _runner(page, q, clock=clock).run(max_items=0)
+    assert page.actions.count("dm:SCRAPE") == 1  # never twice
+    page.thread = page.thread + [Message("Here is the link https://github.com/s/g")]
+    _runner(page, q, clock=clock).run(max_items=0)
+    rec = q["items"]["c1"]
+    assert rec["status"] == cg.LINK_RECEIVED and rec["links"] == ["https://github.com/s/g"]
+    assert sum(w["kind"] == "dm" for w in q["writes"]) == 1
+
+
+def test_no_keyword_reply_without_an_ask_or_when_off() -> None:
+    assert not cg.asks_for_keyword(["Click below and I'll send you the setup"])
+    page, q, clock = FakePage(), _queued(), Clock()
+    page.following = True
+    page.bot_reply = [Message("Reply with the keyword to get it")]
+    cfg = CommentGateConfig(reply_keyword=False)
+    for _ in range(2):
+        Runner(page, q, cfg, "me", True, now=clock.now, sleep=clock.sleep,
+               rng=random.Random(0)).run(max_items=1)  # fmt: skip
+        clock.sleep(600)
+    assert not any(a.startswith("dm:") for a in page.actions)
 
 
 def _node(mid: str, ts: int, user: str, content: dict) -> dict:

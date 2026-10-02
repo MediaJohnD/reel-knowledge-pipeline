@@ -13,7 +13,9 @@ Hard rules enforced here:
   profile (`cli comment-queue login`). Code never sees a password or reuses the
   yt-dlp/gallery-dl cookies.
 - Allowed actions: follow, one keyword comment per reel, read DMs, press an
-  allowlisted quick-reply button. Never type a DM, like, unfollow or browse.
+  allowlisted quick-reply button, and type the reel's own keyword back once when
+  the creator's bot asks for it (owner-approved 2026-10-02). Never type any
+  other DM, like, unfollow or browse.
 - Dry-run unless `apply=True`. Rate limits are far below any published estimate.
 - Any challenge, login wall or "action blocked" halts everything for 24 h. It is
   never worked around, and there is no anti-detection tooling.
@@ -201,6 +203,16 @@ def resolve_links(links: list[str], final_url: Callable[[str], str] = _final_url
     return out
 
 
+# "Just reply with the keyword from the post", "Type the keyword here" (live 2026-10-02).
+_KEYWORD_ASK = re.compile(
+    r"\b(reply|respond|type|send|enter|drop)\b[^.!?\n]{0,30}\bkeyword\b", re.I
+)
+
+
+def asks_for_keyword(texts: Iterable[str]) -> bool:
+    return any(_KEYWORD_ASK.search(t) for t in texts)
+
+
 def quick_reply_allowed(label: str) -> bool:
     label = label.strip()
     return 0 < len(label) < 30 and bool(_QUICK_REPLY.search(label))
@@ -309,7 +321,7 @@ def day_start(now: datetime, cfg: CommentGateConfig) -> datetime:
 
 
 def write_wait(q: dict[str, Any], now: datetime, cfg: CommentGateConfig, kind: str) -> float | None:
-    """Seconds to wait before a write of `kind` ("follow"/"comment"/"button"),
+    """Seconds to wait before a write of `kind` ("follow"/"comment"/"button"/"dm"),
     or None when today's budget (since `day_start`) is spent (the run should stop)."""
     writes = [(_dt(w["at"]), w["kind"]) for w in q["writes"]]
     start = day_start(now, cfg)
@@ -416,7 +428,7 @@ def parse_slide_messages(bodies: Iterable[str], thread_key: str) -> list[Message
 class Page(Protocol):
     """What the run loop needs from a browser. `IgBrowser` is the Playwright
     version; tests use a fake. Every method is read-only except click_follow,
-    post_comment and press_button."""
+    post_comment, press_button and send_dm."""
 
     def goto(self, url: str) -> None: ...
     def url(self) -> str: ...
@@ -430,6 +442,7 @@ class Page(Protocol):
     def open_thread(self, creator: str, known_url: str | None) -> str | None: ...
     def read_thread(self) -> list[Message]: ...
     def press_button(self, label: str) -> None: ...
+    def send_dm(self, text: str) -> None: ...
 
 
 class Halted(Exception):
@@ -693,6 +706,7 @@ class Runner:
                 rec["thread_url"] = thread
                 new = _new_replies(self.page.read_thread(), rec, self.owner)
                 new = self._press_buttons(rec, new)
+                new = self._reply_keyword(rec, new)
             links = extract_links([m.text for m in new], [h for m in new for h in m.hrefs])
             text = "\n".join(m.text for m in new if m.text.strip())
             taps = ", ".join(repr(t) for m in new for t in m.taps)
@@ -742,6 +756,27 @@ class Runner:
             self.sleep(self.rng.uniform(20, 40))
             new = _new_replies(self.page.read_thread(), rec, self.owner)
         return new
+
+    def _reply_keyword(self, rec: dict[str, Any], new: list[Message]) -> list[Message]:
+        """Type the reel's keyword back, once, when the bot asks for it and sent no link."""
+        if (
+            not self.apply
+            or not self.cfg.reply_keyword
+            or rec.get("keyword_replied")
+            or extract_links([m.text for m in new], [h for m in new for h in m.hrefs])
+            or not asks_for_keyword(m.text for m in new)
+            or not self._wait_for("dm")
+        ):
+            return new
+        self._owner_ok()
+        rec["keyword_replied"] = True  # before sending: at most once, even after a crash
+        self.save()
+        self.page.send_dm(rec["keyword"])
+        self._wrote("dm")
+        self._check()
+        _event(rec, self.now(), f"replied {rec['keyword']!r}")
+        self.sleep(self.rng.uniform(20, 40))
+        return _new_replies(self.page.read_thread(), rec, self.owner)
 
 
 # --------------------------------------------------------------------------- Playwright
@@ -947,7 +982,7 @@ class IgBrowser:
                 out.append(Message(r["text"], hrefs, r["buttons"]))
         return out
 
-    # -- write (the only three)
+    # -- write (the only four)
 
     def click_follow(self) -> None:
         found = self._follow_button()
@@ -973,6 +1008,13 @@ class IgBrowser:
 
     def press_button(self, label: str) -> None:
         self._page.get_by_role("button", name=label, exact=True).last.click()
+        self._page.wait_for_timeout(self.settle_ms)
+
+    def send_dm(self, text: str) -> None:
+        box = self._page.locator("div[contenteditable=true][role=textbox]").last
+        box.click()
+        box.type(text, delay=120)
+        self._page.keyboard.press("Enter")
         self._page.wait_for_timeout(self.settle_ms)
 
 

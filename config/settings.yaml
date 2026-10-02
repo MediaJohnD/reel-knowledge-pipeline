@@ -251,7 +251,7 @@ webhook:
 comment_gate:
   queue_file: data/review/comment_queue.json
   window_minutes: 15
-  window_max_writes: 3            # follows + comments + button presses
+  window_max_writes: 3            # follows + comments + button presses + keyword DMs
   gap_min_seconds: 180            # random gap between any two writes
   gap_max_seconds: 360
   day_start_hour: 7               # daily caps reset at 07:00 local time
@@ -266,6 +266,7 @@ comment_gate:
   halt_hours: 24                  # any challenge / action-blocked stops everything
   max_attempts: 3
   max_button_presses: 2
+  reply_keyword: true             # type the reel's keyword back once when the bot asks (2026-10-02)
 
 # Automatic disk/log housekeeping - runs at the top of every run_once() (so it
 # fires on every webhook hit / queue check, no separate cron job needed). Set

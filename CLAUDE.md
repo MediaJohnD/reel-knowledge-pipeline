@@ -36,7 +36,7 @@ The system supports:
   `comment_gate.py` drives a headed Chrome on a dedicated persistent profile
   (`REEL_IG_BROWSER_PROFILE`) that the owner logs into by hand, to get links
   from "comment KEYWORD for the link" reels: follow the creator, comment the
-  keyword, read the DM, press allowlisted quick-reply buttons. It is
+  keyword, read the DM, press allowlisted quick-reply buttons, and type the reel's keyword back once if the bot asks for it (added 2026-10-02, `reply_keyword`). It is
   owner-run only (`cli comment-queue run`, never the worker or webhook; since
   2026-10-02 the owner-created Task Scheduler task "Reel Comment Queue" runs it
   daily at 10:00 local, the rate limits still apply) and
