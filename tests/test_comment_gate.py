@@ -160,6 +160,32 @@ def test_insert_gated_section_goes_above_review() -> None:
     assert cg.insert_gated_section("# T\n\nbody\n", [], "txt").endswith("> txt\n")
 
 
+def test_link_children_wikilinks_finished_dm_notes(tmp_path) -> None:
+    from reel_pipeline.config import Settings
+
+    settings = Settings(project_root=tmp_path)
+    parent, child = tmp_path / "reel.md", tmp_path / "awesome-datasets.md"
+    child.write_text("x", encoding="utf-8")
+    links = ["https://github.com/a/b", "https://x.dev"]
+    parent.write_text(
+        cg.insert_gated_section("# T\n\n## Review (auto, x)\n\nok\n", links, "hi"),
+        encoding="utf-8",
+    )
+    q = cg.load_queue(cg.queue_path(settings))
+    q["items"]["p1"] = {"links": links, "link_ids": ["c1", "c2"], "dm_text": "hi"}
+    cg.save_queue(cg.queue_path(settings), q)
+    state = {
+        "p1": {"status": "done", "note_path": str(parent)},
+        "c1": {"status": "done", "note_path": str(child)},
+        "c2": {"status": "pending", "note_path": None},
+    }
+    assert cg.link_children(settings, state) == 1
+    out = parent.read_text(encoding="utf-8")
+    assert "- [[awesome-datasets]] (https://github.com/a/b)" in out
+    assert "- https://x.dev" in out and out.index("[[awesome") < out.index("## Review")
+    assert cg.link_children(settings, state) == 0  # idempotent
+
+
 # --------------------------------------------------------------------------- flow
 
 

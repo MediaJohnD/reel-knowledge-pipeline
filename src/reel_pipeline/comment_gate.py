@@ -1055,11 +1055,19 @@ def login(
 # --------------------------------------------------------------------------- delivery
 
 
-def insert_gated_section(note: str, links: list[str], dm_text: str) -> str:
-    """Put the DM content above the review section (analyse() drops what's below)."""
+def insert_gated_section(
+    note: str, links: list[str], dm_text: str, notes: dict[str, str] | None = None
+) -> str:
+    """Put the DM content above the review section (analyse() drops what's below).
+
+    `notes` maps a link to the stem of the note it was ingested as; those links
+    are written as wikilinks so the child note isn't an orphan in the vault."""
     note = re.sub(r"\n\n## Gated content \(DM\)\n.*?(?=\n\n## |\Z)", "", note, flags=re.S)
+    notes = notes or {}
     body = [GATED_HEADING, ""]
-    body += [f"- {u}" for u in links] or ["- (no links)"]
+    body += [f"- [[{notes[u]}]] ({u})" if u in notes else f"- {u}" for u in links] or [
+        "- (no links)"
+    ]
     if dm_text:
         body += ["", "DM text:", ""] + [f"> {line}" for line in dm_text.splitlines()]
     section = "\n\n" + "\n".join(body)
@@ -1118,6 +1126,30 @@ def deliver(settings: Settings, q: dict[str, Any], now: datetime) -> list[str]:
             _set(rec, NEEDS_REREVIEW, now)
             out.append(f"{cid}: {len(rec['links'])} link(s) queued")
     return out
+
+
+def link_children(settings: Settings, state_items: dict[str, Any]) -> int:
+    """Rewrite each delivered reel's gated section with wikilinks to the notes its
+    DM links have since been ingested as. Idempotent; returns notes changed.
+
+    Runs from the worker (caller holds the run_once lock), since the children
+    only finish after deliver() queued them."""
+    changed = 0
+    for cid, rec in load_queue(queue_path(settings))["items"].items():
+        notes = {}
+        for url, child in zip(rec["links"], rec["link_ids"], strict=False):
+            if (state_items.get(child) or {}).get("status") != "done":
+                continue
+            if (p := find_note(settings, child, state_items)) is not None:
+                notes[url] = p.stem
+        if not notes or (parent := find_note(settings, cid, state_items)) is None:
+            continue
+        text = parent.read_text(encoding="utf-8")
+        new = insert_gated_section(text, rec["links"], rec["dm_text"], notes)
+        if new != text:
+            atomic_write(parent, new)
+            changed += 1
+    return changed
 
 
 def render_queue_page(q: dict[str, Any], state_items: dict[str, Any]) -> str:

@@ -23,6 +23,7 @@ in-progress backlog pass - see queue_manager.py.
 
 from __future__ import annotations
 
+import json
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -765,7 +766,19 @@ class WorkerPipeline:
                     remaining=len(actionable) - summary.processed,
                 )
                 break
+        if summary.done:
+            self._link_comment_gate_children()
         return summary
+
+    def _link_comment_gate_children(self) -> None:
+        """Wikilink finished DM-link notes from their parent reel's gated section."""
+        from reel_pipeline import comment_gate
+
+        try:
+            state = json.loads(self.settings.state_file.read_text(encoding="utf-8"))
+            comment_gate.link_children(self.settings, state.get("items", {}))
+        except (OSError, ValueError, KeyError) as exc:
+            log_context(logger, 30, "comment-gate backlinks failed", error=describe_exc(exc))
 
 
 def build_worker(settings: Settings) -> WorkerPipeline:
