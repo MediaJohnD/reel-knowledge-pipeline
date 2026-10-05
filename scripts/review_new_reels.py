@@ -1017,13 +1017,35 @@ def gate_verdict(j, keyword, queue_status):
     return True
 
 
+CAREER_RE = re.compile(
+    r"\bfractional[\s-]+(?:c[a-z]?o|executive|exec|leader|head|vp|marketer|role|work|practice)s?\b"
+    r"|\binterim\s+(?:c[a-z]?o|executive|exec)s?\b|\bexpert[\s-]+networks?\b"
+    r"|\bconsultant\s*gigs?\b",  # not "advisory board": AI-agent reels use it
+    re.I,
+)
+
+
+def career_verdict(j, text):
+    """Fractional/consulting career reels are for the owner's job search, not a tool
+    to install, so the judge always skips them. Tag them `career` instead so the
+    digest keeps them findable. -> True if overridden."""
+    if j["verdict"] != "skip" or not CAREER_RE.search(text):
+        return False
+    j["verdict"], j["cap_reason"] = "career", "fractional/consulting career signal"
+    return True
+
+
 def apply_comment_gate(settings, cid, text, fm, a):
     """Override skip for a gated reel and queue it for `cli comment-queue`
     (Instagram only). Research "indep" pages are any site the judge may cite,
-    not the gated resource itself, so they never cancel the comment."""
+    not the gated resource itself, so they never cancel the comment.
+    A career reel that is not gated is tagged `career` instead of skip."""
     from reel_pipeline import comment_gate as cg
 
-    kw = cg.detect_comment_gate(re.split(r"\r?\n\r?\n## Review \(auto,", text)[0])
+    body = re.split(r"\r?\n\r?\n## Review \(auto,", text)[0]
+    kw = cg.detect_comment_gate(body)
+    if kw is None and a["j"]:
+        career_verdict(a["j"], body)
     if kw is None or not a["j"]:
         return
     import filelock
@@ -1593,6 +1615,12 @@ def self_check():
         assert not gate_verdict({"verdict": "skip"}, kw, st)
     assert not gate_verdict({"verdict": "skip"}, None, None)
     assert not gate_verdict({"verdict": "try-now"}, kw, None)
+    # 12 career reels are tagged, not skipped; stock "fractional shares" is not career
+    j = {"verdict": "skip"}
+    assert career_verdict(j, "Scaling Fractional CMOs past $150K") and j["verdict"] == "career"
+    assert career_verdict({"verdict": "skip"}, "Join GLG, the expert network")
+    assert not career_verdict({"verdict": "skip"}, "Buy fractional shares on Robinhood")
+    assert not career_verdict({"verdict": "try-now"}, "fractional CTO toolkit repo")
     print("self-check ok")
 
 
