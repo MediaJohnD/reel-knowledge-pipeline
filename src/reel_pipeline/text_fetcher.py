@@ -472,6 +472,12 @@ _APP_SHELL_MARKERS = (
 )
 # A shared Docs/Slides editor URL serves only a JS app shell; the document's
 # own public plain-text export endpoint serves the content (2026-09-28).
+# httpx's default "python-httpx/x" UA gets a flat 403 from Skool and some
+# Cloudflare-fronted blogs that serve a browser UA fine (2026-10-05).
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0 Safari/537.36"
+)
 _GOOGLE_DOC_RE = re.compile(r"https?://docs\.google\.com/(document|presentation)/d/([\w-]+)")
 # Below this length, extracted text is more likely to be app-shell boilerplate
 # (a stray noscript/meta fragment) than real page content - real pages,
@@ -707,7 +713,7 @@ class GenericHtmlFetcher:
         owns_client = self._client is None
         try:
             try:
-                response = owned_client.get(fetch_url)
+                response = owned_client.get(fetch_url, headers={"User-Agent": _BROWSER_UA})
             except httpx.HTTPError as exc:
                 raise TextFetchError(f"failed to fetch page {url!r}: {exc}") from exc
             if response.status_code != 200:
