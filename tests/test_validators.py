@@ -111,6 +111,19 @@ def test_paid_ad_click_ids_do_not_change_content_id():
     )
 
 
+def test_normalize_url_strips_notion_copy_link_source_only_on_notion_hosts():
+    """Regression test: the same Notion page ingested with and without Notion's
+    `?source=copy_link` minted two content_ids and two notes (23-things-..., 2026-10-04)."""
+    page = "https://app.notion.com/p/23-things-3c6e396e06bb81028c50d7b565f270d6"
+
+    assert compute_content_id(f"{page}?source=copy_link") == compute_content_id(page)
+    assert normalize_url("https://x.notion.site/Page-abc?source=copy_link") == normalize_url(
+        "https://x.notion.site/Page-abc"
+    )
+    # `source` can identify content elsewhere, so it stays off the global strip list.
+    assert "source=feed" in normalize_url("https://example.com/x?source=feed")
+
+
 def test_sanitize_url_drops_auth_tokens_without_changing_the_content_id():
     """Regression test: a ManyChat share link committed a live JWT (mcp_token) to the
     vault's git remote. The token has to survive normalize_url (content_id stability

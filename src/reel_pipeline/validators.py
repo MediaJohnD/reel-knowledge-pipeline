@@ -114,10 +114,16 @@ def normalize_url(url: str) -> str:
             [] if img_index is None else [("img_index", str(img_index))]
         )
     else:
+        strip = _STRIP_QUERY_PARAMS
+        if any(
+            host == d or host.endswith("." + d) for d in ("notion.so", "notion.site", "notion.com")
+        ):
+            # Notion's "Copy link" appends ?source=copy_link, which minted a second
+            # content_id for the same page (23-things-..., 2026-10-04). Notion-only:
+            # `source` can identify content on other sites.
+            strip = strip | {"source"}
         kept_params = sorted(
-            (key, value)
-            for key, value in parse_qsl(parsed.query)
-            if key.lower() not in _STRIP_QUERY_PARAMS
+            (key, value) for key, value in parse_qsl(parsed.query) if key.lower() not in strip
         )
     query = urlencode(kept_params)
     return urlunparse((scheme, netloc, path, "", query, ""))
