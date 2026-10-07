@@ -105,3 +105,96 @@ def find_duplicate_notes(settings: Settings) -> list[str]:
             joined = ", ".join(str(p) for p in paths)
             findings.append(f"duplicate source_url {source_url!r}: {joined}")
     return findings
+
+
+_HUB_PROMPT = """You file notes into an Obsidian vault's topic hubs.
+Hubs and their sections:
+{hubs}
+
+For each note below, pick the single best "hub/section" from the list above, exactly as written.
+Use null if the note is empty, junk, or fits no hub.
+Reply with JSON only: {{"<slug>": "<hub>/<section>" or null, ...}}
+
+Notes (slug | title | tags | summary):
+{notes}"""
+
+
+def _hub_sections(hubs_dir: Path) -> dict[str, list[str]]:
+    return {
+        hub.stem: [
+            line[3:].strip()
+            for line in hub.read_text(encoding="utf-8").splitlines()
+            if line.startswith("## ") and not line[3:].startswith(("See Also", "Related"))
+        ]
+        for hub in sorted(hubs_dir.glob("*.md"))
+    }
+
+
+def _append_to_section(hub: Path, section: str, slug: str) -> None:
+    lines = hub.read_text(encoding="utf-8").split("\n")
+    start = lines.index(f"## {section}")
+    end = next((k for k in range(start + 1, len(lines)) if lines[k].startswith("## ")), len(lines))
+    while lines[end - 1].strip() == "":
+        end -= 1
+    lines.insert(end, f"- [[{slug}]]")
+    hub.write_text("\n".join(lines), encoding="utf-8")
+
+
+def auto_hub(settings: Settings, *, batch: int = 40) -> list[str]:
+    """Links every pipeline note no hub links to yet into the best-fitting
+    `Hubs/<hub>.md` section, chosen by one free-waterfall LLM call per batch.
+    Only appends a wikilink bullet - never creates hubs/sections or moves notes.
+    Notes the model calls junk (null) or misfiles to an unknown section are
+    reported and left for manual review.
+    """
+    import json
+    import re
+
+    from reel_pipeline.enricher import _extract_json
+    from reel_pipeline.llm_client import call_llm
+
+    vault = Path(settings.vault_dir)
+    hubs_dir = vault / "Hubs"
+    if not hubs_dir.is_dir():
+        return []
+    linked = {
+        Path(target).name.lower()
+        for hub in hubs_dir.glob("*.md")
+        for target in re.findall(r"\[\[([^\]|#]+)", hub.read_text(encoding="utf-8"))
+    }
+    pending = []
+    for path in vault.rglob("*.md"):
+        if hubs_dir in path.parents or path.stem.lower() in linked:
+            continue
+        frontmatter = read_frontmatter(path)
+        if not frontmatter or not frontmatter.get("content_id"):
+            continue  # not a pipeline note (digests, reports, catalogs)
+        summary = re.search(r"## Summary\n+(.+)", path.read_text(encoding="utf-8", errors="ignore"))
+        tags = ",".join(map(str, frontmatter.get("tags") or []))
+        pending.append(
+            f"{path.stem} | {frontmatter.get('title', '')} | {tags} | "
+            f"{summary.group(1)[:200] if summary else ''}"
+        )
+
+    sections = _hub_sections(hubs_dir)
+    menu = "\n".join(f"{hub}: {' / '.join(secs)}" for hub, secs in sections.items())
+    changes: list[str] = []
+    for i in range(0, len(pending), batch):
+        chunk = pending[i : i + batch]
+        raw = call_llm(
+            settings,
+            _HUB_PROMPT.format(hubs=menu, notes="\n".join(chunk)),
+            model=settings.enrichment.model,
+            max_tokens=4000,
+            json_mode=True,
+        )
+        picks = _extract_json(raw)
+        for line in chunk:
+            slug = line.split(" | ", 1)[0]
+            hub, _, section = str(picks.get(slug) or "").partition("/")
+            if section not in sections.get(hub, []):
+                changes.append(f"unhubbed {slug}: model picked {json.dumps(picks.get(slug))}")
+                continue
+            _append_to_section(hubs_dir / f"{hub}.md", section, slug)
+            changes.append(f"hubbed {slug} -> {hub}/{section}")
+    return changes

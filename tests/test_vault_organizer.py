@@ -132,3 +132,34 @@ if __name__ == "__main__":
     import pytest
 
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_auto_hub_links_unhubbed_notes(tmp_path, monkeypatch):
+    import json
+
+    from reel_pipeline import llm_client
+    from reel_pipeline.vault_organizer import auto_hub
+
+    settings = Settings(project_root=tmp_path)
+    manager = QueueManager(settings)
+    a = _write_done_record(settings, manager, "aaa", "Travel Hacks")
+    b = _write_done_record(settings, manager, "bbb", "Junk")
+    hubs = settings.vault_dir / "Hubs"
+    hubs.mkdir()
+    (hubs / "travel-hub.md").write_text(
+        "# T\n\n## Flights\n- [[old]]\n\n## See Also\n- [[x]]\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        llm_client,
+        "call_llm",
+        lambda *a_, **k: json.dumps({a.stem: "travel-hub/Flights", b.stem: "travel-hub/See Also"}),
+    )
+
+    changes = auto_hub(settings)
+
+    hub = (hubs / "travel-hub.md").read_text(encoding="utf-8")
+    assert f"- [[old]]\n- [[{a.stem}]]\n\n## See Also" in hub
+    assert b.stem not in hub and any(c.startswith(f"unhubbed {b.stem}") for c in changes)
+    assert auto_hub(settings) == [
+        f'unhubbed {b.stem}: model picked "travel-hub/See Also"'
+    ]  # idempotent

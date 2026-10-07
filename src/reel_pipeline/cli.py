@@ -154,7 +154,7 @@ def organize_vault_cmd() -> None:
     not something this pipeline decides). Safe to run repeatedly - already-
     correct notes are skipped.
     """
-    from reel_pipeline.vault_organizer import find_duplicate_notes, organize_vault
+    from reel_pipeline.vault_organizer import auto_hub, find_duplicate_notes, organize_vault
 
     settings = get_settings()
     settings.ensure_directories()
@@ -167,6 +167,12 @@ def organize_vault_cmd() -> None:
         for change in changes:
             typer.echo(f"  {change}")
         typer.echo(f"{len(changes)} note(s) touched")
+
+    try:  # hubbing is best-effort: a dead LLM waterfall must not fail the nightly run
+        for change in auto_hub(settings):
+            typer.echo(f"  {change}")
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"auto-hub skipped: {exc}")
 
     duplicates = find_duplicate_notes(settings)
     if duplicates:
