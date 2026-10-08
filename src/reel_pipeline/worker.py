@@ -280,6 +280,10 @@ class WorkerPipeline:
                 else:
                     transcript = self._transcribe_media_paths(media_paths, record.content_id)
                     videos = [p for p in media_paths if p.suffix.lower() in _VIDEO_SUFFIXES]
+                    fetch_video = getattr(self.downloader, "download_video", None)
+                    if not videos and not transcript.text.strip() and fetch_video:
+                        # yt-dlp fetched audio only; a speechless clip needs its pictures.
+                        videos = [fetch_video(record.url, record.content_id)]
                     if videos and not transcript.text.strip():
                         # Audio but no speech (music bed + on-screen text): the
                         # visuals carry the content, so describe sampled frames.

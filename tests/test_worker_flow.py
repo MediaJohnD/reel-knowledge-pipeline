@@ -586,6 +586,35 @@ def test_speechless_video_carousel_falls_back_to_describing_frames(tmp_path, mon
     assert "[Clip" not in note_text
 
 
+def test_speechless_audio_only_download_fetches_video_for_frames(tmp_path, monkeypatch):
+    """Regression (2026-10-08, a facebook.com/share/r/ reel): yt-dlp downloads
+    audio only, so a speechless clip had no frames to describe and failed
+    permanently as an empty transcript."""
+    settings = Settings(
+        project_root=tmp_path,
+        download=DownloadConfig(allowed_domains=["facebook.com"], blocked_domains=[]),
+    )
+
+    class AudioOnlyDownloader(FakeDownloader):
+        def download_video(self, url: str, content_id: str) -> Path:
+            return Path(f"/fake/{content_id}.mp4")
+
+    describer = FakeImageDescriber()
+    pipeline = build_pipeline(settings, AudioOnlyDownloader(), transcriber=SilentTranscriber())
+    pipeline.image_describer = describer
+    monkeypatch.setattr(
+        "reel_pipeline.worker._extract_frames", lambda p: [p.with_suffix(".f1.jpg")]
+    )
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.facebook.com/share/r/silent1/\n", encoding="utf-8"
+    )
+
+    summary = pipeline.run_once()
+
+    assert summary.done == 1
+    assert len(describer.calls) == 1
+
+
 def test_openai_multi_video_transcription_runs_clips_concurrently_and_keeps_order(tmp_path):
     settings = Settings(
         project_root=tmp_path,

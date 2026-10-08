@@ -108,13 +108,7 @@ class YtDlpDownloader:
         # for every domain it handles; if not, yt-dlp
         # attempts anonymous access and raises its own clear "log in required" error
         # for content that needs it.
-        cookies = self.settings.optional_ytdlp_cookies()
-        if cookies is not None:
-            cookie_kind, cookie_value = cookies
-            if cookie_kind == "file":
-                ydl_opts["cookiefile"] = cookie_value
-            else:
-                ydl_opts["cookiesfrombrowser"] = (cookie_value,)
+        self._add_cookies(ydl_opts)
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # pyright: ignore[reportArgumentType]
@@ -137,6 +131,42 @@ class YtDlpDownloader:
             source_title=(info or {}).get("title"),
             duration_seconds=(info or {}).get("duration"),
         )
+
+    def download_video(self, url: str, content_id: str) -> Path:
+        """Fetch a small video copy of `url` - only for a clip whose audio-only
+        download transcribed to nothing, so its frames can be described instead."""
+        import yt_dlp  # type: ignore[import-untyped]
+        from yt_dlp.utils import DownloadError as YtDlpDownloadError
+
+        out_dir = self.settings.tmp_dir / content_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ydl_opts: dict = {
+            "format": "bv*[height<=720]/b[height<=720]/b",
+            "outtmpl": str(out_dir / "video.%(ext)s"),
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "socket_timeout": 30,
+        }
+        self._add_cookies(ydl_opts)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # pyright: ignore[reportArgumentType]
+                ydl.extract_info(url, download=True)
+        except YtDlpDownloadError as exc:
+            raise DownloadError(f"yt-dlp failed to download video for {url!r}: {exc}") from exc
+        videos = [p for p in sorted(out_dir.glob("video.*")) if p.suffix.lower() in _VIDEO_SUFFIXES]
+        if not videos:
+            raise DownloadError(f"yt-dlp produced no video file for {url!r}")
+        return videos[0]
+
+    def _add_cookies(self, ydl_opts: dict) -> None:
+        cookies = self.settings.optional_ytdlp_cookies()
+        if cookies is not None:
+            cookie_kind, cookie_value = cookies
+            if cookie_kind == "file":
+                ydl_opts["cookiefile"] = cookie_value
+            else:
+                ydl_opts["cookiesfrombrowser"] = (cookie_value,)
 
 
 _VIDEO_SUFFIXES = (".mp4", ".mov", ".webm", ".mkv")
@@ -353,6 +383,10 @@ class DispatchingDownloader:
         if any(domain == d or domain.endswith(f".{d}") for d in _INSTAGRAM_DOMAINS):
             return self._gallery_dl.download(url, content_id)
         return self._yt_dlp.download(url, content_id)
+
+    def download_video(self, url: str, content_id: str) -> Path:
+        # gallery-dl (Instagram) already returns video files; only yt-dlp is audio-only.
+        return self._yt_dlp.download_video(url, content_id)
 
 
 def get_downloader(settings: Settings) -> Downloader:
