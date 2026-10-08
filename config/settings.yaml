@@ -85,10 +85,13 @@ llm:
     # that rung had been 404ing on every fallthrough.
     - provider: groq
       model: openai/gpt-oss-20b
+    # Gemini 3.x Flash-Lite only (500 RPD / 15 RPM each, separate quotas,
+    # live-verified 2026-10-08). Every other Flash, 2.5 included, is 20 RPD
+    # free - too thin for a fallback rung (Free Model Rule, 2026-09-27).
     - provider: gemini
-      model: gemini-2.5-flash
+      model: gemini-3.5-flash-lite
     - provider: gemini
-      model: gemini-2.5-flash-lite
+      model: gemini-3.1-flash-lite
     - provider: mistral
       model: ministral-8b-latest
     - provider: mistral
@@ -101,9 +104,8 @@ llm:
       model: qwen2.5:7b
   # Vision fallback chain for photo/carousel description (describe_images()).
   # Same 2026-08-25 research and the same China-infra exclusions apply.
-  # Gemini Flash-Lite first (highest free RPD of the Gemini vision tiers,
-  # cheap, good enough for a photo description), Gemini Flash second (higher
-  # quality, lower RPD), Groq's qwen/qwen3.6-27b third (the only Groq vision
+  # Gemini 3.5 then 3.1 Flash-Lite first (500 RPD each, both vision-capable,
+  # live-verified 2026-10-08; 2.5 Flash dropped as a 20 RPD model), Groq's qwen/qwen3.6-27b third (the only Groq vision
   # model - a preview that can be pulled without notice, so mid-tier not
   # primary; Chinese-origin *weights*, but Groq's own US hardware is the
   # actual serving infra, which is what the policy cares about), Mistral's
@@ -113,9 +115,9 @@ llm:
   # Ollama last as the always-available, unmetered final catch-all.
   vision_waterfall:
     - provider: gemini
-      model: gemini-2.5-flash-lite
+      model: gemini-3.5-flash-lite
     - provider: gemini
-      model: gemini-2.5-flash
+      model: gemini-3.1-flash-lite
     - provider: groq
       model: qwen/qwen3.8-27b
     - provider: mistral
