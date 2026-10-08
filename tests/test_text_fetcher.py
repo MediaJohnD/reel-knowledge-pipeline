@@ -322,6 +322,23 @@ def test_notion_fetcher_extracts_main_text(tmp_path):
 
 
 @respx.mock
+def test_generic_html_fetcher_retries_403_with_bot_user_agent(tmp_path):
+    """Wikimedia 403s the browser UA but serves a descriptive bot UA."""
+    settings = Settings(project_root=tmp_path)
+    route = respx.get("https://en.wikipedia.org/wiki/X").mock(
+        side_effect=lambda req: httpx.Response(
+            200 if req.headers["User-Agent"].startswith("reel-pipeline/") else 403,
+            text=_NOTION_PAGE_HTML,
+        )
+    )
+
+    result = GenericHtmlFetcher(settings).fetch("https://en.wikipedia.org/wiki/X", "cid-ua")
+
+    assert "onboarding process" in result.text
+    assert route.call_count == 2
+
+
+@respx.mock
 def test_google_doc_uses_text_export(tmp_path):
     settings = Settings(project_root=tmp_path)
     export = "https://docs.google.com/document/d/AbC-1_x/export?format=txt"
