@@ -1,7 +1,9 @@
 .PHONY: install test lint format format-check typecheck audit lockcheck run-once serve-webhook check
 
 install:
-	uv sync
+	# settings.yaml defaults to the local transcription backend; a bare `uv sync`
+	# uninstalls faster-whisper and every video item then fails.
+	uv sync --extra local-whisper
 
 test:
 	uv run pytest

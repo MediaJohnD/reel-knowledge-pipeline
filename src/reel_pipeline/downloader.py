@@ -89,6 +89,9 @@ class YtDlpDownloader:
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
+            # yt-dlp has no read timeout by default, so a stalled transfer would
+            # hold the worker (and the webhook's single-flight lock) forever.
+            "socket_timeout": 30,
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",

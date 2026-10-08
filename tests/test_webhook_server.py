@@ -213,6 +213,28 @@ def test_concurrent_background_triggers_never_run_worker_concurrently(tmp_path, 
     assert run_count == 2  # but t2's trigger still caused a drain pass, not silently lost
 
 
+def test_rerun_requested_during_failed_pass_still_runs(tmp_path, monkeypatch):
+    """A link POSTed while a pass is failing must still get its drain pass."""
+    settings = make_settings(tmp_path)
+    calls = []
+
+    class FakeSummary:
+        processed = done = failed = 0
+
+    class FakeWorker:
+        def run_once(self):
+            calls.append(1)
+            if len(calls) == 1:
+                webhook_server._rerun_requested.set()  # a POST arrives mid-pass
+                raise RuntimeError("boom")
+            return FakeSummary()
+
+    monkeypatch.setattr(webhook_server, "build_worker", lambda settings: FakeWorker())
+    monkeypatch.setattr(webhook_server, "_run_post_ingest_in_background", lambda settings: None)
+    webhook_server._run_worker_in_background(settings)
+    assert len(calls) == 2
+
+
 def test_post_ingest_runs_review_then_organize_and_survives_failure(tmp_path, monkeypatch):
     """After ingest the review stage then vault organize run (not only at 02:15); a
     failing step must not stop the next one or raise out of the background task."""

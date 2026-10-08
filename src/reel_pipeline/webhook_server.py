@@ -169,8 +169,9 @@ def _run_worker_in_background(settings: Settings) -> None:
                     failed=summary.failed,
                 )
             except Exception as exc:  # noqa: BLE001 - background task must never crash the server
+                # No break: a link POSTed during the failed pass still gets its rerun,
+                # instead of waiting for the next webhook/nightly trigger.
                 log_context(logger, 40, "background run_once failed", error=str(exc))
-                break
             if not _rerun_requested.is_set():
                 break
     finally:
