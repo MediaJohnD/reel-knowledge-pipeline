@@ -41,6 +41,7 @@ from reel_pipeline.config import Settings
 from reel_pipeline.downloader import (
     Downloader,
     _extract_first_frame,
+    _extract_frames,
     _video_has_audio_stream,
     get_downloader,
 )
@@ -65,6 +66,8 @@ from reel_pipeline.text_fetcher import TextFetcher, get_text_fetcher
 from reel_pipeline.transcriber import Transcriber, get_transcriber
 
 logger = get_logger(__name__)
+
+_VIDEO_SUFFIXES = (".mp4", ".mov", ".webm", ".mkv")
 
 
 def describe_exc(exc: BaseException) -> str:
@@ -276,6 +279,12 @@ class WorkerPipeline:
                     transcript = self.image_describer.describe(media_paths, record.content_id)
                 else:
                     transcript = self._transcribe_media_paths(media_paths, record.content_id)
+                    videos = [p for p in media_paths if p.suffix.lower() in _VIDEO_SUFFIXES]
+                    if videos and not transcript.text.strip():
+                        # Audio but no speech (music bed + on-screen text): the
+                        # visuals carry the content, so describe sampled frames.
+                        frames = [f for p in videos for f in _extract_frames(p)]
+                        transcript = self.image_describer.describe(frames, record.content_id)
                 self._write_transcript_cache(record.content_id, transcript)
                 record.last_completed_stage = ItemStage.TRANSCRIBED
                 log_context(
@@ -467,11 +476,10 @@ class WorkerPipeline:
         # transcribe would re-derive VIDEO for a silent clip a fresh download
         # would now correctly call IMAGE.
         audio_suffixes = (".mp3", ".m4a", ".wav")
-        video_container_suffixes = (".mp4", ".mov", ".webm", ".mkv")
         image_suffixes = (".jpg", ".jpeg", ".png", ".webp")
 
         audio_files = [p for p in files if p.suffix.lower() in audio_suffixes]
-        video_containers = [p for p in files if p.suffix.lower() in video_container_suffixes]
+        video_containers = [p for p in files if p.suffix.lower() in _VIDEO_SUFFIXES]
         real_videos = audio_files + [p for p in video_containers if _video_has_audio_stream(p)]
         if real_videos:
             return DownloadResult(
@@ -580,8 +588,13 @@ class WorkerPipeline:
             # one CUDA context); concurrent inference on that shared instance is not
             # a safe or useful default.
             results = [self.transcriber.transcribe(path, content_id) for path in media_paths]
+        # Wordless clips are left out, so an all-wordless carousel combines to ""
+        # and still trips the empty-transcript fallback/guard in process_item,
+        # instead of a "[Clip 1/2] [Clip 2/2]" shell that reads as content.
         combined_text = "\n\n".join(
-            f"[Clip {i + 1}/{len(results)}] {result.text}" for i, result in enumerate(results)
+            f"[Clip {i + 1}/{len(results)}] {result.text}"
+            for i, result in enumerate(results)
+            if result.text.strip()
         )
         total_duration = sum(result.duration_seconds or 0.0 for result in results) or None
         language = next((result.language for result in results if result.language), None)

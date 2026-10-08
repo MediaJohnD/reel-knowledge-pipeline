@@ -196,6 +196,59 @@ def _extract_first_frame(video_path: Path) -> Path:
     return frame_path
 
 
+def _extract_frames(video_path: Path, count: int = 4) -> list[Path]:
+    """Samples `count` evenly spaced frames from a video whose audio has no
+    speech, so on-screen text that changes over the clip reaches the vision
+    path (one first frame often shows only a title card). Same failure
+    contract as _extract_first_frame.
+    """
+    frame_dir = video_path.with_suffix(".frames")
+    frame_dir.mkdir(exist_ok=True)
+    try:
+        probe = subprocess.run(  # noqa: S603 - fixed argv, no shell, path is our own download
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "csv=p=0",
+                str(video_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        duration = float(probe.stdout.strip())
+        # ponytail: fixed frame count, scale with duration if long reels lose text
+        rate = count / duration
+        result = subprocess.run(  # noqa: S603 - fixed argv, no shell, path is our own download
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(video_path),
+                "-vf",
+                f"fps={rate}",
+                "-frames:v",
+                str(count),
+                str(frame_dir / "%02d.jpg"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError, ZeroDivisionError) as exc:
+        raise DownloadError(f"ffmpeg failed to sample frames from {video_path}: {exc}") from exc
+    frames = sorted(frame_dir.glob("*.jpg"))
+    if result.returncode != 0 or not frames:
+        raise DownloadError(
+            f"ffmpeg failed to sample frames from {video_path}: {result.stderr.strip()}"
+        )
+    return frames
+
+
 class GalleryDlDownloader:
     """Downloads Instagram media via the gallery-dl CLI, using a cookies file or
     browser cookie jar from the account owner's own logged-in session (never a

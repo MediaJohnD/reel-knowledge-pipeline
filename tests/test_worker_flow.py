@@ -558,6 +558,34 @@ def test_multi_video_carousel_transcribes_every_clip_and_combines_them(tmp_path)
     assert note_text.count("transcript for") == 2  # both clips' text made it into the note
 
 
+def test_speechless_video_carousel_falls_back_to_describing_frames(tmp_path, monkeypatch):
+    """Regression (2026-10-07, instagram.com/p/DeJvBSaiGvj): two music-bed clips
+    with on-screen text transcribed to "", the combiner still emitted
+    "[Clip 1/2] [Clip 2/2]", the empty guard missed it, and a contentless
+    "Instagram Reel with No Transcript" note was written.
+    """
+    settings = Settings(
+        project_root=tmp_path,
+        download=DownloadConfig(allowed_domains=["instagram.com"], blocked_domains=[]),
+    )
+    describer = FakeImageDescriber()
+    pipeline = build_pipeline(settings, FakeMultiVideoDownloader(), transcriber=SilentTranscriber())
+    pipeline.image_describer = describer
+    monkeypatch.setattr(
+        "reel_pipeline.worker._extract_frames", lambda p: [p.with_suffix(".f1.jpg")]
+    )
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.instagram.com/p/speechless1/\n", encoding="utf-8"
+    )
+
+    summary = pipeline.run_once()
+
+    assert summary.done == 1
+    assert len(describer.calls) == 1 and len(describer.calls[0]) == 2  # a frame per clip
+    note_text = Path(summary.note_paths[0]).read_text(encoding="utf-8")
+    assert "[Clip" not in note_text
+
+
 def test_openai_multi_video_transcription_runs_clips_concurrently_and_keeps_order(tmp_path):
     settings = Settings(
         project_root=tmp_path,
