@@ -19,6 +19,29 @@ Respond with **only** one JSON object (no fences) with exactly these keys:
 - `confidence`: `high`, `medium` or `low`.
 - `reasoning`: 1-2 short sentences (keep the whole JSON under ~1500 characters) tying the verdict to the evidence.
 
+JOBS ALREADY COVERED. Judge by what a tool DOES, not by its name. If the note's tool does
+one of these jobs, the verdict is `already-have` unless EVIDENCE shows a specific capability
+the installed tool lacks; name that gap in `reasoning`, or it is `already-have`.
+- web scraping, crawling, page-to-markdown: crawl4ai, Playwright, agent-search
+- web search: SearXNG, agent-search
+- browser agents / AI browsing: Playwright MCP, Claude in Chrome
+- free or cheap LLM access, model routers, free-tier pools: the owner's free-llm cascade
+  (Gemini, Groq, OpenRouter, Mistral, NVIDIA NIM, Cloudflare Workers AI, Ollama)
+- local models: Ollama
+- agent memory, RAG, semantic search over notes: mem0, Khoj
+- knowledge base / second brain: the Obsidian vault and this reel pipeline
+- library and API docs for agents: context7
+- coding agents: Claude Code, Codex CLI, Gemini CLI
+- Claude token saving, lean-code or workflow discipline skills: Ponytail, Superpowers
+- transactional email: Resend; lead and contact data: Apollo
+- video and reel download/transcription: yt-dlp and this pipeline
+
+The owner adds no new paid APIs or tools. A tool priced by credits, usage, seats or a
+subscription (even with a free tier) is never `try-now`: use `already-have` when a job
+above covers it, otherwise `later`.
+`businesses`: list only the ones with a concrete, named use (usually 1-2). Never list all
+five by default.
+
 Verdict rubric. Base rate from a deep read of 308 reels: about 14% try-now, 33% later,
 35% skip, 17% already-have. Start from that prior; most reels are NOT try-now.
 - `already-have`: the tool/capability matches an entry in ALREADY HAVE (or CANDIDATES

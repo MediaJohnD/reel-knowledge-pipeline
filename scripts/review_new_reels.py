@@ -70,6 +70,11 @@ VENDORS = (
     "youtube.com",
 )
 CATALOG = {"awesome", "index", "catalog", "list", "lists"}
+PAID = re.compile(
+    r"\bcredits?\b(?! card)|\bpaid\b|\$\d|/mo(nth)?\b|per month|\bsubscriptions?\b"
+    r"|\bper seat\b|\busage-based\b|pay-as-you-go",
+    re.I,
+)
 INSTALL_RE = re.compile(
     r"\b(npx|npm\s+(?:i|install)|pip3?\s+install|uv\s+tool\s+install|uv\s+pip\s+install|cargo\s+install)\s+((?:-\S+\s+)*)([^\s;&|`'\"]+)",
     re.I,
@@ -809,6 +814,8 @@ def finalize(j, fetched, indep, used, names, have_hits, meta=None, owners=None):
         is_catalog((meta or {}).get(r) or {"full_name": r}) for r in crepos
     ):
         j["verdict"], j["cap_reason"] = "later", "cited repo is a catalog/index/awesome-list"
+    if j["verdict"] == "try-now" and PAID.search(str(j.get("cost", ""))):
+        j["verdict"], j["cap_reason"] = "later", "paid or credit-priced; no new paid tools"
     tools = [n for n in names if "/" not in n]
     if tools and len(have_hits) >= len(tools) and j["verdict"] != "skip":
         j["verdict"] = "already-have"
@@ -1480,6 +1487,19 @@ def self_check():
         f["evidence"] == ["https://github.com/a/foo"]
         and f["verdict"] == "try-now"
         and f["tools_used"] == ["gh", "llm-waterfall"]
+    )
+    f = finalize(
+        dict(good, cost="free tier, then credits"),
+        {"https://github.com/a/foo"},
+        {"https://github.com/a/foo"},
+        [],
+        ["foo-cli"],
+        [],
+    )
+    assert f["verdict"] == "later" and f["cap_reason"].startswith("paid")
+    assert all(PAID.search(c) for c in ("$10/mo", "free tier, then $5/month", "per seat"))
+    assert not any(
+        PAID.search(c) for c in ("free", "unpaid OSS", "no credit card", "credentials", "seating")
     )
     f = finalize(dict(good), {"https://instagram.com/reel/1"}, set(), [], ["foo-cli"], [])
     assert (
