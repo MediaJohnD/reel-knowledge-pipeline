@@ -621,3 +621,15 @@ def test_plain_link_after_mcp_token_link_is_a_duplicate(tmp_path):
     again = qm.add_url("https://github.com/x/y", source=QueueSource.COMMENT_GATE)
     assert again.content_id == first.content_id
     assert len(qm.load_state()) == 1
+
+
+def test_link_inside_shared_text_is_extracted(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    qm = QueueManager(settings)
+    record = qm.add_url(
+        "Check this out: https://github.com/x/y. So good!", source=QueueSource.WEBHOOK
+    )
+    assert record.url == "https://github.com/x/y"
+    assert record.status != ItemStatus.BLOCKED
+    plain = qm.add_url("Image", source=QueueSource.WEBHOOK)
+    assert plain.status == ItemStatus.BLOCKED

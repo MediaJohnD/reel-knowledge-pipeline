@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from textwrap import indent
@@ -222,6 +223,7 @@ class QueueManager:
     def _register(
         self, url: str, source: QueueSource, state: dict[str, StateRecord]
     ) -> StateRecord:
+        url = _embedded_url(url)
         result = validate_url(url, self.settings)
         now = datetime.now(UTC)
 
@@ -371,6 +373,17 @@ class QueueManager:
             not in (ItemStatus.DONE, ItemStatus.BLOCKED, ItemStatus.FAILED_PERMANENT)
             and (record.next_retry_at is None or record.next_retry_at <= now)
         ]
+
+
+_URL_IN_TEXT = re.compile(r"https?://\S+")
+
+
+def _embedded_url(text: str) -> str:
+    """The first link inside shared text ("check this https://..."), else the text as-is."""
+    if text.strip().lower().startswith(("http://", "https://")):
+        return text
+    match = _URL_IN_TEXT.search(text)
+    return match.group().rstrip(".,;:!?)]}>\"'") if match else text
 
 
 def _find_existing(
