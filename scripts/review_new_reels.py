@@ -75,6 +75,43 @@ PAID = re.compile(
     r"|\bper seat\b|\busage-based\b|pay-as-you-go",
     re.I,
 )
+# Jobs the installed stack already does, matched on the note title. The judge was told this
+# in the prompt and still rated scrapers and free-model routers try-now, so code enforces it.
+# ponytail: title keywords, a false hit only downgrades try-now to already-have
+COVERED = (
+    (
+        "crawl4ai / Playwright",
+        re.compile(r"\bscrap(e|es|er|ers|ing)\b|\bcrawl(s|er|ers|ing)?\b", re.I),
+    ),
+    (
+        "the free-llm cascade",
+        re.compile(
+            r"openai-compatible|free (ai |llm )?(api|models?)\b|model router|llm router"
+            r"|ai gateway|unlimited .*usage|omniroute|freellmapi",
+            re.I,
+        ),
+    ),
+    (
+        "Playwright MCP / Claude in Chrome / agent-search",
+        re.compile(r"browser[- ]use|web access|access the internet|ai browsing|web browsing", re.I),
+    ),
+    ("Ponytail / Superpowers", re.compile(r"token (waste|usage|saving)|eating your tokens", re.I)),
+)
+
+
+def covered_by(title):
+    return next((who for who, rx in COVERED if rx.search(title or "")), None)
+
+
+# Listicles, checklists, step guides and promos are not one installable tool (prompt rule the
+# judge ignored). ponytail: title keywords, a false hit only downgrades try-now to later
+LISTICLE = re.compile(
+    r"^\W*(\d+|two|three|four|five|six|seven|eight|nine|ten)\b|\bpromo\b|checklist"
+    r"|\bstep \d|\d+\W?steps?\b|\bcore steps\b|blueprint",
+    re.I,
+)
+
+
 INSTALL_RE = re.compile(
     r"\b(npx|npm\s+(?:i|install)|pip3?\s+install|uv\s+tool\s+install|uv\s+pip\s+install|cargo\s+install)\s+((?:-\S+\s+)*)([^\s;&|`'\"]+)",
     re.I,
@@ -922,7 +959,15 @@ def judge(settings, note_text, ev, fetched, indep, used, have):
         )
         err = err or bad_install(j["first_step"])
         if not err:
-            return finalize(j, fetched, indep, used, names, hits, meta, owners)
+            j = finalize(j, fetched, indep, used, names, hits, meta, owners)
+            m = re.search(r"^title:\s*(.+)$", note_text, re.M)
+            title = m.group(1) if m else ""
+            who = covered_by(title)
+            if j["verdict"] == "try-now" and who:
+                j["verdict"], j["cap_reason"] = "already-have", f"job already covered by {who}"
+            elif j["verdict"] == "try-now" and LISTICLE.search(title):
+                j["verdict"], j["cap_reason"] = "later", "listicle/checklist/promo, not one tool"
+            return j
     raise LlmBad(err)
 
 
@@ -1497,6 +1542,26 @@ def self_check():
         [],
     )
     assert f["verdict"] == "later" and f["cap_reason"].startswith("paid")
+    assert covered_by("Scrapling: Adaptive Web Scraping Framework") == "crawl4ai / Playwright"
+    assert covered_by("FreeLLMAPI: Single OpenAI-Compatible Endpoint") == "the free-llm cascade"
+    assert covered_by("Agent Reach: CLI for AI Agents to Access the Internet")
+    assert not covered_by("Typed TypeScript SDK for Social Media") and not covered_by(None)
+    assert not covered_by("Scrapbox: Knowledge Management Tool")
+    assert covered_by("Free AI Tool Scrape Graph Replaces Paid Scrapers")
+    assert all(
+        LISTICLE.search(t)
+        for t in (
+            "'10 Open-Source GitHub Repos That Feel Illegal'",
+            "Four Core Steps to Master AI Search SEO",
+            "JEV Company Brain: 8‑Step AI Orchestration Blueprint",
+            "Step 3 – Create Specs",
+            "AI Agent Skills and Tools Promo Reel",
+        )
+    )
+    assert not any(
+        LISTICLE.search(t)
+        for t in ("Ornith-1.5: Open-Source Model", "G-Step: Workflow Automation", "Laya v2")
+    )
     assert all(PAID.search(c) for c in ("$10/mo", "free tier, then $5/month", "per seat"))
     assert not any(
         PAID.search(c) for c in ("free", "unpaid OSS", "no credit card", "credentials", "seating")
