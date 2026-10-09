@@ -580,7 +580,7 @@ def research(settings, note_text, fm, key, have=()):
     ev = {"repos": [], "sites": [], "youtube": [], "docs": [], "unchecked": [], "fallbacks": []}
     fetched, indep = set(), set()
     src = fm.get("source_url")
-    if src and src not in urls:
+    if src and src.startswith("http") and src not in urls:
         urls.append(src)
     queue, ytn, desc_links = (
         list(urls),

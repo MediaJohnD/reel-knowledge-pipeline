@@ -506,11 +506,16 @@ class WorkerPipeline:
         silent_videos = [p for p in video_containers if p not in real_video_set]
         images += [_extract_first_frame(p) for p in silent_videos]
         if images:
+            # Written by QueueManager.add_share() when a screenshot is shared with text.
+            caption_file = tmp_dir / "caption.txt"
             return DownloadResult(
                 content_id=content_id,
                 media_type=MediaType.IMAGE,
                 media_paths=[str(p) for p in images],
                 platform="cached",
+                caption=caption_file.read_text(encoding="utf-8")
+                if caption_file.is_file()
+                else None,
             )
         return None
 

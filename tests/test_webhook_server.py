@@ -144,7 +144,7 @@ def test_index_serves_form_page_without_embedding_secret(tmp_path):
 
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
-    assert "Send a link to the pipeline" in response.text
+    assert "Send a link, text or screenshot" in response.text
     assert "test-secret-123" not in response.text
 
 
@@ -365,3 +365,48 @@ def test_webhook_resubmission_of_a_failed_item_past_backoff_schedules_a_run(tmp_
     assert response.status_code == 200
     assert response.json()["accepted"] is True
     assert scheduled == [True]
+
+
+def _post(client, body):
+    return client.post("/webhook", json=body, headers={"X-Webhook-Secret": "test-secret-123"})
+
+
+def test_webhook_routes_image_text_and_link_shares(tmp_path, monkeypatch):
+    import base64
+
+    monkeypatch.setattr(webhook_server, "_run_worker_in_background", lambda settings: None)
+    client = TestClient(create_app(make_settings(tmp_path)))
+
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\nrest").decode()
+    image = _post(client, {"image_base64": png, "text": "event flyer"}).json()
+    assert image["accepted"] is True
+    text = _post(client, {"url": "Concert at the pier, Friday 8pm, tickets $20"}).json()
+    assert text["accepted"] is True
+
+    items = QueueManager(make_settings(tmp_path)).load_state()
+    assert items[image["content_id"]].url.startswith("share:image/")
+    assert items[text["content_id"]].url.startswith("share:text/")
+
+
+def test_webhook_rejects_non_image_bytes_and_bare_share_word(tmp_path, monkeypatch):
+    import base64
+
+    monkeypatch.setattr(webhook_server, "_run_worker_in_background", lambda settings: None)
+    client = TestClient(create_app(make_settings(tmp_path)))
+
+    heic = _post(client, {"image_base64": base64.b64encode(b"\x00\x00\x00\x18ftypheic").decode()})
+    assert heic.json()["accepted"] is False
+    assert "HEIC" in heic.json()["reason"]
+    assert _post(client, {"image_base64": "not base64!!"}).json()["accepted"] is False
+    assert _post(client, {"url": "Image"}).json()["accepted"] is False
+
+
+def test_webhook_link_sent_in_text_field_is_queued(tmp_path, monkeypatch):
+    monkeypatch.setattr(webhook_server, "_run_worker_in_background", lambda settings: None)
+    client = TestClient(create_app(make_settings(tmp_path)))
+
+    body = _post(client, {"text": "watch https://www.youtube.com/watch?v=abc123"}).json()
+
+    assert body["accepted"] is True
+    record = QueueManager(make_settings(tmp_path)).load_state()[body["content_id"]]
+    assert record.url == "https://www.youtube.com/watch?v=abc123"

@@ -1551,3 +1551,45 @@ def test_post_caption_is_appended_to_the_note(tmp_path):
     note = Path(summary.note_paths[0]).read_text(encoding="utf-8")
     assert "[Post caption]" in note
     assert "https://github.com/x/y" in note
+
+
+class CapturingEnricher(FakeEnricher):
+    def __init__(self):
+        self.transcripts = []
+
+    def enrich(self, transcript: TranscriptResult, source_url: str) -> EnrichmentResult:
+        self.transcripts.append(transcript)
+        return super().enrich(transcript, source_url)
+
+
+def test_image_share_is_described_with_its_caption_and_written(tmp_path):
+    settings = make_settings(tmp_path)
+    describer, enricher = FakeImageDescriber(), CapturingEnricher()
+    pipeline = build_pipeline(
+        settings, FailingDownloader(), image_describer=describer, enricher=enricher
+    )
+    record = pipeline.queue_manager.add_share(
+        QueueSource.WEBHOOK, text="Saturday flyer", image=b"\xff\xd8\xffjpeg", image_suffix=".jpg"
+    )
+
+    summary = pipeline.run_once()
+
+    assert summary.done == 1
+    assert [p.name for p in describer.calls[0]] == ["share.jpg"]
+    assert "Saturday flyer" in enricher.transcripts[0].text
+    assert not (settings.tmp_dir / record.content_id).exists()
+
+
+def test_text_share_skips_fetching_and_is_enriched_directly(tmp_path):
+    settings = make_settings(tmp_path)
+    fetcher, enricher = FakeTextFetcher(), CapturingEnricher()
+    pipeline = build_pipeline(
+        settings, FailingDownloader(), text_fetcher=fetcher, enricher=enricher
+    )
+    pipeline.queue_manager.add_share(QueueSource.WEBHOOK, text="Concert at the pier, Friday 8pm")
+
+    summary = pipeline.run_once()
+
+    assert summary.done == 1
+    assert fetcher.calls == []
+    assert enricher.transcripts[0].text == "Concert at the pier, Friday 8pm"

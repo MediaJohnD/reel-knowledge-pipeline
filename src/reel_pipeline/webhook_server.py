@@ -12,7 +12,10 @@ alternative to scraping platforms like Instagram directly.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hmac
+import re
 import subprocess
 import sys
 import threading
@@ -55,6 +58,7 @@ _FORM_PAGE = """<!doctype html>
          margin: 0; padding: 1.5rem; box-sizing: border-box; }
   .card { width: 100%; max-width: 420px; }
   h1 { font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem; }
+  input[type=file] { margin-bottom: 0.75rem; }
   input[type=text] { width: 100%; padding: 0.9rem; font-size: 1rem; border-radius: 8px;
                       border: 1px solid #444; background: #222; color: #eee;
                       box-sizing: border-box; margin-bottom: 0.75rem; }
@@ -68,9 +72,10 @@ _FORM_PAGE = """<!doctype html>
 </head>
 <body>
 <div class="card">
-  <h1>Send a link to the pipeline</h1>
-  <input type="text" id="url" placeholder="Paste a link..." autofocus autocomplete="off"
+  <h1>Send a link, text or screenshot</h1>
+  <input type="text" id="url" placeholder="Paste a link or text..." autofocus autocomplete="off"
          autocapitalize="off" autocorrect="off">
+  <input type="file" id="image" accept="image/jpeg,image/png,image/webp">
   <button onclick="send()">Send</button>
   <div id="status"></div>
   <div id="secretRow"><a onclick="setSecret()">Set/change webhook secret</a></div>
@@ -95,7 +100,17 @@ async function send() {
   const urlBox = document.getElementById('url');
   const status = document.getElementById('status');
   const url = urlBox.value.trim();
-  if (!url) { status.textContent = 'Paste a link first.'; return; }
+  const file = document.getElementById('image').files[0];
+  if (!url && !file) { status.textContent = 'Paste a link or text, or pick an image.'; return; }
+  const body = {url: url};
+  if (file) {
+    const dataUrl = await new Promise((ok, bad) => {
+      const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = bad;
+      r.readAsDataURL(file);
+    });
+    body.image_base64 = dataUrl.split(',')[1];
+    body.text = url;
+  }
   let secret = localStorage.getItem(SECRET_KEY);
   if (!secret) { setSecret(); secret = localStorage.getItem(SECRET_KEY); }
   if (!secret) { status.textContent = 'A webhook secret is required.'; return; }
@@ -104,12 +119,12 @@ async function send() {
     const resp = await fetch('/webhook', {
       method: 'POST',
       headers: {'Content-Type': 'application/json', 'X-Webhook-Secret': secret},
-      body: JSON.stringify({url: url})
+      body: JSON.stringify(body)
     });
     const data = await resp.json();
     if (resp.ok && data.accepted) {
       status.textContent = 'Accepted (' + data.status + ')';
-      urlBox.value = '';
+      urlBox.value = ''; document.getElementById('image').value = '';
     } else if (resp.status === 401) {
       status.textContent = 'Rejected: invalid secret. Use "Set/change webhook secret" below.';
     } else {
@@ -128,7 +143,26 @@ document.getElementById('url').addEventListener('keydown', function (e) {
 
 
 class WebhookPayload(BaseModel):
-    url: str
+    # `url` is whatever the share sheet handed over: a link, text with a link in
+    # it, or plain text (a text share). An image comes base64'd in image_base64,
+    # with any accompanying text in `text`.
+    url: str = ""
+    text: str | None = None
+    image_base64: str | None = None
+
+
+_HAS_URL = re.compile(r"https?://", re.IGNORECASE)
+# Shorter than this and it's a share-sheet artifact ("Image", a stray word), not
+# something worth a note - left to the URL path, which blocks it with a reason.
+_MIN_SHARE_TEXT = 20
+_MAX_SHARE_IMAGE_BYTES = 20 * 1024 * 1024
+_IMAGE_MAGIC = ((b"\xff\xd8\xff", ".jpg"), (b"\x89PNG", ".png"))
+
+
+def _image_suffix(data: bytes) -> str | None:
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    return next((suffix for magic, suffix in _IMAGE_MAGIC if data.startswith(magic)), None)
 
 
 class WebhookResponse(BaseModel):
@@ -305,7 +339,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=401, detail="invalid or missing X-Webhook-Secret")
 
         queue_manager = QueueManager(settings)
-        record = queue_manager.add_url(payload.url, source=QueueSource.WEBHOOK)
+        share_text = (payload.text or payload.url).strip()
+        if payload.image_base64:
+            try:
+                # Bound the encoded size first so an oversized upload never gets decoded.
+                if len(payload.image_base64) > _MAX_SHARE_IMAGE_BYTES * 4 // 3 + 4:
+                    raise ValueError("too large")
+                image = base64.b64decode(payload.image_base64, validate=True)
+            except (binascii.Error, ValueError):
+                image = b""
+            suffix = _image_suffix(image)
+            if suffix is None or len(image) > _MAX_SHARE_IMAGE_BYTES:
+                return WebhookResponse(
+                    accepted=False,
+                    content_id="",
+                    status="blocked",
+                    reason="image must be JPEG, PNG or WebP, under 20 MB (convert HEIC to JPEG)",
+                )
+            record = queue_manager.add_share(
+                QueueSource.WEBHOOK, text=share_text, image=image, image_suffix=suffix
+            )
+        elif not _HAS_URL.search(share_text) and len(share_text) >= _MIN_SHARE_TEXT:
+            record = queue_manager.add_share(QueueSource.WEBHOOK, text=share_text)
+        else:
+            record = queue_manager.add_url(share_text, source=QueueSource.WEBHOOK)
         log_context(
             logger,
             20,

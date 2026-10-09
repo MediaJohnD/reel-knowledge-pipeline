@@ -633,3 +633,36 @@ def test_link_inside_shared_text_is_extracted(tmp_path):
     assert record.status != ItemStatus.BLOCKED
     plain = qm.add_url("Image", source=QueueSource.WEBHOOK)
     assert plain.status == ItemStatus.BLOCKED
+
+
+def test_image_share_is_staged_as_downloaded_and_dedups_on_bytes(tmp_path):
+    from reel_pipeline.models import ItemStage
+
+    qm = QueueManager(Settings(project_root=tmp_path))
+    record = qm.add_share(
+        QueueSource.WEBHOOK, text="flyer caption", image=b"\x89PNGfake", image_suffix=".png"
+    )
+
+    assert record.status == ItemStatus.PENDING
+    assert record.last_completed_stage == ItemStage.DOWNLOADED
+    assert record.url == f"share:image/{record.content_id}"
+    tmp = qm.settings.tmp_dir / record.content_id
+    assert (tmp / "share.png").read_bytes() == b"\x89PNGfake"
+    assert (tmp / "caption.txt").read_text(encoding="utf-8") == "flyer caption"
+    again = qm.add_share(
+        QueueSource.WEBHOOK, text="flyer caption", image=b"\x89PNGfake", image_suffix=".png"
+    )
+    assert again.content_id == record.content_id
+
+
+def test_text_share_is_staged_as_transcribed(tmp_path):
+    from reel_pipeline.models import ItemStage, TranscriptResult
+
+    qm = QueueManager(Settings(project_root=tmp_path))
+    record = qm.add_share(QueueSource.WEBHOOK, text="  Farmers market Saturday 9am at the park  ")
+
+    assert record.last_completed_stage == ItemStage.TRANSCRIBED
+    saved = TranscriptResult.model_validate_json(
+        (qm.settings.tmp_dir / record.content_id / "transcript.json").read_text(encoding="utf-8")
+    )
+    assert saved.text == "Farmers market Saturday 9am at the park"

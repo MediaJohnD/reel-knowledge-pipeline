@@ -16,6 +16,7 @@ crashed previous run, regardless of which path added them.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -28,7 +29,7 @@ from filelock import FileLock
 from filelock import Timeout as FileLockTimeout
 
 from reel_pipeline.config import Settings
-from reel_pipeline.models import ItemStatus, QueueSource, StateRecord
+from reel_pipeline.models import ItemStage, ItemStatus, QueueSource, StateRecord, TranscriptResult
 from reel_pipeline.validators import classify_url_kind, sanitize_url, validate_url
 
 _T = TypeVar("_T")
@@ -217,6 +218,54 @@ class QueueManager:
 
         def mutate(state: dict[str, StateRecord]) -> StateRecord:
             return self._register(url, source, state)
+
+        return self._locked_mutate(mutate)
+
+    def add_share(
+        self, source: QueueSource, *, text: str = "", image: bytes = b"", image_suffix: str = ""
+    ) -> StateRecord:
+        """Register a shared screenshot/photo or a block of text (no URL to fetch).
+
+        Lands as an already-"downloaded" item: the image goes where the worker's
+        resume path looks for media (data/tmp/<id>/), shared text as the cached
+        transcript, so process_item() picks up at vision description or enrichment
+        with no share-specific branch. Same bytes/text shared twice = same item.
+        """
+        content_id = hashlib.sha256(image + text.strip().encode("utf-8")).hexdigest()[:16]
+        kind = "image" if image else "text"
+        url = f"share:{kind}/{content_id}"
+
+        def mutate(state: dict[str, StateRecord]) -> StateRecord:
+            existing = state.get(content_id)
+            if existing is not None:
+                return existing
+            tmp = self.settings.tmp_dir / content_id
+            tmp.mkdir(parents=True, exist_ok=True)
+            now = datetime.now(UTC)
+            if image:
+                (tmp / f"share{image_suffix}").write_bytes(image)
+                if text.strip():
+                    (tmp / "caption.txt").write_text(text.strip(), encoding="utf-8")
+                stage = ItemStage.DOWNLOADED
+            else:
+                transcript = TranscriptResult(
+                    content_id=content_id, text=text.strip(), content_kind="text", backend="share"
+                )
+                (tmp / "transcript.json").write_text(transcript.model_dump_json(), encoding="utf-8")
+                stage = ItemStage.TRANSCRIBED
+            record = StateRecord(
+                content_id=content_id,
+                url=url,
+                normalized_url=url,
+                source=source,
+                status=ItemStatus.PENDING,
+                content_kind="media" if image else "text",
+                added_at=now,
+                updated_at=now,
+                last_completed_stage=stage,
+            )
+            state[content_id] = record
+            return record
 
         return self._locked_mutate(mutate)
 
