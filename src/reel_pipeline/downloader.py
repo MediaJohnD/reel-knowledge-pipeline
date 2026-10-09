@@ -40,6 +40,7 @@ for non-Instagram URLs.)
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -130,6 +131,7 @@ class YtDlpDownloader:
             platform=(info or {}).get("extractor_key", "unknown"),
             source_title=(info or {}).get("title"),
             duration_seconds=(info or {}).get("duration"),
+            caption=(info or {}).get("description"),
         )
 
     def download_video(self, url: str, content_id: str) -> Path:
@@ -282,6 +284,18 @@ def _extract_frames(video_path: Path, count: int = 4) -> list[Path]:
     return frames
 
 
+def _gallery_dl_caption(files: list[Path]) -> str | None:
+    for p in files:
+        if p.suffix.lower() == ".json":
+            try:
+                caption = json.loads(p.read_text(encoding="utf-8")).get("description")
+            except (OSError, ValueError, AttributeError):
+                continue
+            if caption:
+                return caption
+    return None
+
+
 class GalleryDlDownloader:
     """Downloads Instagram media via the gallery-dl CLI, using a cookies file or
     browser cookie jar from the account owner's own logged-in session (never a
@@ -299,7 +313,8 @@ class GalleryDlDownloader:
             shutil.rmtree(out_dir)
         out_dir.mkdir(parents=True)
 
-        command = ["gallery-dl", "--dest", str(out_dir), "--quiet"]
+        # --write-metadata: a <file>.json beside each file, read below for the caption.
+        command = ["gallery-dl", "--dest", str(out_dir), "--quiet", "--write-metadata"]
         if cookie_kind == "file":
             command += ["--cookies", cookie_value]
         else:
@@ -327,6 +342,7 @@ class GalleryDlDownloader:
             raise DownloadError(f"gallery-dl failed to download {url!r}: {detail}")
 
         all_files = sorted(p for p in out_dir.rglob("*") if p.is_file())
+        caption = _gallery_dl_caption(all_files)
         all_videos = [p for p in all_files if p.suffix.lower() in _VIDEO_SUFFIXES]
         images = [p for p in all_files if p.suffix.lower() in _IMAGE_SUFFIXES]
 
@@ -351,6 +367,7 @@ class GalleryDlDownloader:
                 media_type=MediaType.VIDEO,
                 media_paths=[str(p) for p in videos],
                 platform="instagram",
+                caption=caption,
             )
 
         if images:
@@ -361,6 +378,7 @@ class GalleryDlDownloader:
                 media_type=MediaType.IMAGE,
                 media_paths=[str(p) for p in images],
                 platform="instagram",
+                caption=caption,
             )
 
         raise DownloadError(f"gallery-dl produced no video or image files for {url!r}")

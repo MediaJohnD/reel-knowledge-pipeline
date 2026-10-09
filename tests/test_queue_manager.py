@@ -612,3 +612,12 @@ def test_add_url_waits_for_a_concurrently_held_state_lock_instead_of_racing(tmp_
     holder.join(timeout=5)
     assert elapsed >= 0.25  # actually waited for the externally-held lock
     assert len(qm.load_state()) == 2
+
+
+def test_plain_link_after_mcp_token_link_is_a_duplicate(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    qm = QueueManager(settings)
+    first = qm.add_url("https://github.com/x/y?mcp_token=abc.def", source=QueueSource.WEBHOOK)
+    again = qm.add_url("https://github.com/x/y", source=QueueSource.COMMENT_GATE)
+    assert again.content_id == first.content_id
+    assert len(qm.load_state()) == 1

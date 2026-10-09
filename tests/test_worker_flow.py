@@ -1528,3 +1528,26 @@ def test_an_empty_transcript_clears_a_stale_cached_one(tmp_path):
 
     assert not stale.is_file()
     assert pipeline._cached_transcript_result("abc123") is None
+
+
+class FakeCaptionedDownloader(FakeDownloader):
+    def download(self, url: str, content_id: str) -> DownloadResult:
+        return (
+            super()
+            .download(url, content_id)
+            .model_copy(update={"caption": 'Comment "REPO" for the link. https://github.com/x/y'})
+        )
+
+
+def test_post_caption_is_appended_to_the_note(tmp_path):
+    settings = make_settings(tmp_path)
+    pipeline = build_pipeline(settings, FakeCaptionedDownloader())
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=cap1\n", encoding="utf-8"
+    )
+
+    summary = pipeline.run_once()
+
+    note = Path(summary.note_paths[0]).read_text(encoding="utf-8")
+    assert "[Post caption]" in note
+    assert "https://github.com/x/y" in note

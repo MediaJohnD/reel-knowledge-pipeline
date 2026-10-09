@@ -67,6 +67,7 @@ from reel_pipeline.transcriber import Transcriber, get_transcriber
 
 logger = get_logger(__name__)
 
+_CAPTION_MAX_CHARS = 3000
 _VIDEO_SUFFIXES = (".mp4", ".mov", ".webm", ".mkv")
 
 
@@ -289,6 +290,13 @@ class WorkerPipeline:
                         # visuals carry the content, so describe sampled frames.
                         frames = [f for p in videos for f in _extract_frames(p)]
                         transcript = self.image_describer.describe(frames, record.content_id)
+                if download_result.caption and download_result.caption.strip():
+                    # ponytail: lost if a crash lands between download and transcribe
+                    # (cached download has no caption); re-ingest the URL if it matters.
+                    caption = download_result.caption.strip()[:_CAPTION_MAX_CHARS]
+                    transcript = transcript.model_copy(
+                        update={"text": f"{transcript.text}\n\n[Post caption]\n{caption}".strip()}
+                    )
                 self._write_transcript_cache(record.content_id, transcript)
                 record.last_completed_stage = ItemStage.TRANSCRIBED
                 log_context(

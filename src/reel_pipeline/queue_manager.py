@@ -28,7 +28,7 @@ from filelock import Timeout as FileLockTimeout
 
 from reel_pipeline.config import Settings
 from reel_pipeline.models import ItemStatus, QueueSource, StateRecord
-from reel_pipeline.validators import classify_url_kind, validate_url
+from reel_pipeline.validators import classify_url_kind, sanitize_url, validate_url
 
 _T = TypeVar("_T")
 
@@ -233,7 +233,7 @@ class QueueManager:
             kind = classify_url_kind(url, self.settings)
             if kind == "text":
                 content_id = result.content_id
-                existing = state.get(content_id)
+                existing = _find_existing(state, content_id, result.normalized_url)
                 if existing is not None:
                     return existing
                 record = StateRecord(
@@ -268,7 +268,7 @@ class QueueManager:
                 return record
             return existing
 
-        existing = state.get(result.content_id)
+        existing = _find_existing(state, result.content_id, result.normalized_url)
         if existing is not None:
             return existing
 
@@ -371,3 +371,25 @@ class QueueManager:
             not in (ItemStatus.DONE, ItemStatus.BLOCKED, ItemStatus.FAILED_PERMANENT)
             and (record.next_retry_at is None or record.next_retry_at <= now)
         ]
+
+
+def _find_existing(
+    state: dict[str, StateRecord], content_id: str, normalized_url: str
+) -> StateRecord | None:
+    """Same content_id, or the same URL once share tokens are dropped. A DM bot's
+    `?mcp_token=` link and the plain link are one page but two content_ids (the
+    token stays in the id on purpose, see sanitize_url) - three such pairs became
+    duplicate notes on 2026-09-29."""
+    existing = state.get(content_id)
+    if existing is not None:
+        return existing
+    # ponytail: linear scan per new URL, fine at ~1k records; index if state grows 100x.
+    target = sanitize_url(normalized_url)
+    return next(
+        (
+            r
+            for r in state.values()
+            if r.normalized_url and sanitize_url(r.normalized_url) == target
+        ),
+        None,
+    )

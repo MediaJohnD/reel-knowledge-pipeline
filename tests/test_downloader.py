@@ -400,3 +400,14 @@ def test_yt_dlp_downloader_clears_stale_files_from_a_previous_failed_attempt(tmp
 
     assert not stale_file.exists()
     assert result.media_paths == [str(out_dir / "audio.mp3")]
+
+
+def test_gallery_dl_caption_reads_description_from_metadata_json(tmp_path):
+    import json
+
+    from reel_pipeline.downloader import _gallery_dl_caption
+
+    (tmp_path / "a.jpg").write_bytes(b"x")
+    (tmp_path / "a.jpg.json").write_text(json.dumps({"description": "see link"}), encoding="utf-8")
+    assert _gallery_dl_caption(sorted(tmp_path.iterdir())) == "see link"
+    assert _gallery_dl_caption([tmp_path / "a.jpg"]) is None

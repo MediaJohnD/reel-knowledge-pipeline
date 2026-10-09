@@ -91,6 +91,9 @@ class DownloadResult(BaseModel):
     platform: str
     source_title: str | None = None
     duration_seconds: float | None = None
+    # The post's caption/description - where creators put links, tool names and
+    # "comment X" keywords that are never spoken. Appended to the transcript.
+    caption: str | None = None
 
 
 class TranscriptResult(BaseModel):
