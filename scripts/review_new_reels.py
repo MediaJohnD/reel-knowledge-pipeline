@@ -1035,6 +1035,71 @@ def career_verdict(j, text):
     return True
 
 
+# The owner's personal pillars (owner, 2026-10-09: "you know I live and breathe travel, habits,
+# dating, and emergency prep"). The judge is business-only, so it skips these; they are not skips.
+PERSONAL_RE = re.compile(
+    r"\b(?:travel\w*|trips?|itinerar\w+|hotels?|resorts?|flights?|airlines?"
+    r"|award (?:seats?|flights?)"
+    r"|frequent[\s-]flyer|hilton|marriott|hyatt|lounges?|passports?|vacations?|destinations?"
+    r"|habits?|routines?|mindset|self[\s-]improvement|journal\w*|adhd|sleep|fitness"
+    r"|workouts?|wellness|longevity|morning routine|discipline"
+    r"|dating|relationships?|tinder|hinge|bumble|first dates?|attraction"
+    r"|emergency|prepper|prepping|preparedness|survival|go[\s-]bag|bug[\s-]out|disaster|first aid"
+    r"|blackouts?|power outages?)\b",
+    re.I,
+)
+
+
+def personal_verdict(j, text):
+    """Travel/habits/dating/emergency-prep reels are the owner's core personal interests:
+    tag them `personal`, never `skip`. Matches title + tags only: transcripts of AI-tool reels
+    say "productivity"/"travel" in passing. -> True if overridden."""
+    if j["verdict"] != "skip" or not PERSONAL_RE.search(text):
+        return False
+    j["verdict"], j["cap_reason"] = (
+        "personal",
+        "owner's personal interest (travel/habits/dating/prep)",
+    )
+    return True
+
+
+def personal_text(fm):
+    return f"{fm.get('title') or ''} {' '.join(map(str, fm.get('tags') or []))}"
+
+
+def backfill_personal(settings, apply):
+    """Relabel past `skip` reviews that are personal-interest reels: manifest, digest row,
+    and the note's review line. Idempotent."""
+    from reel_pipeline.comment_gate import atomic_write
+    from reel_pipeline.obsidian_writer import read_frontmatter
+
+    m, n = load_manifest(), 0
+    digest = settings.vault_dir / DIGEST_NAME
+    dtext = digest.read_text("utf-8")
+    for cid, r in m["items"].items():
+        p = r.get("verdict") == "skip" and find_note(settings, r.get("note_path") or "")
+        if not p:
+            continue
+        text = p.read_bytes().decode("utf-8")
+        j = {"verdict": "skip"}
+        if not personal_verdict(j, personal_text(read_frontmatter(p) or {})):
+            continue
+        n += 1
+        print(f"  {cid}: skip -> personal: {p.name}")
+        if apply:
+            r["verdict"], r["cap_reason"] = j["verdict"], j["cap_reason"]
+            atomic_write(
+                p, re.sub(r"(?m)^- verdict: skip\b.*$", "- verdict: personal", text, count=1)
+            )
+            dtext = re.sub(
+                rf"(?m)^(\|.*)\| `skip` \|(.*\| `{cid}` \|.*)$", r"\1| `personal` |\2", dtext
+            )
+    if apply and n:
+        save_manifest(m)
+        atomic_write(digest, dtext)
+    print(f"{'APPLY' if apply else 'DRY-RUN'}: {n} skip review(s) relabelled personal")
+
+
 def apply_comment_gate(settings, cid, text, fm, a):
     """Override skip for a gated reel and queue it for `cli comment-queue`
     (Instagram only). Research "indep" pages are any site the judge may cite,
@@ -1045,7 +1110,7 @@ def apply_comment_gate(settings, cid, text, fm, a):
     body = re.split(r"\r?\n\r?\n## Review \(auto,", text)[0]
     kw = cg.detect_comment_gate(body)
     if kw is None and a["j"]:
-        career_verdict(a["j"], body)
+        career_verdict(a["j"], body) or personal_verdict(a["j"], personal_text(fm))
     if kw is None or not a["j"]:
         return
     import filelock
@@ -1621,6 +1686,19 @@ def self_check():
     assert career_verdict({"verdict": "skip"}, "Join GLG, the expert network")
     assert not career_verdict({"verdict": "skip"}, "Buy fractional shares on Robinhood")
     assert not career_verdict({"verdict": "try-now"}, "fractional CTO toolkit repo")
+    j = {"verdict": "skip"}
+    assert (
+        personal_verdict(j, "Step-by-Step Guide to Packing an Emergency Supply Bin")
+        and j["verdict"] == "personal"
+    )
+    for t in (
+        "Three-Step Scientific Dating Framework",
+        "Never Miss Twice habit",
+        "Maximize Hilton Honors",
+    ):
+        assert personal_verdict({"verdict": "skip"}, t), t
+    assert not personal_verdict({"verdict": "skip"}, "Scaling Ads: 50 Hooks to 750 Variations")
+    assert not personal_verdict({"verdict": "later"}, "travel planning app")
     print("self-check ok")
 
 
@@ -1650,6 +1728,8 @@ def main(argv):
         return rereview(settings, arg("--rereview"), state, key)
     if arg("--seed"):
         return seed(settings, arg("--seed"), state)
+    if "--backfill-personal" in argv:
+        return backfill_personal(settings, apply)
     if "--backfill-comment-gates" in argv:
         return backfill_comment_gates(settings, state, key, apply)
     rereview_delivered(settings, state, key, apply)
