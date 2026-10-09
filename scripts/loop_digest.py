@@ -81,13 +81,16 @@ def stack_checks(now):
         out.append(("docker", "unknown", "docker not reachable"))
     else:
         # Build age is noise (reproducible builds report 1970). Actionable: a bare image id means
-        # the tag moved to a newer pull and the container was never recreated;
+        # the tag moved to a newer pull and the container was never recreated - unless the
+        # compose ref is image@sha256 (digest-pinned also shows a bare id);
         # :latest/untagged registry images float. Local builds (no '/', no tag) are neither.
         superseded, floating = [], []
         for line in sorted(set(ps.split())):
             name, _, img = line.partition("|")
             if re.fullmatch(r"[0-9a-f]{12}", img):
-                superseded.append(name)
+                ref = run(["docker", "inspect", "-f", "{{.Config.Image}}", name]) or ""
+                if "@sha256:" not in ref:
+                    superseded.append(name)
             elif img.endswith(":latest") or ("/" in img and ":" not in img.rsplit("/", 1)[-1]):
                 floating.append(img)
         out.append(
