@@ -76,7 +76,7 @@ class LlmConfig(BaseModel):
     text_waterfall: list[WaterfallStep] = Field(default_factory=list)
     # Ollama model for text calls that must stay on this machine (screenshot and
     # text shares - personal content), bypassing text_waterfall entirely.
-    local_text_model: str = "gpt-oss:20b"
+    local_text_model: str = "gpt-oss:20b-64k"
     # Same shape, for describe_images() (photo/carousel vision calls). Empty
     # means "no waterfall" - falls back to image_description.provider (or
     # llm.provider) with the caller's model, as before.
@@ -91,7 +91,10 @@ class LlmConfig(BaseModel):
     # enough to make vision calls time out against the client timeout.
     # Carousels are bounded by image_description.max_images_per_call, not by
     # this, so raising it does not help them.
-    ollama_num_ctx: int = 16384
+    # 0 (default) = don't send num_ctx; the tag's own context applies (see
+    # llm_client._ollama_options - a mismatched num_ctx forces a model reload
+    # that fights Hermes and every other caller sharing the one Ollama).
+    ollama_num_ctx: int = 0
     # Minimum seconds between consecutive calls to a given provider - worker.py
     # processes actionable items back-to-back with no natural pacing (a backlog
     # re-queue can fire a dozen+ LLM calls in under a minute), which is exactly

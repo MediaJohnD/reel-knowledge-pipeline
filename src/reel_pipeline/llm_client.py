@@ -353,6 +353,18 @@ def _call_claude(
     return "".join(text_blocks)
 
 
+def _ollama_options(settings: Settings, max_tokens: int) -> dict[str, int]:
+    # num_ctx is sent only when explicitly configured. A per-request num_ctx that
+    # differs from what the tag was loaded with makes Ollama reload the model, so
+    # every caller on this machine's one Ollama (Hermes included) lets the tag
+    # decide: *-64k tags bake 64k in their Modelfile, everything else loads at
+    # the server's OLLAMA_CONTEXT_LENGTH (16384, user env, set 2026-10-09).
+    options = {"num_predict": max_tokens}
+    if settings.llm.ollama_num_ctx > 0:
+        options["num_ctx"] = settings.llm.ollama_num_ctx
+    return options
+
+
 def _call_ollama(
     settings: Settings,
     prompt: str,
@@ -371,7 +383,7 @@ def _call_ollama(
                 "model": model,
                 "prompt": prompt,
                 "stream": False,
-                "options": {"num_predict": max_tokens, "num_ctx": settings.llm.ollama_num_ctx},
+                "options": _ollama_options(settings, max_tokens),
             },
         )
     except httpx.HTTPError as exc:
@@ -1004,7 +1016,7 @@ def _call_ollama_vision(
                 # budget on hidden reasoning and return an empty response -
                 # measured 2026-09-24. Non-thinking models accept and ignore it.
                 "think": False,
-                "options": {"num_predict": max_tokens, "num_ctx": settings.llm.ollama_num_ctx},
+                "options": _ollama_options(settings, max_tokens),
             },
         )
     except httpx.HTTPError as exc:

@@ -802,7 +802,7 @@ def test_local_only_ignores_the_cloud_waterfall_and_calls_ollama(tmp_path):
             provider="groq",
             ollama_host="http://localhost:11434",
             text_waterfall=[WaterfallStep(provider="groq", model="openai/gpt-oss-120b")],
-            local_text_model="gpt-oss:20b",
+            local_text_model="gpt-oss:20b-64k",
         ),
     )
 
@@ -815,4 +815,22 @@ def test_local_only_ignores_the_cloud_waterfall_and_calls_ollama(tmp_path):
         )
 
     assert result == "local"
-    assert json.loads(route.calls[0].request.content)["model"] == "gpt-oss:20b"
+    assert json.loads(route.calls[0].request.content)["model"] == "gpt-oss:20b-64k"
+
+
+@pytest.mark.parametrize(("num_ctx", "expected"), [(0, None), (8192, 8192)])
+def test_ollama_sends_num_ctx_only_when_configured(tmp_path, num_ctx, expected):
+    # An unrequested num_ctx makes Ollama reload a tag Hermes already has loaded.
+    settings = Settings(
+        project_root=tmp_path,
+        llm=LlmConfig(
+            provider="ollama", ollama_host="http://localhost:11434", ollama_num_ctx=num_ctx
+        ),
+    )
+    with respx.mock(assert_all_mocked=True) as mock:
+        route = mock.post("http://localhost:11434/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": "ok"})
+        )
+        call_llm(settings, "p", model="qwen2.5:7b-64k", max_tokens=10)
+
+    assert json.loads(route.calls[0].request.content)["options"].get("num_ctx") == expected

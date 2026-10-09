@@ -34,7 +34,7 @@ MANIFEST = ROOT / "data" / "review" / "reviewed.json"
 DIGEST_NAME = "Reel Review Digest.md"  # in settings.vault_dir (the Reels folder)
 PROMPT = ROOT / "config" / "prompts" / "review_reel.md"
 YTDLP = ROOT / ".venv" / "Scripts" / "yt-dlp.exe"
-CRAWL, SEARX, OLLAMA_MODEL = "http://127.0.0.1:11235", "http://127.0.0.1:8888", "qwen2.5:7b"
+CRAWL, SEARX, OLLAMA_MODEL = "http://127.0.0.1:11235", "http://127.0.0.1:8888", "qwen2.5:7b-64k"
 VERDICTS = {"try-now", "later", "skip", "already-have"}
 LOGIN_WALLED = ("instagram.com", "facebook.com", "tiktok.com", "fb.watch")
 YT_DOMAINS = ("youtube.com", "youtu.be")
@@ -595,7 +595,7 @@ def condense(settings, text, what):
         json={
             "model": OLLAMA_MODEL,
             "stream": False,
-            "options": {"num_predict": 500, "num_ctx": 8192},
+            "options": {"num_predict": 500},
             "prompt": (
                 "Condense to under 1500 characters, facts only (what it is, install, license, "
                 f"caveats). Source: {what}\n\n{text[:9000]}"
