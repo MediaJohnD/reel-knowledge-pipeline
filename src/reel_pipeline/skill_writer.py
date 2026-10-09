@@ -67,6 +67,7 @@ class SkillWriter:
                 max_tokens=self.settings.skill_writer.max_tokens,
                 static_prefix=static_prefix,
                 client=self._client,
+                local_only=item.source_url.startswith("share:"),
             )
         except LlmCallError as exc:
             raise SkillGenerationError(str(exc)) from exc

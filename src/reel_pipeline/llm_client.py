@@ -841,6 +841,7 @@ def call_llm(
     json_mode: bool = False,
     static_prefix: str = "",
     client: httpx.Client | None = None,
+    local_only: bool = False,
 ) -> str:
     """json_mode requests provider-native JSON-only output (Groq's,
     OpenRouter's, and Mistral's response_format, Gemini's response_mime_type)
@@ -866,10 +867,16 @@ def call_llm(
     everything else, including terminal 4xx errors, moves straight to the
     next rung, since a step that can't serve this request at all should not
     burn a caller's whole retry budget on one dead-end provider.
+
+    local_only skips all of that and calls settings.llm.local_text_model on
+    Ollama alone - for personal content that must not leave the machine.
     """
-    steps = settings.llm.text_waterfall or [
-        WaterfallStep(provider=settings.llm.provider, model=model)
-    ]
+    if local_only:
+        steps = [WaterfallStep(provider="ollama", model=settings.llm.local_text_model)]
+    else:
+        steps = settings.llm.text_waterfall or [
+            WaterfallStep(provider=settings.llm.provider, model=model)
+        ]
     last_exc: LlmCallError | MissingLlmCredentialError | None = None
     for index, step in enumerate(steps):
         try:

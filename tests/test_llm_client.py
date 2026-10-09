@@ -793,3 +793,26 @@ def test_describe_images_dispatches_to_openrouter(tmp_path):
         )
 
     assert result == "a photo of a dog"
+
+
+def test_local_only_ignores_the_cloud_waterfall_and_calls_ollama(tmp_path):
+    settings = Settings(
+        project_root=tmp_path,
+        llm=LlmConfig(
+            provider="groq",
+            ollama_host="http://localhost:11434",
+            text_waterfall=[WaterfallStep(provider="groq", model="openai/gpt-oss-120b")],
+            local_text_model="gpt-oss:20b",
+        ),
+    )
+
+    with respx.mock(assert_all_mocked=True) as mock:
+        route = mock.post("http://localhost:11434/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": "local"})
+        )
+        result = call_llm(
+            settings, "p", model="openai/gpt-oss-120b", max_tokens=10, local_only=True
+        )
+
+    assert result == "local"
+    assert json.loads(route.calls[0].request.content)["model"] == "gpt-oss:20b"

@@ -96,6 +96,8 @@ class Enricher:
                 json_mode=True,
                 static_prefix=static_prefix,
                 client=self._client,
+                # Shares (screenshots, pasted text) are personal - keep them local.
+                local_only=source_url.startswith("share:"),
             )
         except LlmCallError as exc:
             raise EnrichmentError(str(exc)) from exc

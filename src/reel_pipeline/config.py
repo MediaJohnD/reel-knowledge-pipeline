@@ -74,6 +74,9 @@ class LlmConfig(BaseModel):
     # passed, exactly as before this existed. When non-empty, the `provider`/
     # per-call `model` are ignored in favor of these steps - see call_llm().
     text_waterfall: list[WaterfallStep] = Field(default_factory=list)
+    # Ollama model for text calls that must stay on this machine (screenshot and
+    # text shares - personal content), bypassing text_waterfall entirely.
+    local_text_model: str = "gpt-oss:20b"
     # Same shape, for describe_images() (photo/carousel vision calls). Empty
     # means "no waterfall" - falls back to image_description.provider (or
     # llm.provider) with the caller's model, as before.
