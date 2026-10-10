@@ -101,7 +101,7 @@ llm:
     # Local unmetered last resort (verified live 2026-09-24 on :11435). Added
     # because the chain previously had no Ollama rung at all.
     - provider: ollama
-      model: qwen2.5:7b-64k
+      model: gpt-oss:20b-64k
   # Vision fallback chain for photo/carousel description (describe_images()).
   # Same 2026-08-25 research and the same China-infra exclusions apply.
   # Gemini 3.5 then 3.1 Flash-Lite first (500 RPD each, both vision-capable,
@@ -128,9 +128,9 @@ llm:
       model: gemma4:12b
   # 0 = send no num_ctx, so each tag loads at one fixed size and is shared with
   # Hermes instead of reloaded: *-64k tags bake 64k, the rest get the server's
-  # OLLAMA_CONTEXT_LENGTH=16384 (user env, 2026-10-09). Shared tag set on this
-  # machine: qwen2.5:7b-64k, qwen3:14b-64k, gpt-oss:20b-64k, gemma4:12b,
-  # nomic-embed-text.
+  # OLLAMA_CONTEXT_LENGTH=16384 (user env, 2026-10-09). Local models on this
+  # machine: gpt-oss:20b-64k (the one chat model, shared with Hermes),
+  # gemma4:12b (vision only), nomic-embed-text (mem0).
   ollama_num_ctx: 0
   # Minimum seconds between consecutive calls to each provider - run_once()
   # has no natural pacing between items, so re-processing a backlog can fire
