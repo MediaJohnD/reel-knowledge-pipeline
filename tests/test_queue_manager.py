@@ -623,6 +623,18 @@ def test_plain_link_after_mcp_token_link_is_a_duplicate(tmp_path):
     assert len(qm.load_state()) == 1
 
 
+def test_google_doc_view_variants_are_one_item(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    qm = QueueManager(settings)
+    doc = "https://docs.google.com/document/d/1Gyao"
+    first = qm.add_url(f"{doc}/mobilebasic", source=QueueSource.WEBHOOK)
+    for variant in (f"{doc}/edit?usp=sharing", "https://docs.google.com/document/u/0/d/1Gyao/"):
+        assert qm.add_url(variant, source=QueueSource.COMMENT_GATE).content_id == first.content_id
+    other = qm.add_url("https://docs.google.com/document/d/2Other/edit", source=QueueSource.WEBHOOK)
+    assert other.content_id != first.content_id
+    assert len(qm.load_state()) == 2
+
+
 def test_link_inside_shared_text_is_extracted(tmp_path):
     settings = Settings(project_root=tmp_path)
     qm = QueueManager(settings)

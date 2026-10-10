@@ -446,12 +446,22 @@ def _find_existing(
     if existing is not None:
         return existing
     # ponytail: linear scan per new URL, fine at ~1k records; index if state grows 100x.
-    target = sanitize_url(normalized_url)
+    target = _dedup_key(normalized_url)
     return next(
-        (
-            r
-            for r in state.values()
-            if r.normalized_url and sanitize_url(r.normalized_url) == target
-        ),
+        (r for r in state.values() if r.normalized_url and _dedup_key(r.normalized_url) == target),
         None,
     )
+
+
+# One Google doc arrives as /edit?usp=sharing (DM bots), /mobilebasic (phone share
+# sheet) and /u/0/... - four docs became duplicate notes by 2026-10-10.
+_GOOGLE_DOC = re.compile(
+    r"^(https://docs\.google\.com/(?:document|spreadsheets|presentation|forms)/)(?:u/\d+/)?d/([^/?#]+)"
+)
+
+
+def _dedup_key(normalized_url: str) -> str:
+    url = sanitize_url(normalized_url)
+    # ponytail: a sheet's ?gid= tab is dropped too; keep it if per-tab captures ever matter.
+    match = _GOOGLE_DOC.match(url)
+    return f"{match.group(1)}d/{match.group(2)}" if match else url
