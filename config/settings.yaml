@@ -130,7 +130,7 @@ llm:
   # Hermes instead of reloaded: *-64k tags bake 64k, the rest get the server's
   # OLLAMA_CONTEXT_LENGTH=16384 (user env, 2026-10-09). Local models on this
   # machine: gpt-oss:20b-64k (the one chat model, shared with Hermes),
-  # gemma4:12b (vision only), nomic-embed-text (mem0).
+  # gemma4:12b (vision only), embeddinggemma (mem0).
   ollama_num_ctx: 0
   # Minimum seconds between consecutive calls to each provider - run_once()
   # has no natural pacing between items, so re-processing a backlog can fire
