@@ -6,12 +6,14 @@ machine. Nothing you run talks to the owner's machine, vault, or accounts.
 
 ## 1. Install
 
-Needs Python 3.12+ and [uv](https://docs.astral.sh/uv/).
+Needs Python 3.12+, [uv](https://docs.astral.sh/uv/) and `ffmpeg` (yt-dlp uses it
+to pull audio: `winget install ffmpeg`, `brew install ffmpeg` or
+`apt install ffmpeg`).
 
 ```bash
 git clone https://github.com/MediaJohnD/reel-knowledge-pipeline.git
 cd reel-knowledge-pipeline
-uv sync
+uv sync --extra local-whisper
 uv run playwright install chromium
 cp .env.example .env
 ```
@@ -28,6 +30,11 @@ Only three things are needed to start:
 
 `GEMINI_API_KEY`, `OPENROUTER_API_KEY` and `MISTRAL_API_KEY` are optional free
 fallbacks; the pipeline tries the next one when a key is missing or rate-limited.
+Leave any key you don't have blank rather than keeping the placeholder.
+
+`--extra local-whisper` transcribes on your own CPU (no GPU needed). To use
+OpenAI's hosted Whisper instead, skip the extra and set
+`REEL_TRANSCRIPTION_BACKEND=openai` plus `OPENAI_API_KEY`.
 
 **If you use Ollama**, add `REEL_OLLAMA_HOST=http://127.0.0.1:11434` (Ollama's
 normal port; this repo's default, 11435, is specific to the owner's machine).

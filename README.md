@@ -70,8 +70,8 @@ cp .env.example .env
 # (enrichment starts with Groq and falls back through the other keys - see
 # docs/runbook.md's "LLM provider" section)
 
-uv sync
-# uv sync --extra local-whisper   # add this if using the local transcription backend
+# needs ffmpeg on PATH (winget/brew/apt install ffmpeg)
+uv sync --extra local-whisper  # local CPU transcription, the default backend
 
 uv run playwright install chromium  # one-time; powers the JS-render text-capture fallback
 
