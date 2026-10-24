@@ -15,6 +15,8 @@ Dispatches by settings.llm.provider:
 - "mistral": Mistral's OpenAI-compatible chat completions API (requires
   MISTRAL_API_KEY). Free "Experiment" tier: 1B tokens/month, 2 RPM. Pixtral
   models support vision.
+- "openai_compat": any local OpenAI-style server (LM Studio, Lemonade) at
+  settings.llm.openai_compat_base_url, no API key. Text and vision.
 
 call_llm() is text-only (enrichment, skill generation). describe_images() adds
 image input for vision-capable models (image-post/carousel description) - the
@@ -764,6 +766,62 @@ def _call_gemini(
     return text
 
 
+def _call_openai_compat(
+    settings: Settings,
+    prompt: str,
+    image_paths: list[Path] | None = None,
+    *,
+    model: str,
+    max_tokens: int,
+    client: httpx.Client | None = None,
+) -> str:
+    """Any local server speaking OpenAI's chat-completions API (LM Studio,
+    Lemonade, llama.cpp's server, vLLM) at llm.openai_compat_base_url. No API
+    key, and no response_format: LM Studio rejects {"type": "json_object"}, and
+    the enrichment parser already handles plain-text JSON as it does for Ollama.
+    """
+    content: str | list[dict] = prompt
+    if image_paths:
+        content = [{"type": "text", "text": prompt}]
+        for path in image_paths:
+            media_type = mimetypes.guess_type(path.name)[0] or _DEFAULT_IMAGE_MEDIA_TYPE
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{media_type};base64,{_encode_image_b64(path)}"},
+                }
+            )
+    base_url = settings.llm.openai_compat_base_url.rstrip("/")
+    owned_client = client or httpx.Client(timeout=600.0)
+    owns_client = client is None
+    try:
+        payload = _post_json(
+            owned_client,
+            f"{base_url}/chat/completions",
+            json={
+                "model": model,
+                "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": content}],
+            },
+        )
+    except httpx.HTTPError as exc:
+        raise LlmCallError(
+            f"OpenAI-compatible request to {base_url!r} failed: {exc}. "
+            f"Is the server running, and is {model!r} loaded?",
+            status_code=_http_status(exc),
+        ) from exc
+    finally:
+        if owns_client:
+            owned_client.close()
+
+    choices = payload.get("choices", [])
+    text = choices[0].get("message", {}).get("content", "") if choices else ""
+    text = _strip_groq_reasoning(text)
+    if not text:
+        raise LlmCallError(f"OpenAI-compatible response had no text content: {payload!r}")
+    return text
+
+
 def _call_text_provider(
     settings: Settings,
     provider: str,
@@ -826,6 +884,10 @@ def _call_text_provider(
             max_tokens=max_tokens,
             json_mode=json_mode,
             client=client,
+        )
+    if provider == "openai_compat":
+        return _call_openai_compat(
+            settings, combined, model=model, max_tokens=max_tokens, client=client
         )
     raise ValueError(f"Unknown llm provider: {provider!r}")
 
@@ -1160,9 +1222,14 @@ def _call_vision_provider(
             static_prefix=static_prefix,
             client=client,
         )
+    if provider == "openai_compat":
+        combined = f"{static_prefix}\n\n{prompt}" if static_prefix else prompt
+        return _call_openai_compat(
+            settings, combined, image_paths, model=model, max_tokens=max_tokens, client=client
+        )
     raise ValueError(
-        f"Unknown or vision-incapable llm provider: {provider!r}. "
-        "Vision only supports 'ollama', 'anthropic', 'gemini', 'groq', 'mistral', or 'openrouter'."
+        f"Unknown or vision-incapable llm provider: {provider!r}. Vision only supports "
+        "'ollama', 'anthropic', 'gemini', 'groq', 'mistral', 'openrouter', or 'openai_compat'."
     )
 
 

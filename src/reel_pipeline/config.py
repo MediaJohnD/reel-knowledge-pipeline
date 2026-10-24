@@ -65,9 +65,12 @@ class WaterfallStep(BaseModel):
 
 
 class LlmConfig(BaseModel):
-    # "anthropic" | "ollama" | "groq" | "gemini" | "openrouter" | "mistral"
+    # "anthropic" | "ollama" | "groq" | "gemini" | "openrouter" | "mistral" | "openai_compat"
     provider: str = "anthropic"
     ollama_host: str = "http://localhost:11434"
+    # Base URL for provider "openai_compat": any local OpenAI-style server.
+    # LM Studio's default is below; for Lemonade use the URL it prints at startup.
+    openai_compat_base_url: str = "http://localhost:1234/v1"
     # Ordered provider+model fallback chain for text calls (enrichment, skill
     # writing). Empty (the default) means "no waterfall" - call_llm() falls
     # back to the single `provider` above with whatever model the caller
@@ -452,6 +455,7 @@ _ENV_OVERRIDES: dict[str, tuple[str, ...]] = {
     "REEL_WEBHOOK_BIND_RETRY_SECONDS": ("webhook", "bind_retry_seconds"),
     "REEL_LLM_PROVIDER": ("llm", "provider"),
     "REEL_OLLAMA_HOST": ("llm", "ollama_host"),
+    "REEL_OPENAI_COMPAT_BASE_URL": ("llm", "openai_compat_base_url"),
     "REEL_LOG_LEVEL": ("log_level",),
 }
 

@@ -40,7 +40,7 @@ transcription:
 # already-running Ollama instance with the model already pulled. Switch to
 # "anthropic" (set ANTHROPIC_API_KEY) for hosted Claude instead.
 llm:
-  provider: groq # anthropic | ollama | groq | gemini | openrouter | mistral
+  provider: groq # anthropic | ollama | groq | gemini | openrouter | mistral | openai_compat
   ollama_host: http://127.0.0.1:11435
   # Text fallback chain, tried in order on any call failure (dead key, rate
   # limit, context overflow) - see call_llm()'s docstring in llm_client.py.

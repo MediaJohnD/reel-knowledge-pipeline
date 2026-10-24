@@ -834,3 +834,43 @@ def test_ollama_sends_num_ctx_only_when_configured(tmp_path, num_ctx, expected):
         call_llm(settings, "p", model="qwen2.5:7b-64k", max_tokens=10)
 
     assert json.loads(route.calls[0].request.content)["options"].get("num_ctx") == expected
+
+
+def test_openai_compat_text_and_vision_hit_configured_base_url(tmp_path):
+    """LM Studio and Lemonade both speak OpenAI's chat API at a user-set base
+    URL; no key, no response_format (LM Studio rejects json_object)."""
+    settings = Settings(
+        project_root=tmp_path,
+        llm=LlmConfig(provider="openai_compat", openai_compat_base_url="http://localhost:1234/v1/"),
+    )
+    image = tmp_path / "frame.jpg"
+    image.write_bytes(b"\xff\xd8\xff\xdb-not-a-real-jpeg")
+
+    with respx.mock:
+        route = respx.post("http://localhost:1234/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200, json={"choices": [{"message": {"content": "<think>x</think>hello"}}]}
+            )
+        )
+        text = call_llm(settings, "prompt", model="qwen3-8b", max_tokens=100, json_mode=True)
+        seen = describe_images(settings, "describe", [image], model="gemma-3-4b", max_tokens=100)
+
+    assert text == "hello"
+    assert seen == "hello"
+    text_body, vision_body = (json.loads(c.request.content) for c in route.calls)
+    assert "response_format" not in text_body
+    assert "authorization" not in route.calls[0].request.headers
+    parts = vision_body["messages"][0]["content"]
+    assert parts[0] == {"type": "text", "text": "describe"}
+    assert parts[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+def test_openai_compat_raises_clear_error_when_server_down(tmp_path):
+    settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="openai_compat"))
+
+    with respx.mock:
+        respx.post("http://localhost:1234/v1/chat/completions").mock(
+            side_effect=httpx.ConnectError("refused")
+        )
+        with pytest.raises(LlmCallError, match="OpenAI-compatible"):
+            call_llm(settings, "prompt", model="qwen3-8b", max_tokens=100)

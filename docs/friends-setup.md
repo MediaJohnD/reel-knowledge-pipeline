@@ -47,6 +47,20 @@ The Ollama model tags in `config/settings.yaml` (`gpt-oss:20b-64k`,
 `gemma4:12b`) are the owner's; pull your own models and edit those names, or
 skip Ollama and let the hosted keys do the work.
 
+**If you use LM Studio or Lemonade**, start its local server and load a model.
+Then add a rung to `text_waterfall` (and to `vision_waterfall` if the model
+reads images) in `config/settings.yaml`, using the model id the server lists:
+
+```yaml
+    - provider: openai_compat
+      model: qwen3-8b
+```
+
+LM Studio's address (`http://localhost:1234/v1`) is the default. For Lemonade,
+set `REEL_OPENAI_COMPAT_BASE_URL` in `.env` to the URL it prints at startup.
+Any other server with an OpenAI-style API (llama.cpp, vLLM) works the same way.
+Personal reels marked local-only still go to Ollama only.
+
 ## 3. Run it
 
 ```bash

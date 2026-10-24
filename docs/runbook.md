@@ -33,6 +33,11 @@ skill generation:
 - **`anthropic`** - hosted Claude API. Set `ANTHROPIC_API_KEY` in `.env` and
   set `enrichment.model`/`skill_writer.model` to a Claude model id (e.g.
   `claude-sonnet-5`).
+- **`openai_compat`** - any local server with an OpenAI-style API (LM Studio,
+  Lemonade, llama.cpp, vLLM) at `llm.openai_compat_base_url` (default
+  `http://localhost:1234/v1`, LM Studio's; override with
+  `REEL_OPENAI_COMPAT_BASE_URL`). No API key. Works in both waterfalls; use
+  the model id the server lists.
 
 Switch by editing `llm.provider` in `config/settings.yaml` (or override with
 `REEL_LLM_PROVIDER`/`REEL_OLLAMA_HOST` in `.env` without touching the file).
