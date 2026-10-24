@@ -32,6 +32,11 @@ Only three things are needed to start:
 fallbacks; the pipeline tries the next one when a key is missing or rate-limited.
 Leave any key you don't have blank rather than keeping the placeholder.
 
+Get the free `GEMINI_API_KEY` from [aistudio.google.com](https://aistudio.google.com/apikey)
+too if you save photo posts or videos with no speech (music-only reels). Those are
+described from images, and Groq alone hits its per-minute limit after about 3 images,
+so those items fail and retry later. Speech videos work fine with Groq only.
+
 `--extra local-whisper` transcribes on your own CPU (no GPU needed). To use
 OpenAI's hosted Whisper instead, skip the extra and set
 `REEL_TRANSCRIPTION_BACKEND=openai` plus `OPENAI_API_KEY`.
@@ -45,7 +50,7 @@ skip Ollama and let the hosted keys do the work.
 ## 3. Run it
 
 ```bash
-echo "https://www.youtube.com/watch?v=dQw4w9WgXcQ" >> data/inbox/queue.txt
+echo "https://www.youtube.com/watch?v=jNQXAC9IVRw" >> data/inbox/queue.txt
 uv run python -m reel_pipeline.cli run-once
 ```
 

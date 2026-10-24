@@ -181,7 +181,10 @@ image_description:
   # joined. Sending 20 images at once measured 20667 prompt tokens against
   # llm.ollama_num_ctx (16384) and failed with a permanent HTTP 400 that no
   # retry could clear - see ImageDescriptionConfig for the sizing rationale.
-  max_images_per_call: 6
+  # 3, not 6: Groq's qwen/qwen3.8-27b rejects more than 3 images per request
+  # with a permanent HTTP 400 (live, 2026-10-24), and it is the vision rung a
+  # Groq-only setup reaches.
+  max_images_per_call: 3
 
 # Platforms the downloader will attempt. Anything not matched here is rejected up
 # front rather than attempted. Instagram is handled by gallery-dl (downloader.py's

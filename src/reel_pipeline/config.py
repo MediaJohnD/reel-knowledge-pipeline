@@ -156,7 +156,9 @@ class ImageDescriptionConfig(BaseModel):
     # ponytail: fixed count, not a token estimate - a batch of unusually large
     # images could still overflow. Measure real prompt token counts and size
     # batches against ollama_num_ctx if that starts happening.
-    max_images_per_call: int = 6
+    # Lowered to 3 on 2026-10-24: Groq's qwen/qwen3.8-27b caps a request at 3
+    # images (HTTP 400 "Too many images provided"), and every rung accepts 3.
+    max_images_per_call: int = 3
 
 
 class DownloadConfig(BaseModel):

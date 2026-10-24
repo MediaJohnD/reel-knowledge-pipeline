@@ -75,7 +75,7 @@ uv sync --extra local-whisper  # local CPU transcription, the default backend
 
 uv run playwright install chromium  # one-time; powers the JS-render text-capture fallback
 
-echo "https://www.youtube.com/watch?v=dQw4w9WgXcQ" >> data/inbox/queue.txt
+echo "https://www.youtube.com/watch?v=jNQXAC9IVRw" >> data/inbox/queue.txt
 uv run python -m reel_pipeline.cli run-once
 ```
 
