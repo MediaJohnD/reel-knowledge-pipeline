@@ -54,6 +54,21 @@ def test_normalize_url_strips_tracking_params_including_fbclid():
     assert direct == via_facebook
 
 
+def test_normalize_url_is_idempotent():
+    """docs/formal-model.md Property 2.1: normalizing twice changes nothing."""
+    urls = [
+        "HTTPS://WWW.GitHub.com/a/b/?utm_source=x&z=1&a=2#frag",
+        "https://www.instagram.com/reel/abc/?igsh=xyz&img_index=2",
+        "https://acme.notion.site/Page-123?source=copy_link&pvs=4",
+        "https://youtu.be/abc?si=share&t=10",
+        "https://docs.google.com/document/d/ID/edit?usp=sharing",
+        "https://example.com",
+    ]
+    for url in urls:
+        once = normalize_url(url)
+        assert normalize_url(once) == once, url
+
+
 def test_normalize_url_strips_mibextid_gclid_and_mailchimp_params():
     assert normalize_url("https://example.com/x?mibextid=abc") == normalize_url(
         "https://example.com/x"

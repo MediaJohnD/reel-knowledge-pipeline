@@ -28,7 +28,7 @@ transcribing and summarizing it by hand.
 - [Quickstart](#quickstart)
 - [Commands](#commands)
 - [Configuration](#configuration)
-- [Architecture](#architecture)
+- [Architecture](#architecture) ([formal model](docs/formal-model.md))
 - [Safety and scope](#safety-and-scope)
 - [Contributing](#contributing)
 - [License](#license)
@@ -163,6 +163,16 @@ WorkerPipeline.run_once(), for each actionable record:
 See [`docs/architecture.md`](docs/architecture.md) for the full module-by-module
 design, and [`docs/runbook.md`](docs/runbook.md) for operational details
 (retry/backoff behavior, resumability, log locations, troubleshooting).
+
+### Documentation
+
+| Document | What it covers |
+| --- | --- |
+| [`docs/formal-model.md`](docs/formal-model.md) | The behavioral contract in formal notation: URL identity and the content-ID collision bound, the routing function, the item state machine, retry termination, crash recovery, invariants, the locking model, complexity, and known gaps |
+| [`docs/architecture.md`](docs/architecture.md) | Module boundaries, data flow, prompt caching, why `state.json` |
+| [`docs/runbook.md`](docs/runbook.md) | Setup per platform, day-to-day operation, troubleshooting |
+| [`docs/acceptance-tests.md`](docs/acceptance-tests.md) | Manual acceptance checks |
+| [`docs/superpowers/specs/`](docs/superpowers/specs/) | Dated design records for each scoped capability |
 
 ### Repository layout
 
