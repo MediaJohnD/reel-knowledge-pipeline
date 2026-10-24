@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a second ingestion path — parallel to the existing video/photo pipeline — that captures GitHub repos/files and public Notion pages as text, reusing the existing enrichment → Obsidian note → skill-artifact chain unchanged.
+**Goal:** Add a second ingestion path, parallel to the existing video/photo pipeline, that captures GitHub repos/files and public Notion pages as text, reusing the existing enrichment → Obsidian note → skill-artifact chain unchanged.
 
 **Architecture:** A new `text_fetcher.py` module produces the same `TranscriptResult` shape `transcriber.py`/`image_describer.py` already produce. `validators.classify_url_kind()` decides "media" vs "text" per URL at registration time (before any download attempt), `worker.py` branches on the stored `content_kind`, and `Enricher` picks between two prompt templates based on it.
 
@@ -10,10 +10,10 @@
 
 ## Global Constraints
 
-- Public links only — no new OAuth or API-key credential surface (per spec, confirmed with the project owner).
+- Public links only. No new OAuth or API-key credential surface (per spec, confirmed with the project owner).
 - v1 scope is exactly `github.com` and `notion.so`/`notion.site`. Airtable is explicitly excluded (JS-rendered share pages conflict with the no-browser-automation rule) and continues to route to `needs-attention.txt` like any other unsupported domain.
-- No browser automation, ever — this applies to Notion fetching as much as to the existing yt-dlp/gallery-dl paths.
-- Every new stage that can fail must raise a typed error (`TextFetchError`) and land the item in `failed`/`needs-attention.txt`, exactly like existing failures — never silently enrich from empty/garbage text.
+- No browser automation, ever. This applies to Notion fetching as much as to the existing yt-dlp/gallery-dl paths.
+- Every new stage that can fail must raise a typed error (`TextFetchError`) and land the item in `failed`/`needs-attention.txt`, exactly like existing failures. Never silently enrich from empty/garbage text.
 - Follow existing code conventions exactly: `Protocol` + concrete class + `get_*(settings)` factory function (see `downloader.py`, `image_describer.py`); `httpx.Client | None = None` constructor param for testability (see `enricher.py`, `llm_client.py`); `respx.mock` for httpx test mocking (see `test_llm_client.py`, `test_image_describer.py`).
 
 ---
@@ -170,7 +170,7 @@ git commit -m "feat: add text_capture config and content_kind fields for text-ca
 
 **Interfaces:**
 - Consumes: `Settings.download.allowed_domains`, `Settings.text_capture.allowed_domains`, `Settings.download.blocked_domains` (all from Task 1/existing).
-- Produces: `classify_url_kind(url: str, settings: Settings) -> Literal["media", "text"] | None` — `None` means "not in either allow-list" (caller should fall through to today's existing rejection message).
+- Produces: `classify_url_kind(url: str, settings: Settings) -> Literal["media", "text"] | None`. `None` means "not in either allow-list" (caller should fall through to today's existing rejection message).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -330,7 +330,7 @@ def test_unmatched_domain_still_rejected_with_text_capture_configured(tmp_path):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_queue_manager.py -k "content_kind or unmatched_domain_still" -v`
-Expected: FAIL — `test_github_url_registers_as_pending_with_text_content_kind` fails because `github.com` isn't in `download.allowed_domains`, so `validate_url()` rejects it (status BLOCKED, not PENDING).
+Expected: FAIL. `test_github_url_registers_as_pending_with_text_content_kind` fails because `github.com` isn't in `download.allowed_domains`, so `validate_url()` rejects it (status BLOCKED, not PENDING).
 
 - [ ] **Step 3: Write minimal implementation**
 

@@ -5,13 +5,13 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](pyproject.toml)
 
 A safe-by-default pipeline that turns a video, reel, photo post, or article
-URL into a structured [Obsidian](https://obsidian.md) note — and, for
-high-signal content, a reusable Claude/Codex skill artifact.
+URL into a structured [Obsidian](https://obsidian.md) note. For
+high-signal content it also writes a reusable Claude/Codex skill artifact.
 
 Feed it a URL (via a queue file or webhook). It downloads the media,
 transcribes or vision-describes it, enriches the transcript into structured
 metadata with an LLM, writes an Obsidian note with a consistent frontmatter
-contract, and — only when the content clears a "high signal" bar — generates
+contract. Only when the content clears a "high signal" bar does it generate
 a `SKILL.md` you can hand to an agent.
 
 ## Why this exists
@@ -19,7 +19,7 @@ a `SKILL.md` you can hand to an agent.
 Watching something worth remembering shouldn't mean it evaporates the moment
 you close the app. This pipeline is the boring, deterministic machinery
 between "I saw a good video" and "I have a searchable, tagged note about it
-in my second brain" — so you can spend your attention on the content, not on
+in my second brain", so you can spend your attention on the content, not on
 transcribing and summarizing it by hand.
 
 ## Table of contents
@@ -35,30 +35,30 @@ transcribing and summarizing it by hand.
 
 ## Features
 
-- **Multiple ingestion paths** — a plain text file (`data/inbox/queue.txt`),
+- **Multiple ingestion paths.** A plain text file (`data/inbox/queue.txt`),
   an authenticated webhook (for an iOS Shortcut, a bookmarklet, or any HTTP
   client), or GitHub repos/Notion pages/shared Drive documents/any other
   public URL captured as text.
-- **Video, photo posts, and carousels** — automatically detects photo-only
+- **Video, photo posts, and carousels.** It detects photo-only
   posts vs. video and routes to the right extraction path; multi-clip
   carousels are transcribed per-clip and combined.
-- **Pluggable transcription and enrichment** — local
+- **Pluggable transcription and enrichment.** Local
   [faster-whisper](https://github.com/SYSTRAN/faster-whisper) or the OpenAI
   API for transcription; local [Ollama](https://ollama.com), Claude, Groq, or
-  Gemini for enrichment — configured per-provider, no code changes needed.
-- **Restart-safe and idempotent by construction** — every stage transition is
+  Gemini for enrichment. Each is configured per provider, with no code changes.
+- **Restart-safe and idempotent by construction.** Every stage transition is
   durably recorded in `state.json`, keyed by a deterministic content hash. A
   crash mid-pipeline resumes from the last completed stage on the next run
   instead of redoing already-finished (and possibly costly) work.
-- **Capped retries with exponential backoff** — a transient failure is
+- **Capped retries with exponential backoff.** A transient failure is
   retried on a schedule, not forever; a permanently-failing item stops
   burning API/download calls after a configurable number of attempts, and is
   logged (not silently dropped) with a one-command recovery path once fixed.
-- **Deterministic Obsidian notes** — a fixed frontmatter contract (title,
+- **Deterministic Obsidian notes.** A fixed frontmatter contract (title,
   source URL, tags, tools mentioned, summary, key takeaways, full
-  transcript) and stable, deterministic filenames — no duplicate notes from
+  transcript) and stable, deterministic filenames, so there are no duplicate notes from
   re-processing the same URL.
-- **Safe by default** — see [Safety and scope](#safety-and-scope) below.
+- **Safe by default.** See [Safety and scope](#safety-and-scope) below.
 
 ## Quickstart
 
@@ -106,17 +106,17 @@ external services beyond whichever LLM/transcription backend you configure.
 | `uv audit` | Scan dependencies for known vulnerabilities |
 | `uv lock --check` | Verify `uv.lock` matches `pyproject.toml` |
 
-A `Makefile` wraps the verification commands (`make install`, `make test`, `make check`, etc.) —
+A `Makefile` wraps the verification commands (`make install`, `make test`, `make check`, etc.).
 `make check` runs the lockfile check, lint, format check, typecheck, tests and
-audit — and CI runs `make check` itself rather than repeating the list, so the
+audit, and CI runs `make check` itself rather than repeating the list, so the
 two cannot drift apart.
 
-Windows has no `make` by default. Either install one —
+Windows has no `make` by default. Either install one with
 `winget install --id ezwinports.make --exact --scope user` (no elevation needed;
-open a new shell afterwards so the updated `PATH` applies) — or skip it and run
+open a new shell afterwards so the updated `PATH` applies), or skip it and run
 the table's commands directly. No target does anything but run `uv` commands
 (`check` just runs six of them in order), so locally the `Makefile` only saves
-typing — CI is the one place that genuinely needs it.
+typing. CI is the one place that genuinely needs it.
 
 ### Ledger drift check
 
@@ -130,11 +130,11 @@ items: `uv run python -m reel_pipeline.cli retry --all-failed-permanent`, then `
 
 Non-secret settings live in [`config/settings.yaml`](config/settings.yaml)
 (paths, allowed/blocked domains, model names, LLM provider, retry/backoff
-policy). Secrets live only in the environment — see
+policy). Secrets live only in the environment. See
 [`.env.example`](.env.example) for the full list (`REEL_WEBHOOK_SECRET`
 always; provider API keys only if that provider is selected; Instagram/yt-dlp
 cookie paths only if those platforms are enabled). Any `config/settings.yaml`
-value can be overridden by the matching `REEL_*` environment variable — see
+value can be overridden by the matching `REEL_*` environment variable. See
 `src/reel_pipeline/config.py` for the exact list.
 
 Enrichment and skill-generation prompts live in
@@ -207,7 +207,7 @@ docs/                    architecture, runbook, acceptance tests
 - **Login-gated platforms are explicit, scoped opt-ins**, not defaults.
   Instagram, Facebook, LinkedIn, and Google Drive are each enabled
   individually via cookie authentication, intended for low-volume personal
-  use with your own real account — not bulk or scheduled scraping, and not
+  use with your own real account, not bulk or scheduled scraping, and not
   automation of someone else's account. YouTube/TikTok/X/Vimeo work
   anonymously. See `docs/runbook.md`'s per-platform setup sections before
   enabling any of these, and reconsider the tradeoff before raising volume if
@@ -215,16 +215,16 @@ docs/                    architecture, runbook, acceptance tests
 - **Text capture is separate from media download, and open by default.** Any
   URL that isn't a media platform is fetched as plain text via a public REST
   API (GitHub) or a plain HTTP GET + `trafilatura` extraction (everything
-  else) — no OAuth, no API keys, no browser automation, no JS execution.
+  else). No OAuth, no API keys, no browser automation, no JS execution.
   `text_capture.blocked_domains` is the escape hatch for excluding a specific
   domain from that default.
 - **Secrets never live in config.** `config/settings.yaml` is safe to commit
   and never contains a secret; everything sensitive (webhook secret, LLM API
   keys, cookie file paths) is read from the environment via `.env` (never
-  committed — only `.env.example`'s placeholders are versioned).
+  committed; only `.env.example`'s placeholders are versioned).
 
-The full policy this repository is built against — including the reasoning
-behind each platform decision — is documented in [`CLAUDE.md`](CLAUDE.md).
+The full policy this repository is built against, including the reasoning
+behind each platform decision, is documented in [`CLAUDE.md`](CLAUDE.md).
 
 ## Reel review (auto)
 

@@ -1,4 +1,4 @@
-# State.json reliability rework — design
+# State.json reliability rework: design
 
 Date: 2026-07-29
 Status: proposed (pending user review)
@@ -17,10 +17,10 @@ guarded by the cross-process lock.
 2. A race in `webhook_server.py` around `_rerun_requested` can leave an event
    set with no worker left to consume it.
 3. `get_actionable_items()` treats every non-terminal status (including
-   `FAILED`) as retryable forever — a permanently broken URL gets fully
+   `FAILED`) as retryable forever. A permanently broken URL gets fully
    re-downloaded/re-transcribed/re-enriched on every single `run_once()`.
-4. `process_item()` does not branch on the record's current status at entry —
-   a crash after `TRANSCRIBING` still re-runs `download()` on the next pass,
+4. `process_item()` does not branch on the record's current status at entry.
+   A crash after `TRANSCRIBING` still re-runs `download()` on the next pass,
    discarding already-completed (and possibly paid) work.
 5. A `skill_writer.generate()` failure marks an already-successfully-written
    note as `FAILED`, causing the *entire* pipeline (download → transcribe →
@@ -29,8 +29,8 @@ guarded by the cross-process lock.
 6. `downloader.py` retries can reuse the same temp directory across attempts,
    risking picking up a stale file left by an earlier failed attempt.
 
-(A seventh finding — `state.json` being fully reparsed and rewritten on every
-stage transition, making a backlog pass O(n²) in state I/O — is addressed below
+(A seventh finding, `state.json` being fully reparsed and rewritten on every
+stage transition, making a backlog pass O(n²) in state I/O, is addressed below
 under "Deferred," not fixed.)
 
 ## Goals
@@ -49,18 +49,18 @@ under "Deferred," not fixed.)
 ## Non-goals
 
 - Migrating `state.json` off plain JSON (SQLite/WAL was researched and
-  rejected for this project's scale — see "Deferred").
-- Fixing the O(n²) full-file-rewrite pattern (`#8` above) — real in
+  rejected for this project's scale; see "Deferred").
+- Fixing the O(n²) full-file-rewrite pattern (`#8` above). It is real in
   complexity-theory terms, not worth it at "a handful of reels" volume, and a
   batched-write fix would reintroduce the staleness risk the locking change
   below removes. Revisit only if a real backlog-size performance complaint
   shows up.
 - Full artifact caching (persisting transcript/enrichment text so a resume
-  never redoes work even after `data/tmp/` is cleared) — checkpoint-only
+  never redoes work even after `data/tmp/` is cleared). Checkpoint-only
   resumability (below) covers the common case at much less schema/complexity
   cost.
-- Fixing `webhook_server.py`'s `_rerun_requested` race (#2) as its own item —
-  it's actually resolved as a side effect of the locking change below, since
+- Fixing `webhook_server.py`'s `_rerun_requested` race (#2) as its own item.
+  It's actually resolved as a side effect of the locking change below, since
   the underlying problem is "no shared, short-held lock around state
   mutations"; no separate fix needed.
 
@@ -75,7 +75,7 @@ last_completed_stage: ItemStage | None = None
 skill_error: str | None = None
 ```
 
-(`skill_error` is set only by the skill-generation decoupling change below —
+(`skill_error` is set only by the skill-generation decoupling change below,
 independent of the required-stage `error` field, which continues to describe
 a failure of the required pipeline: download/transcribe/enrich/write.)
 
@@ -101,7 +101,7 @@ FAILED_PERMANENT = "failed_permanent"
 every single pass.
 
 All three new `StateRecord` fields get defaults, so existing `state.json`
-records deserialize unchanged — no migration script needed.
+records deserialize unchanged. No migration script needed.
 
 ## Retry / backoff policy (`queue_manager.py`, `worker.py`)
 
@@ -121,22 +121,22 @@ records deserialize unchanged — no migration script needed.
 
 ## Locking model (`queue_manager.py`, `worker.py`)
 
-Reuse the existing `FileLock` file/class — no new lock primitive. Change what
+Reuse the existing `FileLock` file/class, with no new lock primitive. Change what
 it wraps:
 
 - `run_once()` stops holding the lock for the entire backlog pass. Instead,
-  every individual state mutation — `update_record()`, `add_url()`,
-  `sync_queue_file_into_state()`'s final save — acquires the same
+  every individual state mutation (`update_record()`, `add_url()`,
+  `sync_queue_file_into_state()`'s final save) acquires the same
   `state.json.lock` for just the duration of its own load-modify-save, with a
   short timeout (5s; these are always fast local-disk operations, unlike the
   full backlog pass).
 - The expensive work in `process_item()` (download/transcribe/enrich/write)
-  happens with no lock held at all — only the before/after `update_record()`
+  happens with no lock held at all. Only the before/after `update_record()`
   calls bracketing each stage take the lock, briefly.
 - This is a deliberate minimize-critical-section change: `filelock`'s own
   docs flag long-held locks as needing special handling (`heartbeat_interval`,
   `stale_threshold`, `lifetime`) specifically because they're a known risk
-  area in crash-prone, multi-process scenarios — exactly what the current
+  area in crash-prone, multi-process scenarios, exactly what the current
   600s-held lock is exposed to.
 
 ## Resumability / checkpointing (`worker.py`)
@@ -151,7 +151,7 @@ corresponding artifact under `data/tmp/<content_id>/`:
   artifact is present; `ENRICHED` → skip to note writing.
 - If the expected artifact is missing (tmp dir was cleaned by
   `_sweep_stale_tmp_dirs()` or manually), fall back to redoing *only that one
-  stage* — not the whole item — by treating it as if `last_completed_stage`
+  stage*, not the whole item, by treating it as if `last_completed_stage`
   were the one before it.
 - `last_completed_stage` is set (and persisted via `update_record()`,
   lock-guarded per above) immediately after each stage succeeds, before
@@ -171,10 +171,10 @@ is committed independently of `skill_writer.generate()`:
   `update_record()`.
 - Call `skill_writer.generate()` in its own try/except *after* that commit.
   On failure, log it and record the error in a new `skill_error` field on
-  `StateRecord` (does not change `status` away from `DONE`) — visible for
+  `StateRecord` (does not change `status` away from `DONE`). It is visible for
   debugging but never causes a re-run of the whole pipeline.
 - A future `run_once()` can independently retry just skill generation for
-  `DONE` records with a `skill_error` set and no `skill_path` — out of scope
+  `DONE` records with a `skill_error` set and no `skill_path`. That is out of scope
   for this rework, but the schema (`skill_error` as its own field) leaves room
   for it without another migration.
 
@@ -191,17 +191,17 @@ the canonical path).
 
 ## Deferred (researched, explicitly not doing now)
 
-- **SQLite/WAL migration** — the actual current best-practice answer for
+- **SQLite/WAL migration.** The actual current best-practice answer for
   "avoid full-file rewrite, get atomic per-record updates, no custom
   lock needed" (confirmed via Context7/web research). Would fix findings
   #1/#2/#8 as one mechanism instead of three patches, using stdlib `sqlite3`
   (no new dependency). Rejected for now because it changes `state.json` from
   a human-readable/greppable file into a binary DB, contradicting
-  `CLAUDE.md`'s current framing, and requires a one-time data migration —
-  bigger than this project's "handful of reels" scale justifies today.
+  `CLAUDE.md`'s current framing, and requires a one-time data migration.
+  That is bigger than this project's "handful of reels" scale justifies today.
   Revisit if item volume grows enough that #8's O(n²) cost becomes real.
 - **Full artifact caching** (persisting transcript/enrichment text in
-  `state.json` itself) — checkpoint-only resumability above gets the same
+  `state.json` itself). Checkpoint-only resumability above gets the same
   practical benefit (no redundant paid API calls on resume) at much lower
   schema/complexity cost, as long as `data/tmp/` isn't cleared between the
   crash and the resume.
@@ -234,4 +234,4 @@ verification per the repo's standard completion checklist.
 
 Whether to fix the O(n²) full-file-rewrite (#8) via SQLite migration was
 raised explicitly and researched (Context7 `filelock` docs + web search on
-embedded local state stores) before being deferred — see "Deferred" above.
+embedded local state stores) before being deferred. See "Deferred" above.

@@ -10,22 +10,22 @@
 
 ## Global Constraints
 
-- Every behavior change ships with a regression test using this repo's existing fakes-satisfying-Protocols pattern (see `tests/test_worker_flow.py`) — no real network/API calls in tests.
-- New `StateRecord` fields must all have defaults so existing `state.json` files on disk deserialize unchanged — no migration script.
+- Every behavior change ships with a regression test using this repo's existing fakes-satisfying-Protocols pattern (see `tests/test_worker_flow.py`). No real network/API calls in tests.
+- New `StateRecord` fields must all have defaults so existing `state.json` files on disk deserialize unchanged, with no migration script.
 - Run `uv run ruff check .`, `uv run pyright`, and `uv run pytest -q` after every task; all three must be clean before moving to the next task.
-- No new dependencies — `filelock` and stdlib `datetime`/`enum` cover everything.
+- No new dependencies. `filelock` and stdlib `datetime`/`enum` cover everything.
 - Design source of truth: `docs/superpowers/specs/2026-07-29-state-reliability-design.md`.
 
 ---
 
-### Task 1: Schema — new StateRecord fields, ItemStage enum, FAILED_PERMANENT status
+### Task 1: Schema. New StateRecord fields, ItemStage enum, FAILED_PERMANENT status
 
 **Files:**
 - Modify: `src/reel_pipeline/models.py:12-45`
 - Test: `tests/test_queue_manager.py`
 
 **Interfaces:**
-- Produces: `ItemStage` enum (`DOWNLOADED`, `TRANSCRIBED`, `ENRICHED`, `NOTE_WRITTEN`), `ItemStatus.FAILED_PERMANENT`, and four new `StateRecord` fields — `attempt_count: int`, `next_retry_at: datetime | None`, `last_completed_stage: ItemStage | None`, `skill_error: str | None` — all consumed by Tasks 3–6.
+- Produces: `ItemStage` enum (`DOWNLOADED`, `TRANSCRIBED`, `ENRICHED`, `NOTE_WRITTEN`), `ItemStatus.FAILED_PERMANENT`, and four new `StateRecord` fields (`attempt_count: int`, `next_retry_at: datetime | None`, `last_completed_stage: ItemStage | None`, `skill_error: str | None`), all consumed by Tasks 3–6.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -60,7 +60,7 @@ def test_state_record_new_reliability_fields_have_safe_defaults(tmp_path):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_queue_manager.py::test_state_record_new_reliability_fields_have_safe_defaults -v`
-Expected: FAIL with `pydantic_core._pydantic_core.ValidationError` — no, actually with `AttributeError: 'StateRecord' object has no attribute 'attempt_count'` since the field doesn't exist yet.
+Expected: FAIL with `pydantic_core._pydantic_core.ValidationError`. No, actually with `AttributeError: 'StateRecord' object has no attribute 'attempt_count'` since the field doesn't exist yet.
 
 - [ ] **Step 3: Add ItemStage enum and FAILED_PERMANENT status**
 
@@ -190,11 +190,11 @@ git commit -m "feat: add attempt-tracking and checkpoint fields to StateRecord"
 - Test: `tests/test_config.py`
 
 **Interfaces:**
-- Produces: `Settings.retry.backoff_schedule_minutes: list[int]`, `Settings.retry.max_attempts: int` — consumed by Task 4.
+- Produces: `Settings.retry.backoff_schedule_minutes: list[int]`, `Settings.retry.max_attempts: int`, consumed by Task 4.
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `tests/test_config.py` (it already imports `DEFAULT_SETTINGS_PATH, load_settings` from `reel_pipeline.config` — no new imports needed):
+Add to `tests/test_config.py` (it already imports `DEFAULT_SETTINGS_PATH, load_settings` from `reel_pipeline.config`, so no new imports are needed):
 
 ```python
 def test_loads_retry_defaults_from_settings_yaml():
@@ -290,7 +290,7 @@ git commit -m "feat: add configurable retry/backoff policy"
 
 ---
 
-### Task 3: Locking — a fine-grained per-mutation lock alongside run_once()'s own serialization lock
+### Task 3: Locking. A fine-grained per-mutation lock alongside run_once()'s own serialization lock
 
 > **Design correction (post pre-implementation attempt):** the original version of
 > this task removed `run_once()`'s lock entirely, relying only on a shared
@@ -301,23 +301,23 @@ git commit -m "feat: add configurable retry/backoff policy"
 > because that ambiguity never existed under the old design (a single
 > whole-pass lock made concurrent `run_once()` calls physically impossible).
 > The corrected design below uses **two separate lock files**: a fine-grained
-> per-mutation lock (this task's original goal — `add_url()` never blocks on
+> per-mutation lock (this task's original goal: `add_url()` never blocks on
 > it for long) and a second, distinct, coarse lock that only `run_once()`
 > itself holds for its entire pass (restoring the no-double-processing
 > guarantee). Confirmed with the user before re-implementing.
 
 **Files:**
 - Modify: `src/reel_pipeline/queue_manager.py:1-60` (imports, `save_state`/`update_record`), `:100-105` (`add_url`), `:173-195` (`sync_queue_file_into_state`)
-- Modify: `src/reel_pipeline/worker.py:284-303` (only the `lock_path` line and docstrings in `run_once()` change — the `run_once()`/`_run_once_locked()` split and `RunOnceLockError` are kept, not removed)
+- Modify: `src/reel_pipeline/worker.py:284-303` (only the `lock_path` line and docstrings in `run_once()` change. The `run_once()`/`_run_once_locked()` split and `RunOnceLockError` are kept, not removed)
 - Test: `tests/test_queue_manager.py` (new lock-contention test)
 
 **Interfaces:**
 - Produces: `QueueManager._locked_mutate(mutate_fn)` (private helper, uses lock file `state.lock`), `StateLockTimeout` exception. `worker.py`'s existing `RunOnceLockError` and its lock (now at `state.run_once.lock`, a distinct file) are unchanged in purpose, just documented more precisely.
 - Consumes: nothing new from earlier tasks.
 
-**Why this shape:** `filelock`'s own docs flag long-held locks as needing special handling (`heartbeat_interval`/`stale_threshold`/`lifetime` params exist specifically for that risk) — confirmed via Context7 during design. The *mutation-safety* problem (a webhook's `add_url()` doing an unlocked load-modify-save that a concurrent `run_once()` can clobber) is fixed by giving every state.json mutation its own brief, separate lock (`state.lock`). The *no-double-processing* problem is a distinct concern with a distinct, already-correct mechanism: `run_once()`'s own whole-pass lock, which must stay — it just needs to live on a different lock file (`state.run_once.lock`) than the new fine-grained one, so `run_once()` holding its own lock while internally calling `update_record()` (which briefly acquires the *other* lock file) never self-deadlocks.
+**Why this shape:** `filelock`'s own docs flag long-held locks as needing special handling (`heartbeat_interval`/`stale_threshold`/`lifetime` params exist specifically for that risk), confirmed via Context7 during design. The *mutation-safety* problem (a webhook's `add_url()` doing an unlocked load-modify-save that a concurrent `run_once()` can clobber) is fixed by giving every state.json mutation its own brief, separate lock (`state.lock`). The *no-double-processing* problem is a distinct concern with a distinct, already-correct mechanism: `run_once()`'s own whole-pass lock, which must stay. It just needs to live on a different lock file (`state.run_once.lock`) than the new fine-grained one, so `run_once()` holding its own lock while internally calling `update_record()` (which briefly acquires the *other* lock file) never self-deadlocks.
 
-**Note:** because `run_once()` keeps its own whole-pass lock, two concurrent `run_once()` calls still cannot overlap — the existing `test_concurrent_run_once_calls_never_interleave` in `tests/test_worker_flow.py` needs no changes and should be left exactly as-is (do not modify it in this task).
+**Note:** because `run_once()` keeps its own whole-pass lock, two concurrent `run_once()` calls still cannot overlap. The existing `test_concurrent_run_once_calls_never_interleave` in `tests/test_worker_flow.py` needs no changes and should be left exactly as-is (do not modify it in this task).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -367,7 +367,7 @@ def test_add_url_waits_for_a_concurrently_held_state_lock_instead_of_racing(tmp_
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_queue_manager.py::test_add_url_waits_for_a_concurrently_held_state_lock_instead_of_racing -v`
-Expected: FAIL — `add_url()` currently has no locking at all, so `elapsed` will be near-zero (it doesn't wait), failing the `elapsed >= 0.25` assertion.
+Expected: FAIL. `add_url()` currently has no locking at all, so `elapsed` will be near-zero (it doesn't wait), failing the `elapsed >= 0.25` assertion.
 
 - [ ] **Step 3: Add the lock-guarded mutation helper to QueueManager**
 
@@ -490,7 +490,7 @@ Expected: PASS
 
 - [ ] **Step 6: Point run_once()'s existing lock at a separate lock file**
 
-`worker.py`'s `run_once()` already has its own `FileLock`/`RunOnceLockError` mechanism, holding a lock for the entire pass — this stays, and does NOT need removing. The only change: its lock file must be different from the fine-grained one `_locked_mutate` now uses (`state.lock`), so that `run_once()` holding its own lock while internally calling `update_record()` (which briefly acquires the *other* lock file inside the pass) never self-deadlocks.
+`worker.py`'s `run_once()` already has its own `FileLock`/`RunOnceLockError` mechanism, holding a lock for the entire pass. This stays, and does NOT need removing. The only change: its lock file must be different from the fine-grained one `_locked_mutate` now uses (`state.lock`), so that `run_once()` holding its own lock while internally calling `update_record()` (which briefly acquires the *other* lock file inside the pass) never self-deadlocks.
 
 In `src/reel_pipeline/worker.py`, find `run_once()` (currently lines 284-303):
 
@@ -608,7 +608,7 @@ git commit -m "fix: add a per-mutation state.json lock separate from run_once()'
 
 **Interfaces:**
 - Consumes: `Settings.retry.max_attempts`, `Settings.retry.backoff_schedule_minutes` (Task 2); `StateRecord.attempt_count`/`next_retry_at`/`ItemStatus.FAILED_PERMANENT` (Task 1).
-- Produces: `get_actionable_items()` also excludes `FAILED_PERMANENT` and any `FAILED` record whose `next_retry_at` is still in the future — consumed by nothing further in this plan, but is the behavior Task 8's manual verification checks.
+- Produces: `get_actionable_items()` also excludes `FAILED_PERMANENT` and any `FAILED` record whose `next_retry_at` is still in the future. It is consumed by nothing further in this plan, but is the behavior Task 8's manual verification checks.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -745,12 +745,12 @@ def test_successful_retry_resets_attempt_count(tmp_path):
     assert record.attempt_count == 0
 ```
 
-Note: `Settings` fields are pydantic `BaseModel` fields — confirm in Step 2 whether `settings.retry.max_attempts = 2` requires `model_config = {"frozen": False}` (pydantic v2's default is mutable, so this should work as-is; if `pyright`/`pydantic` complain, construct a fresh `Settings(..., retry=RetryConfig(max_attempts=2, backoff_schedule_minutes=[0, 0]))` instead in Step 3's actual edit).
+Note: `Settings` fields are pydantic `BaseModel` fields. Confirm in Step 2 whether `settings.retry.max_attempts = 2` requires `model_config = {"frozen": False}` (pydantic v2's default is mutable, so this should work as-is; if `pyright`/`pydantic` complain, construct a fresh `Settings(..., retry=RetryConfig(max_attempts=2, backoff_schedule_minutes=[0, 0]))` instead in Step 3's actual edit).
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_queue_manager.py tests/test_worker_flow.py -k "failed_permanent or backoff or attempt_count" -v`
-Expected: FAIL — `get_actionable_items()` doesn't filter on these fields yet, and `process_item()` never sets `attempt_count`/`next_retry_at`.
+Expected: FAIL. `get_actionable_items()` doesn't filter on these fields yet, and `process_item()` never sets `attempt_count`/`next_retry_at`.
 
 - [ ] **Step 3: Update get_actionable_items**
 
@@ -775,7 +775,7 @@ In `src/reel_pipeline/queue_manager.py`, replace `get_actionable_items` (current
 
 - [ ] **Step 4: Update process_item's failure handling in worker.py**
 
-In `src/reel_pipeline/worker.py`, replace the `except Exception as exc:` block (find it near the end of `process_item` — currently lines 175-188):
+In `src/reel_pipeline/worker.py`, replace the `except Exception as exc:` block (find it near the end of `process_item`, currently lines 175-188):
 
 ```python
         except Exception as exc:  # noqa: BLE001 - any stage failure must be recorded, not raised
@@ -816,7 +816,7 @@ Add `timedelta` to the existing `from datetime import UTC, datetime` import line
 from datetime import UTC, datetime, timedelta
 ```
 
-Add a line resetting `attempt_count`/`next_retry_at` on success — in the success path, right after `record.error = None` (find this line a few lines above the try block's end, in the success branch, before `self._cleanup_tmp_dir(...)`):
+Add a line resetting `attempt_count`/`next_retry_at` on success, in the success path, right after `record.error = None` (find this line a few lines above the try block's end, in the success branch, before `self._cleanup_tmp_dir(...)`):
 
 ```python
             record.error = None
@@ -853,7 +853,7 @@ git commit -m "feat: exponential backoff and FAILED_PERMANENT terminal status fo
 - Consumes: `StateRecord.last_completed_stage`, `ItemStage` (Task 1).
 - Produces: `process_item()` sets `record.last_completed_stage` after each stage and skips re-running a stage whose output artifact is still present.
 
-**Design note:** Only the media-download path is resumable at the artifact-check level in this task (checking `data/tmp/<content_id>/` for existing files before re-downloading) — this is the stage that's actually expensive to redo (network + disk I/O) and safe to verify via file existence. Transcription/enrichment results aren't cached to disk in this rework (see the design doc's "Deferred: full artifact caching"), so a resume after a crash mid-transcription still re-transcribes, but does *not* re-download if the media file is still there. This is the single highest-value fix from finding #4 at the lowest schema/complexity cost.
+**Design note:** Only the media-download path is resumable at the artifact-check level in this task (checking `data/tmp/<content_id>/` for existing files before re-downloading). This is the stage that's actually expensive to redo (network + disk I/O) and safe to verify via file existence. Transcription/enrichment results aren't cached to disk in this rework (see the design doc's "Deferred: full artifact caching"), so a resume after a crash mid-transcription still re-transcribes, but does *not* re-download if the media file is still there. This is the single highest-value fix from finding #4 at the lowest schema/complexity cost.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -909,7 +909,7 @@ Expected: FAIL with `AssertionError: download() should not be called - media alr
 
 - [ ] **Step 3: Implement the resumability check**
 
-In `src/reel_pipeline/worker.py`, this task modifies the start of the `else:` branch inside `process_item` (the media path — the `if record.content_kind == "text":` branch is untouched, since text capture has no equivalent large-artifact-to-skip). Find the current media branch:
+In `src/reel_pipeline/worker.py`, this task modifies the start of the `else:` branch inside `process_item` (the media path; the `if record.content_kind == "text":` branch is untouched, since text capture has no equivalent large-artifact-to-skip). Find the current media branch:
 
 ```python
             else:
@@ -1028,7 +1028,7 @@ Expected: PASS
 - [ ] **Step 6: Run full verification**
 
 Run: `uv run ruff check . && uv run pyright && uv run pytest -q`
-Expected: all clean — pay attention to whether existing tests using `FakeDownloader` (which doesn't write real files to `settings.tmp_dir`) still pass; they should, since `_cached_download_result` returns `None` when the tmp dir doesn't exist on disk, falling through to a normal `download()` call exactly as before.
+Expected: all clean. Pay attention to whether existing tests using `FakeDownloader` (which doesn't write real files to `settings.tmp_dir`) still pass; they should, since `_cached_download_result` returns `None` when the tmp dir doesn't exist on disk, falling through to a normal `download()` call exactly as before.
 
 - [ ] **Step 7: Commit**
 
@@ -1096,7 +1096,7 @@ def test_skill_generation_failure_does_not_undo_a_successful_note(tmp_path):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_worker_flow.py::test_skill_generation_failure_does_not_undo_a_successful_note -v`
-Expected: FAIL — currently `summary.failed == 1` and `record.status == ItemStatus.FAILED`, since the exception propagates out of the whole try block.
+Expected: FAIL. Currently `summary.failed == 1` and `record.status == ItemStatus.FAILED`, since the exception propagates out of the whole try block.
 
 - [ ] **Step 3: Split note-writing and skill-generation into separate try blocks**
 
@@ -1189,7 +1189,7 @@ Replace it with:
             self._cleanup_stale_skill(previous_skill_path, record.skill_path)
 ```
 
-(`ItemStage` is already imported in `worker.py` as of Task 5 — no import change needed here.)
+(`ItemStage` is already imported in `worker.py` as of Task 5, so no import change is needed here.)
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1199,7 +1199,7 @@ Expected: PASS
 - [ ] **Step 5: Run full verification**
 
 Run: `uv run ruff check . && uv run pyright && uv run pytest -q`
-Expected: all clean — check specifically that `test_happy_path_produces_note_and_skill_and_marks_done` still passes (it asserts `record.skill_path == summary.note_paths[0]`-adjacent behavior on the success path, which is unchanged).
+Expected: all clean. Check specifically that `test_happy_path_produces_note_and_skill_and_marks_done` still passes (it asserts `record.skill_path == summary.note_paths[0]`-adjacent behavior on the success path, which is unchanged).
 
 - [ ] **Step 6: Commit**
 
@@ -1217,13 +1217,13 @@ git commit -m "fix: skill generation failure no longer marks an already-written 
 - Test: `tests/test_downloader.py`
 
 **Interfaces:**
-- No new interfaces — internal behavior change only (each `download()` call starts from a clean `out_dir`).
+- No new interfaces. Internal behavior change only (each `download()` call starts from a clean `out_dir`).
 
-**Design note (deviates slightly from the design doc's wording):** The design doc described a per-attempt `.attempt-<n>/` subdirectory scheme, written before reading `downloader.py` in full. In practice there is no internal retry loop inside `download()` at all — the only way `download()` gets called twice for the same `content_id` is a cross-run retry (Task 5's resumability check already prevents this when the media is still cached; this task covers the case where it *isn't* cached, e.g. the previous attempt failed before producing a complete file). The simpler, equally-correct fix: clear `out_dir` before writing, every time `download()` is called. Since Task 5 already skips calling `download()` at all when a complete cached result exists, this only ever clears genuinely stale/partial data from a previous failed attempt.
+**Design note (deviates slightly from the design doc's wording):** The design doc described a per-attempt `.attempt-<n>/` subdirectory scheme, written before reading `downloader.py` in full. In practice there is no internal retry loop inside `download()` at all. The only way `download()` gets called twice for the same `content_id` is a cross-run retry (Task 5's resumability check already prevents this when the media is still cached; this task covers the case where it *isn't* cached, e.g. the previous attempt failed before producing a complete file). The simpler, equally-correct fix: clear `out_dir` before writing, every time `download()` is called. Since Task 5 already skips calling `download()` at all when a complete cached result exists, this only ever clears genuinely stale/partial data from a previous failed attempt.
 
 - [ ] **Step 1: Write the failing test**
 
-`tests/test_downloader.py` already has a `_install_fake_yt_dlp(monkeypatch, extract_info_impl=None)` helper (module-level, near the top of the file) that fakes the `yt_dlp` module via `monkeypatch.setitem(sys.modules, ...)` — reuse it rather than introducing a new mocking style. Add:
+`tests/test_downloader.py` already has a `_install_fake_yt_dlp(monkeypatch, extract_info_impl=None)` helper (module-level, near the top of the file) that fakes the `yt_dlp` module via `monkeypatch.setitem(sys.modules, ...)`. Reuse it rather than introducing a new mocking style. Add:
 
 ```python
 def test_yt_dlp_downloader_clears_stale_files_from_a_previous_failed_attempt(tmp_path, monkeypatch):
@@ -1254,7 +1254,7 @@ def test_yt_dlp_downloader_clears_stale_files_from_a_previous_failed_attempt(tmp
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_downloader.py -k stale_files -v`
-Expected: FAIL — `stale_file.exists()` is still `True` since nothing clears `out_dir` today.
+Expected: FAIL. `stale_file.exists()` is still `True` since nothing clears `out_dir` today.
 
 - [ ] **Step 3: Clear out_dir before writing in both downloaders**
 
@@ -1317,7 +1317,7 @@ git commit -m "fix: downloader clears stale files from a previous failed attempt
 
 ### Task 8: Final integration verification
 
-**Files:** none modified — verification only.
+**Files:** none modified, verification only.
 
 - [ ] **Step 1: Full check suite**
 
@@ -1327,7 +1327,7 @@ Expected: lockfile in sync (no `pyproject.toml` changes in this plan, so this sh
 - [ ] **Step 2: Manual worker-flow verification**
 
 Run: `uv run python -m reel_pipeline.cli run-once`
-Expected: exits cleanly with a `processed=... done=... failed=...` summary line. If no items are queued, `processed=0` is expected and fine — this confirms the CLI entry point still wires together cleanly after the `worker.py`/`queue_manager.py` changes, not that real content was processed (that requires real credentials/network per this repo's `validating-release-readiness` skill notes).
+Expected: exits cleanly with a `processed=... done=... failed=...` summary line. If no items are queued, `processed=0` is expected and fine. This confirms the CLI entry point still wires together cleanly after the `worker.py`/`queue_manager.py` changes, not that real content was processed (that requires real credentials/network per this repo's `validating-release-readiness` skill notes).
 
 - [ ] **Step 3: Re-read the diff for scope creep**
 

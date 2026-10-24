@@ -1,4 +1,4 @@
-# Google Drive Document Text Capture (`DriveFetcher`) — Design
+# Google Drive Document Text Capture (`DriveFetcher`): Design
 
 Status: implemented 2026-08-10.
 

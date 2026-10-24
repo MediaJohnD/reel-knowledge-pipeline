@@ -1,4 +1,4 @@
-# Text-Capture Ingestion Path — Design
+# Text-Capture Ingestion Path: Design
 
 Status: proposed, pending user review.
 
@@ -7,7 +7,7 @@ Status: proposed, pending user review.
 The pipeline currently only understands one kind of source: video/photo
 media, downloaded via yt-dlp/gallery-dl and turned into text via
 transcription or vision description. Creators regularly also share GitHub
-repos and Notion pages, which aren't media at all — a download+transcribe
+repos and Notion pages, which aren't media at all. A download+transcribe
 attempt on these fails outright (as observed with `github.com`/`notion.so`
 links routed to `needs-attention.txt`, and demonstrated live by the
 `findarepo.com` case, which is a GitHub-discovery site, not a video host).
@@ -26,7 +26,7 @@ skill-artifact pipeline unchanged.
   with this project's no-browser-automation rule. Airtable links continue to
   route to `needs-attention.txt` like any other unsupported domain.
 - **Explicitly out of scope for v1:** private/authenticated content on any
-  platform. Only publicly-shared links are supported — no new OAuth or API-key
+  platform. Only publicly-shared links are supported, with no new OAuth or API-key
   credential surface, consistent with how the rest of this pipeline avoids
   account automation beyond the owner's own already-configured cookie
   sessions.
@@ -36,8 +36,8 @@ skill-artifact pipeline unchanged.
 ## Architecture
 
 A new module, `text_fetcher.py`, sits alongside `downloader.py` +
-`transcriber.py` + `image_describer.py`. It produces a `TranscriptResult` —
-the same model those three already produce — so `Enricher`, `write_note()`,
+`transcriber.py` + `image_describer.py`. It produces a `TranscriptResult`,
+the same model those three already produce, so `Enricher`, `write_note()`,
 and `SkillWriter` need no changes to their output contract.
 
 ```
@@ -87,7 +87,7 @@ class TextFetcher:
 Dispatches on host, same pattern as `DispatchingDownloader`:
 
 - **GitHub** (`_fetch_github_repo`): parses the URL path into `owner/repo`
-  plus an optional `blob/<ref>/<path>` suffix — creators share both repo-root
+  plus an optional `blob/<ref>/<path>` suffix. Creators share both repo-root
   links and links to one specific file (e.g. a blocked URL seen during this
   project's own testing pointed at `.../blob/main/Anthropic/some-file.md`,
   not a repo root). Two shapes, both ending in the same `TranscriptResult`:
@@ -98,7 +98,7 @@ Dispatches on host, same pattern as `DispatchingDownloader`:
   - **Specific file** (`.../blob/<ref>/<path>`): calls
     `GET api.github.com/repos/{owner}/{repo}/contents/{path}?ref={ref}`
     (base64-decoded file content) plus the same repo metadata call for
-    context. `.text` is the file content, not the README — matches what the
+    context. `.text` is the file content, not the README, which matches what the
     sharer actually pointed at.
 
   Both shapes together cost at most 2 unauthenticated API calls per URL;
@@ -108,13 +108,13 @@ Dispatches on host, same pattern as `DispatchingDownloader`:
 - **Notion** (`_fetch_notion_page`): plain `httpx.get()` of the public share
   URL, then `trafilatura.extract()` to pull the main text content. Notion's
   public pages render enough server-side HTML for this to work without JS
-  execution — no browser automation involved. If the fetched page looks like
+  execution. No browser automation is involved. If the fetched page looks like
   a login wall (heuristic: response contains Notion's auth-redirect markers,
   or `trafilatura.extract()` returns empty/near-empty text), raises
   `TextFetchError` explaining the page isn't actually public, rather than
   silently enriching near-nothing.
 
-**New dependency:** `trafilatura` (PyPI, Apache-2.0, actively maintained —
+**New dependency:** `trafilatura` (PyPI, Apache-2.0, actively maintained,
 confirmed current release 2.1.0). This is the one new third-party dependency
 this design introduces; everything else uses `httpx`, already a dependency.
 
@@ -131,14 +131,14 @@ else:
     # existing Downloader -> Transcriber/ImageDescriber path, unchanged
 ```
 
-No new `ItemStatus` values — reusing `DOWNLOADING`/`TRANSCRIBING` for the
+No new `ItemStatus` values. Reusing `DOWNLOADING`/`TRANSCRIBING` for the
 fetch step keeps `state.json` schema stable and `get_actionable_items()`
 untouched.
 
 ### Enrichment prompt selection
 
 New `config/prompts/enrich_text_capture.md`, tuned for README/reference
-content ("this is a tool/reference doc, not a spoken transcript — summarize
+content ("this is a tool/reference doc, not a spoken transcript. Summarize
 what it does, who it's for, whether it's a skill-worthy tool") instead of
 `enrich_transcript.md`'s transcript-shaped framing. Still emits the same
 `EnrichmentResult` contract.
@@ -155,9 +155,9 @@ on `transcript.content_kind` (added to `TranscriptResult`, defaulting to
 3. `worker.run_once()` picks it up → `TextFetcher.fetch()` → README +
    metadata as `.text` → `TranscriptResult(content_kind="text", backend="github-api")`.
 4. `Enricher.enrich()` uses `enrich_text_capture.md` → `EnrichmentResult`
-   (title, summary, tags, tools_mentioned, high_signal, skill_candidate_reason
-   — e.g. `high_signal=true` if it's an interesting dev tool).
-5. `write_note()` / `SkillWriter.generate()` — unchanged, same as any other
+   (title, summary, tags, tools_mentioned, high_signal, skill_candidate_reason,
+   e.g. `high_signal=true` if it's an interesting dev tool).
+5. `write_note()` / `SkillWriter.generate()`: unchanged, same as any other
    item.
 
 ## Error handling
@@ -167,7 +167,7 @@ on `transcript.content_kind` (added to `TranscriptResult`, defaulting to
 | Private/deleted GitHub repo (404) | `TextFetchError`, item → `failed`, logged to `needs-attention.txt` (same as any other processing failure today) |
 | GitHub rate limit exceeded | `TextFetchError` with the rate-limit reset time from response headers, so a retry knows when it'll work |
 | Notion page requires login | `TextFetchError`, distinct message ("this Notion page isn't public") so it's clear no amount of retrying will help without the user re-sharing a public link |
-| `trafilatura.extract()` returns `None`/empty | Treated the same as a login wall — raised as `TextFetchError`, not silently enriched from empty text |
+| `trafilatura.extract()` returns `None`/empty | Treated the same as a login wall. Raised as `TextFetchError`, not silently enriched from empty text |
 
 ## Testing
 
@@ -188,7 +188,7 @@ on `transcript.content_kind` (added to `TranscriptResult`, defaulting to
 Same pattern as every prior platform addition: `CLAUDE.md` risk-posture
 bullet, `README.md` safety posture, `docs/architecture.md` module table +
 guardrails section, `docs/runbook.md` new "GitHub and Notion text capture"
-section (no cookies needed — public-only), `docs/acceptance-tests.md`
+section (no cookies needed, public only), `docs/acceptance-tests.md`
 checklist items, `.env.example` (no new secrets needed for v1, but note the
 absence explicitly so it's clear this was a deliberate choice, not an
 oversight).

@@ -1,4 +1,4 @@
-# JS-Rendered Text Capture (Playwright fallback) — Design
+# JS-Rendered Text Capture (Playwright fallback): Design
 
 Status: **implemented 2026-08-10**, with explicit owner sign-off for the
 narrowed guardrail (see CLAUDE.md's "Risk posture"). Notion itself still

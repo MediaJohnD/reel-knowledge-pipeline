@@ -1,4 +1,4 @@
-# Notion API Text Capture (`NotionFetcher`) — Design
+# Notion API Text Capture (`NotionFetcher`): Design
 
 Status: implemented 2026-08-10.
 
