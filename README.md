@@ -25,7 +25,7 @@ transcribing and summarizing it by hand.
 ## Table of contents
 
 - [Features](#features)
-- [Quickstart](#quickstart)
+- [Quickstart](#quickstart) ([running your own copy](docs/friends-setup.md))
 - [Commands](#commands)
 - [Configuration](#configuration)
 - [Architecture](#architecture) ([formal model](docs/formal-model.md))
@@ -66,9 +66,9 @@ transcribing and summarizing it by hand.
 git clone https://github.com/MediaJohnD/reel-knowledge-pipeline.git
 cd reel-knowledge-pipeline
 cp .env.example .env
-# edit .env: set REEL_WEBHOOK_SECRET at minimum
-# (enrichment defaults to a local Ollama model - see docs/runbook.md's "LLM provider"
-# section to use hosted Claude/Groq/Gemini instead)
+# edit .env: set REEL_WEBHOOK_SECRET and a free GROQ_API_KEY at minimum
+# (enrichment starts with Groq and falls back through the other keys - see
+# docs/runbook.md's "LLM provider" section)
 
 uv sync
 # uv sync --extra local-whisper   # add this if using the local transcription backend
@@ -82,6 +82,10 @@ uv run python -m reel_pipeline.cli run-once
 Notes land in `data/notes/` (or wherever `REEL_VAULT_DIR` points, e.g. your
 Obsidian vault). Any high-signal content also gets a `SKILL.md` under
 `data/generated_skills/`.
+
+Setting up your own copy on another machine? Follow
+[docs/friends-setup.md](docs/friends-setup.md): which keys you need and which
+owner-specific parts to ignore.
 
 Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). No database, no
 external services beyond whichever LLM/transcription backend you configure.

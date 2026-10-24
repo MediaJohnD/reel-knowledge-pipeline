@@ -12,7 +12,8 @@
 
 Set WshShell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
-WshShell.CurrentDirectory = "C:\Users\media\Reel Knowledge Pipeline"
+' Repo root = parent of this script's folder, so any clone location works.
+WshShell.CurrentDirectory = fso.GetParentFolderName(fso.GetParentFolderName(WScript.ScriptFullName))
 
 ' Reap any server left over from a previous run before starting a new one.
 '

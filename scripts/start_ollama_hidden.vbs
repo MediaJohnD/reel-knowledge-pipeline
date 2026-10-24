@@ -22,7 +22,8 @@
 ' registering a brand new one didn't.
 Set WshShell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
-WshShell.CurrentDirectory = "C:\Users\media\Reel Knowledge Pipeline"
+' Repo root = parent of this script's folder, so any clone location works.
+WshShell.CurrentDirectory = fso.GetParentFolderName(fso.GetParentFolderName(WScript.ScriptFullName))
 
 logPath = "data\logs\ollama_stdout.log"
 maxBytes = 5000000
@@ -41,4 +42,4 @@ End If
 On Error Goto 0
 
 WshShell.Environment("Process")("OLLAMA_HOST") = "127.0.0.1:11435"
-WshShell.Run "cmd /c ""C:\Users\media\AppData\Local\Programs\Ollama\ollama.exe"" serve >> data\logs\ollama_stdout.log 2>&1", 0, False
+WshShell.Run "cmd /c """ & WshShell.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\Programs\Ollama\ollama.exe"" serve >> data\logs\ollama_stdout.log 2>&1", 0, False

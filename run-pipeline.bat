@@ -3,7 +3,7 @@ REM Reel Knowledge Pipeline Runner
 REM Runs the pipeline once, logs output to a timestamped file
 
 setlocal enabledelayedexpansion
-cd /d "C:\Users\media\Reel Knowledge Pipeline"
+cd /d "%~dp0"
 
 REM Create logs directory if it doesn't exist
 if not exist "data\logs" mkdir "data\logs"
