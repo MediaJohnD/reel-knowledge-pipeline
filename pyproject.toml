@@ -16,9 +16,9 @@ dependencies = [
     "yt-dlp>=2024.8.6",
     "gallery-dl>=1.32.9",
     "trafilatura>=2.2.0",
-    "filelock>=3.32.2",
+    "filelock>=4.2.1",
     "playwright>=1.62.0",
-    "pypdf>=6.19.0",
+    "pypdf>=6.21.2",
 ]
 
 [project.optional-dependencies]

@@ -874,3 +874,16 @@ def test_openai_compat_raises_clear_error_when_server_down(tmp_path):
         )
         with pytest.raises(LlmCallError, match="OpenAI-compatible"):
             call_llm(settings, "prompt", model="qwen3-8b", max_tokens=100)
+
+
+def test_openai_compat_null_content_raises_llm_call_error(tmp_path):
+    """A reasoning model that spends all of max_tokens thinking returns
+    "content": null; that must be an LlmCallError so the waterfall falls through."""
+    settings = Settings(project_root=tmp_path, llm=LlmConfig(provider="openai_compat"))
+
+    with respx.mock:
+        respx.post("http://localhost:1234/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json={"choices": [{"message": {"content": None}}]})
+        )
+        with pytest.raises(LlmCallError, match="no text content"):
+            call_llm(settings, "prompt", model="qwen3-8b", max_tokens=100)

@@ -44,8 +44,10 @@ transcribing and summarizing it by hand.
   carousels are transcribed per-clip and combined.
 - **Pluggable transcription and enrichment.** Local
   [faster-whisper](https://github.com/SYSTRAN/faster-whisper) or the OpenAI
-  API for transcription; local [Ollama](https://ollama.com), Claude, Groq, or
-  Gemini for enrichment. Each is configured per provider, with no code changes.
+  API for transcription; local [Ollama](https://ollama.com), LM Studio,
+  Lemonade (any OpenAI-compatible local server), Claude, Groq, Gemini,
+  OpenRouter, or Mistral for enrichment and image description. Providers are
+  set in config, with no code changes.
 - **Restart-safe and idempotent by construction.** Every stage transition is
   durably recorded in `state.json`, keyed by a deterministic content hash. A
   crash mid-pipeline resumes from the last completed stage on the next run

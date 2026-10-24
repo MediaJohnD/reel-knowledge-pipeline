@@ -49,7 +49,7 @@ identical regardless of which branch produced the text.
 | `webhook_server.py` | FastAPI app: shared-secret-authenticated `/webhook`, background processing |
 | `cli.py` | Typer entry point: `run-once`, `serve-webhook` |
 | `logging_setup.py` | Structured JSON logging to console + `data/logs/pipeline.log` |
-| `llm_client.py` | Shared LLM call, dispatched by `llm.provider`: `anthropic` (Claude API) and `ollama` (local instance) support text and vision; `groq` and `gemini` support text only (enricher, skill_writer) - used by enricher, skill_writer, and image_describer |
+| `llm_client.py` | Shared LLM call, dispatched by `llm.provider` (or tried in order via `text_waterfall`/`vision_waterfall`): `ollama`, `anthropic`, `groq`, `gemini`, `openrouter`, `mistral`, and `openai_compat` (LM Studio, Lemonade, any local OpenAI-style server). All seven support text and vision, given a vision-capable model. Used by enricher, skill_writer, and image_describer |
 
 ## Prompt caching
 
@@ -68,8 +68,9 @@ ordering is what makes prefix-keyed caching actually hit:
   param is sent as a separate `system` block with `cache_control: {"type":
   "ephemeral"}` (see `_call_claude`/`_call_claude_vision`), which is the
   actual mechanism Claude requires.
-- **Ollama**: no caching; `static_prefix` is just prepended to the prompt
-  text for consistent behavior across providers.
+- **Ollama, OpenRouter, Mistral, `openai_compat`**: no explicit caching;
+  `static_prefix` is prepended to the prompt text for consistent behavior
+  across providers. Any server-side prefix cache benefits from the ordering.
 
 If a provider's model is changed, prefer Gemini's `gemini-3.5-flash-lite`
 (GA, same price as the previously-used `gemini-2.5-flash`) for the

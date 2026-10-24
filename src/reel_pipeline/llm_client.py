@@ -201,7 +201,7 @@ def _post_json(client: httpx.Client, url: str, **kwargs: Any) -> dict:
     return response.json()
 
 
-def _strip_groq_reasoning(text: str) -> str:
+def _strip_groq_reasoning(text: str | None) -> str:
     """Some reasoning-capable Groq models put their internal reasoning inline
     in message.content, before a closing </think> tag, with the real answer
     after it. Still true as of 2026-08-15 for qwen/qwen3.6-27b - this account's
@@ -215,6 +215,8 @@ def _strip_groq_reasoning(text: str) -> str:
     instead of silently leaking a chopped-off reasoning fragment as if it were
     the model's answer.
     """
+    # OpenAI-style servers send "content": null when nothing but reasoning came back.
+    text = text or ""
     if _THINK_CLOSE_TAG in text:
         return text.rsplit(_THINK_CLOSE_TAG, 1)[1].strip()
     if _THINK_OPEN_TAG in text:
@@ -1160,7 +1162,7 @@ def _call_vision_provider(
 ) -> str:
     """Single-provider vision dispatch, shared by describe_images()'s
     no-waterfall path and its waterfall loop below. Only "ollama", "anthropic",
-    "gemini", "groq", "mistral", and "openrouter" support vision here -
+    "gemini", "groq", "mistral", "openrouter", and "openai_compat" support vision here -
     """
     if provider == "ollama":
         return _call_ollama_vision(
