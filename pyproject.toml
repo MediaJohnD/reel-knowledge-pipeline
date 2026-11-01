@@ -13,12 +13,12 @@ dependencies = [
     "python-dotenv>=1.0",
     "fastapi>=0.141.1",
     "uvicorn>=0.52.1",
-    "yt-dlp>=2024.8.6",
-    "gallery-dl>=1.32.9",
+    "yt-dlp>=2026.10.26",
+    "gallery-dl>=1.32.19",
     "trafilatura>=2.2.0",
     "filelock>=4.2.1",
     "playwright>=1.62.0",
-    "pypdf>=6.21.2",
+    "pypdf>=6.21.4",
 ]
 
 [project.optional-dependencies]

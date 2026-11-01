@@ -351,14 +351,14 @@ wheels = [
 
 [[package]]
 name = "gallery-dl"
-version = "1.32.15"
+version = "1.32.19"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/15/c1/00bd1712cd24cd5ac5c0267596cce3e17fc580f057b344a68122355643ed/gallery_dl-1.32.15.tar.gz", hash = "sha256:a33192d265d8877d94fd37ac358d5e4ff6955b739b350c8a7077392d2ca4edd5", size = 759174, upload-time = "2026-10-03T15:46:44.611Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1a/71/f233d60f40e37381f33590907f0884da453e46963112fb22f352dc1def26/gallery_dl-1.32.19.tar.gz", hash = "sha256:63323bc1bc37b8ba25c19d2ef7a86158d1f79cccaee8d69dda907986f3f3e824", size = 765627, upload-time = "2026-10-31T11:28:47.403Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2c/e9/5bac9bb4e3cf3883b0f8517059a5b9b5aba4f7d5263a7c926b970a1fc80e/gallery_dl-1.32.15-py3-none-any.whl", hash = "sha256:e8fc03eebddcd4ba816ae7a9c42548a68e7ae8a01e7c5a83d6f591e253f092a6", size = 941320, upload-time = "2026-10-03T15:46:40.802Z" },
+    { url = "https://files.pythonhosted.org/packages/5d/c3/87c38fa0d392455a14b3f32b8a3acf0887ced4689a7b5fc6e0d9f761213f/gallery_dl-1.32.19-py3-none-any.whl", hash = "sha256:f6b1eb5e9a7409a988b754335d99dbb1873e130d133ed5d164d32e5e645d1c50", size = 946594, upload-time = "2026-10-31T11:28:43.517Z" },
 ]
 
 [[package]]
@@ -1050,11 +1050,11 @@ wheels = [
 
 [[package]]
 name = "pypdf"
-version = "6.21.2"
+version = "6.21.4"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/06/28/081f1cbcca7042441dafc8de00f48ba60853f89e5bff92c5f26477346d81/pypdf-6.21.2.tar.gz", hash = "sha256:0a3e1c5c886a1be03646c16a04827cc166c2a0575c971b26a4bf89686551c2d4", size = 7144571, upload-time = "2026-10-21T16:44:55.272Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1e/e1/ec8f4d155c997c45917153a5521e60d6ee6389d68abdcbc8e44e564caffc/pypdf-6.21.4.tar.gz", hash = "sha256:c8817e3f888d47a087872ded69812c1ef30cacb871d6e053e0c00bbaf0bc2163", size = 7109255, upload-time = "2026-10-28T17:00:54.81Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1b/4d/c9d2d67f204eff463237a1a8f5e25a6923b7b1043982b91fcaf104c8ef60/pypdf-6.21.2-py3-none-any.whl", hash = "sha256:1d44d1a3a200f25062adff0085b02040e4646431ac2ccac22e42679e91466084", size = 407766, upload-time = "2026-10-21T16:44:53.626Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/4b/77e8ad4ac42c9d93600f40541a50e9feb3a61d2bbee2d76f659346072051/pypdf-6.21.4-py3-none-any.whl", hash = "sha256:33e4fb41ca352810eb4e9838aa0d82d6888a5f8bf682f43e99cce5faa666255c", size = 410430, upload-time = "2026-10-28T17:00:53.146Z" },
 ]
 
 [[package]]
@@ -1214,17 +1214,17 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.141.1" },
     { name = "faster-whisper", marker = "extra == 'local-whisper'", specifier = ">=1.0" },
     { name = "filelock", specifier = ">=4.2.1" },
-    { name = "gallery-dl", specifier = ">=1.32.9" },
+    { name = "gallery-dl", specifier = ">=1.32.19" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "playwright", specifier = ">=1.62.0" },
     { name = "pydantic", specifier = ">=2.6" },
-    { name = "pypdf", specifier = ">=6.21.2" },
+    { name = "pypdf", specifier = ">=6.21.4" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "trafilatura", specifier = ">=2.2.0" },
     { name = "typer", specifier = ">=0.27.1" },
     { name = "uvicorn", specifier = ">=0.52.1" },
-    { name = "yt-dlp", specifier = ">=2024.8.6" },
+    { name = "yt-dlp", specifier = ">=2026.10.26" },
 ]
 provides-extras = ["local-whisper"]
 
@@ -1587,9 +1587,9 @@ wheels = [
 
 [[package]]
 name = "yt-dlp"
-version = "2026.8.19"
+version = "2026.10.26"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/1e/e0/832fa4ca334b766a06933a196066edc3dba37cdb6f14cd98d59bcc69a4b4/yt_dlp-2026.8.19.tar.gz", hash = "sha256:9e213e48cea35c66b378e4447903f118f6392a5fa380a2b6d7070ec86f4e0af1", size = 3052025, upload-time = "2026-08-19T23:48:59.291Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/83/31/4be3987022a6244550ab6a3afe45ad10ac10b5e5ab8874bd8eecc7f8b937/yt_dlp-2026.10.26.tar.gz", hash = "sha256:abe5c6b94c3b2f0560500add1c42e0a97641752743a5b65588ac2007a6e23eb6", size = 3048880, upload-time = "2026-10-26T22:25:26.931Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/69/b2/8cd1613f56eed7ceb64fbd4df3f1c01246bfb098e6f398228bafda22b80b/yt_dlp-2026.8.19-py3-none-any.whl", hash = "sha256:1d57897e94c6665a0a6f9bc54b34e584284e32c034ffab3a7df25d8f7b24eedf", size = 3185533, upload-time = "2026-08-19T23:48:56.925Z" },
+    { url = "https://files.pythonhosted.org/packages/7f/3d/16ea7d5638cf585991f2c5705e8083688dde633d32d0871f2404e0f4d827/yt_dlp-2026.10.26-py3-none-any.whl", hash = "sha256:a05c5b5d8562f7e8a62f5334348b406af4930d56d3a65f8021d14af0e22339ae", size = 3186201, upload-time = "2026-10-26T22:25:24.877Z" },
 ]
