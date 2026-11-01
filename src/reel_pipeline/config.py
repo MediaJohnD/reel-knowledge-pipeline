@@ -52,6 +52,9 @@ class TranscriptionConfig(BaseModel):
     # a given machine. device: "auto"|"cpu"|"cuda". compute_type: "default"|"int8"|"float16"|...
     device: str = "auto"
     compute_type: str = "default"
+    # Comma-separated terms faster-whisper should favor when a sound is ambiguous, so
+    # product names don't decode as near-homophones. Local backend only; None disables.
+    hotwords: str | None = None
 
 
 class WaterfallStep(BaseModel):
@@ -238,7 +241,7 @@ class MaintenanceConfig(BaseModel):
     # it, run_once() logs a warning so growth beyond this project's original
     # assumptions gets noticed instead of just slowly degrading. Set to 0 to
     # disable the check.
-    state_size_warning_threshold: int = 500
+    state_size_warning_threshold: int = 5000
 
 
 class RetryConfig(BaseModel):

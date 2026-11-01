@@ -91,6 +91,31 @@ def test_normal_video_still_transcribes_successfully(tmp_path, monkeypatch):
     assert result.duration_seconds == 12.5
 
 
+@pytest.mark.parametrize(
+    ("hotwords", "expected"),
+    [(None, False), ("Claude, Anthropic", True)],
+)
+def test_hotwords_reach_whisper_only_when_configured(tmp_path, monkeypatch, hotwords, expected):
+    seen = {}
+
+    def transcribe_impl(media_path, **kwargs):
+        seen.update(kwargs)
+        return iter([]), types.SimpleNamespace(language="en", duration=1.0)
+
+    _install_fake_faster_whisper(monkeypatch, transcribe_impl)
+    settings = Settings(project_root=tmp_path)
+    settings.transcription.hotwords = hotwords
+    media_path = tmp_path / "clip.mp4"
+    media_path.write_bytes(b"fake")
+
+    LocalWhisperTranscriber(settings).transcribe(media_path, f"cid-{expected}")
+
+    assert seen["vad_filter"] is True
+    assert ("hotwords" in seen) is expected
+    if expected:
+        assert seen["hotwords"] == hotwords
+
+
 def test_empty_transcript_is_returned_not_raised(tmp_path, monkeypatch, caplog):
     class FakeInfo:
         language = "en"

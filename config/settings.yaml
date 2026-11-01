@@ -21,7 +21,12 @@ prompts:
 
 transcription:
   backend: local # local | openai
-  local_model_size: base
+  # small + hotwords chosen 2026-11-01 from a scored CPU eval on four 30-45s reels:
+  # base wrote wrong brand names on 3 of 4 clips (hotwords on base fixed those but lost
+  # the word "comment" on one); small+hotwords got every brand and "comment" right at
+  # about 10-13s per reel, against 3-4s for base and 19-42s for turbo.
+  local_model_size: small
+  hotwords: "Claude, Claude Code, Anthropic, Codex, Cursor, Gemini, Obsidian, GitHub, MCP, CLAUDE.md"
   openai_model: whisper-1
 
 # LLM used for enrichment and skill generation. "groq" is free and far faster than
@@ -33,7 +38,7 @@ transcription:
 # Model is openai/gpt-oss-120b (OpenAI open-weight). Note the "Chinese provider"
 # rule is about not routing data to Chinese-operated servers, not about a model's
 # origin: Groq self-hosts every model it serves, so its Chinese-origin weights
-# (e.g. qwen/qwen3.6-27b) are allowed too. gpt-oss-120b is chosen here on merit.
+# (e.g. qwen/qwen3.8-27b) are allowed too. gpt-oss-120b is chosen here on merit.
 # NOTE: Groq requires the "openai/" prefix on the model id - a bare "gpt-oss-120b"
 # (the id other hosts use for the same weights) 404s on Groq. Verified live 2026-08-20.
 # "ollama" runs fully locally (no API key, no cost, slower) against an
@@ -71,7 +76,7 @@ llm:
   # minimax-m2.7 (untested preview, no published limits).
   #
   # Every step below IS confirmed-safe serving infra: Groq (US, self-hosted
-  # LPUs - including for qwen/qwen3.6-27b in the vision waterfall below, which
+  # LPUs - including for qwen/qwen3.8-27b in the vision waterfall below, which
   # runs on Groq's own hardware, not any Alibaba passthrough), Gemini (Google,
   # no China-region API endpoint exists at all), Mistral (EU-first,
   # Paris-based), OpenRouter's nvidia/nemotron entry (served directly by
@@ -96,8 +101,10 @@ llm:
       model: ministral-8b-latest
     - provider: mistral
       model: open-mistral-nemo
+    # Replaced nemotron-3-super-120b-a12b:free on 2026-11-01 after it started
+    # returning 404. Live-verified the same day, served by NVIDIA only.
     - provider: openrouter
-      model: nvidia/nemotron-3-super-120b-a12b:free
+      model: nvidia/nemotron-3.5-lightning:free
     # Local unmetered last resort (verified live 2026-09-24 on :11435). Added
     # because the chain previously had no Ollama rung at all.
     - provider: ollama
@@ -105,7 +112,7 @@ llm:
   # Vision fallback chain for photo/carousel description (describe_images()).
   # Same 2026-08-25 research and the same China-infra exclusions apply.
   # Gemini 3.5 then 3.1 Flash-Lite first (500 RPD each, both vision-capable,
-  # live-verified 2026-10-08; 2.5 Flash dropped as a 20 RPD model), Groq's qwen/qwen3.6-27b third (the only Groq vision
+  # live-verified 2026-10-08; 2.5 Flash dropped as a 20 RPD model), Groq's qwen/qwen3.8-27b third (the only Groq vision
   # model - a preview that can be pulled without notice, so mid-tier not
   # primary; Chinese-origin *weights*, but Groq's own US hardware is the
   # actual serving infra, which is what the policy cares about), Mistral's
@@ -163,8 +170,8 @@ skill_writer:
 # Groq model whose input_modalities includes "image" if provider is "groq"
 # (check GET /openai/v1/models - most Groq text models don't support images).
 # provider pinned to "ollama" explicitly: llm.provider above is "groq" for text
-# enrichment, and Groq's only image-capable model is qwen/qwen3.6-27b (verified
-# against GET /openai/v1/models on 2026-08-20). That model IS permitted - the
+# enrichment, and Groq's only image-capable model is qwen/qwen3.8-27b (verified
+# against GET /openai/v1/models on 2026-11-01). That model IS permitted - the
 # blocklist is about not sending data to Chinese *servers*, not about a model's
 # origin, and Groq self-hosts everything on US/EU/SA infrastructure - so it is a
 # real fallback, not a banned one. Ollama stays the default here simply because
@@ -290,7 +297,7 @@ maintenance:
   # Once item count reaches this, run-once logs a warning so growth past this
   # project's "handful of reels" scale gets noticed rather than just slowly
   # degrading. Set to 0 to disable. See docs/runbook.md's "known limitations".
-  state_size_warning_threshold: 500
+  state_size_warning_threshold: 5000
 
 # Retry policy for items that fail processing (download/transcribe/enrich/write
 # errors - not validation/blocked-domain rejections, which never retry).

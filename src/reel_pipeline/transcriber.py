@@ -74,7 +74,9 @@ class LocalWhisperTranscriber:
             # you for watching!") on silent segments, which is common in short-form video
             # (music-bed intros, on-screen-text-only clips) and would otherwise silently
             # pollute the transcript/enrichment/note with fabricated speech.
-            segments, info = model.transcribe(str(media_path), vad_filter=True)
+            hotwords = self.settings.transcription.hotwords
+            extra = {"hotwords": hotwords} if hotwords else {}
+            segments, info = model.transcribe(str(media_path), vad_filter=True, **extra)
             text = " ".join(segment.text.strip() for segment in segments)
         except IndexError as exc:
             # faster-whisper (via PyAV) indexes container.streams.audio[0] internally;

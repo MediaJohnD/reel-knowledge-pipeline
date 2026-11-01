@@ -442,7 +442,7 @@ device/browser, not just iOS.
   This is a deliberate tradeoff for this project's original "handful of
   reels" scale (keeps `state.json` a plain, greppable, human-readable file -
   see `CLAUDE.md`), not an oversight. `maintenance.state_size_warning_threshold`
-  (default 500 items) turns this into a *monitored* deferral: once item count
+  (default 5000 items) turns this into a *monitored* deferral: once item count
   reaches it, `run-once` logs a warning each pass. If you hit this, the real
   fix is a SQLite/WAL migration (evaluated and deferred - see
   `docs/superpowers/specs/2026-07-29-state-reliability-design.md`'s
