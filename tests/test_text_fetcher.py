@@ -784,6 +784,149 @@ def test_drive_fetcher_attaches_binary_file_to_vault(tmp_path):
     assert result.backend == "drive-attachment"
 
 
+def _drive_folder_listing(*entries: tuple[str, str, str]) -> str:
+    """Mirrors the markup embeddedfolderview really serves (captured live 2026-11-01)."""
+    rows = "".join(
+        f'<div class="flip-entry" id="entry-{entry_id}" tabindex="0" role="link">'
+        f'<div class="flip-entry-info"><a href="{href}" target="_blank">'
+        '<div class="flip-entry-visual"></div>'
+        f'<div class="flip-entry-title">{title}</div></a></div>'
+        '<div class="flip-entry-last-modified"><div>Oct 25</div></div></div>'
+        for entry_id, href, title in entries
+    )
+    return f'<html><body><div class="flip-entries">{rows}</div></body></html>'
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://drive.google.com/drive/folders/folder123?usp=sharing",
+        "https://drive.google.com/drive/mobile/folders/folder123",
+        "https://drive.google.com/drive/u/0/folders/folder123",
+        "https://drive.google.com/folderview?id=folder123",
+    ],
+)
+def test_drive_fetcher_reads_every_file_in_a_public_folder(tmp_path, url):
+    settings = Settings(project_root=tmp_path)
+    respx.get("https://drive.google.com/embeddedfolderview?id=folder123").mock(
+        return_value=httpx.Response(
+            200,
+            text=_drive_folder_listing(
+                ("aaa111", "https://drive.google.com/file/d/aaa111/view?usp=drive_web", "code.zip"),
+                (
+                    "bbb222",
+                    "https://drive.google.com/file/d/bbb222/view?usp=drive_web",
+                    "A &amp; B.md",
+                ),
+            ),
+        )
+    )
+    respx.get("https://drive.google.com/uc?export=download&id=aaa111").mock(
+        return_value=httpx.Response(
+            200,
+            content=b"PK\x03\x04\xff\xfe",
+            headers={"content-disposition": 'attachment; filename="code.zip"'},
+        )
+    )
+    respx.get("https://drive.google.com/uc?export=download&id=bbb222").mock(
+        return_value=httpx.Response(200, text="Readable markdown body.")
+    )
+
+    result = DriveFetcher(settings).fetch(url, "cid-folder1")
+
+    assert result.backend == "drive-folder"
+    assert result.content_kind == "text"
+    assert "## code.zip" in result.text
+    assert "![[code.zip]]" in result.text
+    assert "## A & B.md" in result.text
+    assert "Readable markdown body." in result.text
+    assert (settings.vault_dir / "attachments" / "code.zip").exists()
+
+
+@respx.mock
+def test_drive_folder_keeps_going_past_one_bad_file_and_names_what_it_skipped(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    respx.get("https://drive.google.com/embeddedfolderview?id=folder123").mock(
+        return_value=httpx.Response(
+            200,
+            text=_drive_folder_listing(
+                ("aaa111", "https://drive.google.com/file/d/aaa111/view", "gone.pdf"),
+                ("sub222", "https://drive.google.com/drive/folders/sub222", "Nested"),
+                ("ccc333", "https://drive.google.com/file/d/ccc333/view", "ok.txt"),
+            ),
+        )
+    )
+    respx.get("https://drive.google.com/uc?export=download&id=aaa111").mock(
+        return_value=httpx.Response(404)
+    )
+    respx.get("https://drive.google.com/uc?export=download&id=ccc333").mock(
+        return_value=httpx.Response(200, text="Still captured.")
+    )
+
+    result = DriveFetcher(settings).fetch(
+        "https://drive.google.com/drive/folders/folder123", "cid-folder2"
+    )
+
+    assert "Still captured." in result.text
+    assert "## gone.pdf" in result.text and "404" in result.text
+    assert (
+        "## Nested" in result.text
+        and "https://drive.google.com/drive/folders/sub222" in result.text
+    )
+
+
+@respx.mock
+def test_drive_folder_with_no_visible_files_raises_clear_error(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    respx.get("https://drive.google.com/embeddedfolderview?id=folder123").mock(
+        return_value=httpx.Response(200, text="<html><body>Sign in</body></html>")
+    )
+
+    with pytest.raises(TextFetchError, match="no files"):
+        DriveFetcher(settings).fetch(
+            "https://drive.google.com/drive/folders/folder123", "cid-folder3"
+        )
+
+
+@respx.mock
+def test_drive_folder_where_every_file_fails_raises_instead_of_writing_an_empty_note(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    respx.get("https://drive.google.com/embeddedfolderview?id=folder123").mock(
+        return_value=httpx.Response(
+            200,
+            text=_drive_folder_listing(
+                ("aaa111", "https://drive.google.com/file/d/aaa111/view", "gone.pdf"),
+            ),
+        )
+    )
+    respx.get("https://drive.google.com/uc?export=download&id=aaa111").mock(
+        return_value=httpx.Response(404)
+    )
+
+    with pytest.raises(TextFetchError, match="none of the"):
+        DriveFetcher(settings).fetch(
+            "https://drive.google.com/drive/folders/folder123", "cid-folder4"
+        )
+
+
+@respx.mock
+def test_drive_virus_scan_interstitial_is_an_error_not_note_content(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    interstitial = (
+        "<!doctype html><html><body><article><h1>Virus scan warning</h1>"
+        "<p>Google Drive can't scan this file for viruses. big.pdf is too large "
+        "for Google to scan for viruses. Would you still like to download this file?</p>"
+        "</article></body></html>"
+    )
+    respx.get("https://drive.google.com/uc?export=download&id=big123").mock(
+        return_value=httpx.Response(200, text=interstitial)
+    )
+
+    with pytest.raises(TextFetchError, match="too large"):
+        DriveFetcher(settings).fetch("https://drive.google.com/file/d/big123/view", "cid-drive6")
+
+
 def test_drive_fetcher_raises_clear_error_when_no_file_id_in_url(tmp_path):
     settings = Settings(project_root=tmp_path)
 

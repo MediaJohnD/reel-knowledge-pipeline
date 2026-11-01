@@ -78,7 +78,10 @@ The system supports:
   say which. A non-video Drive URL routes to the new `DriveFetcher` (`text_fetcher.py`), which
   fetches the file via Drive's unauthenticated direct-download endpoint - no OAuth, no API key,
   same posture as GitHub/Notion. See
-  `docs/superpowers/specs/2026-08-10-drive-text-capture-design.md`.
+  `docs/superpowers/specs/2026-08-10-drive-text-capture-design.md`. As of 2026-11-01 a shared
+  *folder* URL works too: `DriveFetcher` reads the public embedded-folder listing and combines
+  up to 25 direct files into one note. A file that fails is noted and skipped; subfolders and
+  native Docs are linked by name, not recursed into.
 - Text-capture ingestion (`text_fetcher.py`: GitHub's public REST API, or plain HTTP GET +
   `trafilatura` extraction for everything else) was introduced 2026-07-16 as a scoped
   allow-list (`github.com`, `notion.so`, `notion.site`), then broadened piece by piece as

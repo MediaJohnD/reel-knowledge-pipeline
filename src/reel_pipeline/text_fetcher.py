@@ -344,10 +344,27 @@ class NotionFetcher:
 
 
 _DRIVE_FILE_ID_RE = re.compile(r"(?:/file/d/|[?&]id=)([\w-]{6,})")
+# Every share-link shape seen so far: /drive/folders/<id>, /drive/mobile/folders/<id>,
+# /drive/u/0/folders/<id>, and the older folderview?id=<id>.
+_DRIVE_FOLDER_ID_RE = re.compile(r"(?:/folders/|/folderview\?(?:[^#]*&)?id=)([\w-]{6,})")
+_DRIVE_FOLDER_ENTRY_RE = re.compile(
+    r'<div class="flip-entry" id="entry-[\w-]+".*?<a href="([^"]+)".*?'
+    r'<div class="flip-entry-title">(.*?)</div>',
+    re.DOTALL,
+)
+_DRIVE_VIRUS_SCAN_MARKERS = ("virus scan warning", "too large for google to scan")
+# A shared folder is a handful of files by intent; this only stops a huge one
+# from pulling hundreds of downloads into a single note.
+_DRIVE_FOLDER_MAX_FILES = 25
 
 
 def _drive_file_id_from_url(url: str) -> str | None:
     match = _DRIVE_FILE_ID_RE.search(url)
+    return match.group(1) if match else None
+
+
+def _drive_folder_id_from_url(url: str) -> str | None:
+    match = _DRIVE_FOLDER_ID_RE.search(url)
     return match.group(1) if match else None
 
 
@@ -361,10 +378,16 @@ class DriveFetcher:
 
     Binary files (PDF, PPTX, DOCX, ...) are saved into the vault's
     `attachments/` folder and embedded in the note, with best-effort text
-    extraction for PDF/DOCX/PPTX. Not handled: Drive's "can't scan this file for
-    viruses" interstitial page that appears for files too large for that
-    scan (roughly >25MB) instead of the raw bytes - out of scope for the
-    "handful of shared items" volume this project is built for.
+    extraction for PDF/DOCX/PPTX. Drive's "can't scan this file for viruses"
+    interstitial, served instead of the raw bytes for files too large for that
+    scan (roughly >25MB), raises rather than becoming note content; confirming
+    past it is out of scope for the "handful of shared items" volume this
+    project is built for.
+
+    A public folder URL lists its top level through Drive's own
+    `embeddedfolderview` page (same plain GET) and reads each file into one
+    combined note. A file that fails is noted and skipped; subfolders and native
+    Docs/Sheets are linked by name, not followed.
     """
 
     def __init__(self, settings: Settings, client: httpx.Client | None = None):
@@ -372,22 +395,83 @@ class DriveFetcher:
         self._client = client
 
     def fetch(self, url: str, content_id: str) -> TranscriptResult:
+        folder_id = _drive_folder_id_from_url(url)
         file_id = _drive_file_id_from_url(url)
-        if file_id is None:
+        if folder_id is None and file_id is None:
             raise TextFetchError(f"could not find a Drive file id in {url!r}")
 
         owned_client = self._client or httpx.Client(timeout=30.0, follow_redirects=True)
         owns_client = self._client is None
         try:
-            try:
-                response = owned_client.get(
-                    f"https://drive.google.com/uc?export=download&id={file_id}"
-                )
-            except httpx.HTTPError as exc:
-                raise TextFetchError(f"failed to fetch Drive file {url!r}: {exc}") from exc
+            if folder_id is not None:
+                return self._fetch_folder(owned_client, url, folder_id, content_id)
+            return self._fetch_file(owned_client, url, file_id or "", content_id)
         finally:
             if owns_client:
                 owned_client.close()
+
+    def _fetch_folder(
+        self, client: httpx.Client, url: str, folder_id: str, content_id: str
+    ) -> TranscriptResult:
+        try:
+            response = client.get(f"https://drive.google.com/embeddedfolderview?id={folder_id}")
+        except httpx.HTTPError as exc:
+            raise TextFetchError(f"failed to list Drive folder {url!r}: {exc}") from exc
+        if response.status_code != 200:
+            raise TextFetchError(f"Drive folder {url!r} returned HTTP {response.status_code}")
+
+        entries = [
+            (href, html_lib.unescape(title).strip())
+            for href, title in _DRIVE_FOLDER_ENTRY_RE.findall(response.text)
+        ]
+        files = [
+            (file_id, title)
+            for href, title in entries
+            if "/file/d/" in href and (file_id := _drive_file_id_from_url(href))
+        ]
+        if not files:
+            raise TextFetchError(
+                f"Drive folder {url!r} shows no files (private, empty, or only subfolders)"
+            )
+
+        sections: list[str] = []
+        fetched = 0
+        for file_id, title in files[:_DRIVE_FOLDER_MAX_FILES]:
+            file_url = f"https://drive.google.com/file/d/{file_id}/view"
+            try:
+                result = self._fetch_file(client, file_url, file_id, content_id)
+            except TextFetchError as exc:
+                sections.append(f"## {title}\n\n(Could not read this file: {exc})")
+                continue
+            sections.append(f"## {title}\n\n{result.text}")
+            fetched += 1
+        if fetched == 0:
+            raise TextFetchError(f"none of the {len(files)} files in Drive folder {url!r} read")
+
+        for href, title in entries:
+            if "/file/d/" not in href:
+                sections.append(f"## {title}\n\n(Not read, open it in Drive: {href})")
+        if len(files) > _DRIVE_FOLDER_MAX_FILES:
+            sections.append(
+                f"(Only the first {_DRIVE_FOLDER_MAX_FILES} of {len(files)} files were read.)"
+            )
+
+        return TranscriptResult(
+            content_id=content_id,
+            text="\n\n".join(sections),
+            content_kind="text",
+            language=None,
+            backend="drive-folder",
+            duration_seconds=None,
+        )
+
+    def _fetch_file(
+        self, client: httpx.Client, url: str, file_id: str, content_id: str
+    ) -> TranscriptResult:
+        try:
+            response = client.get(f"https://drive.google.com/uc?export=download&id={file_id}")
+        except httpx.HTTPError as exc:
+            raise TextFetchError(f"failed to fetch Drive file {url!r}: {exc}") from exc
 
         if response.status_code != 200:
             raise TextFetchError(f"Drive file {url!r} returned HTTP {response.status_code}")
@@ -399,6 +483,9 @@ class DriveFetcher:
 
         stripped = text.strip()
         if stripped.lower().startswith(("<!doctype html", "<html")):
+            lowered = stripped.lower()
+            if any(marker in lowered for marker in _DRIVE_VIRUS_SCAN_MARKERS):
+                raise TextFetchError(f"Drive file {url!r} is too large to download without a click")
             extracted = (trafilatura.extract(text) or "").strip()
             if not extracted:
                 raise TextFetchError(f"Drive file {url!r} produced no usable text")
