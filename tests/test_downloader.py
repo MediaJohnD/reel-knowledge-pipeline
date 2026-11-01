@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -106,6 +107,44 @@ def test_gallery_dl_downloader_raises_clear_error_without_cookies(tmp_path):
         downloader.download("https://www.instagram.com/reel/abc123/", "cid3")
 
 
+def test_gallery_dl_runs_the_copy_beside_this_python_without_path(tmp_path, monkeypatch):
+    # A venv python launched without activation has no Scripts dir on PATH, and a bare
+    # "gallery-dl" then failed with WinError 2 and used up one of the item's retries.
+    from reel_pipeline.config import Settings as SettingsCls
+
+    bin_dir = tmp_path / "venv-bin"
+    bin_dir.mkdir()
+    installed = bin_dir / ("gallery-dl.exe" if sys.platform == "win32" else "gallery-dl")
+    installed.write_bytes(b"")
+    installed.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(bin_dir / "python"))
+    monkeypatch.setenv("PATH", "")
+
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        out_dir = settings.tmp_dir / "cid-path"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "post.jpg").write_bytes(b"fake-jpg")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    settings = SettingsCls(project_root=tmp_path, instagram_cookies_browser="chrome")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    GalleryDlDownloader(settings).download("https://www.instagram.com/p/abc/", "cid-path")
+
+    assert Path(commands[0][0]).resolve() == installed.resolve()
+
+
+def test_gallery_dl_falls_back_to_path_lookup_when_not_beside_python(tmp_path, monkeypatch):
+    from reel_pipeline.downloader import _gallery_dl_executable
+
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "python"))
+
+    assert _gallery_dl_executable() == "gallery-dl"
+
+
 def test_gallery_dl_downloader_detects_video_over_images(tmp_path, monkeypatch):
     from reel_pipeline.config import Settings as SettingsCls
 
@@ -114,7 +153,7 @@ def test_gallery_dl_downloader_detects_video_over_images(tmp_path, monkeypatch):
     out_dir = settings.tmp_dir / content_id
 
     def fake_run(command, **kwargs):
-        if command[0] == "gallery-dl":
+        if Path(command[0]).stem == "gallery-dl":
             out_dir.mkdir(parents=True, exist_ok=True)
             (out_dir / "post_1.jpg").write_bytes(b"fake-jpg")
             (out_dir / "post.mp4").write_bytes(b"fake-mp4")
@@ -169,7 +208,7 @@ def test_gallery_dl_downloader_routes_silent_video_to_image_path(tmp_path, monke
     frame_path = out_dir / "post.frame.jpg"
 
     def fake_run(command, **kwargs):
-        if command[0] == "gallery-dl":
+        if Path(command[0]).stem == "gallery-dl":
             out_dir.mkdir(parents=True, exist_ok=True)
             (out_dir / "post.mp4").write_bytes(b"fake-silent-mp4")
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
@@ -199,7 +238,7 @@ def test_gallery_dl_downloader_ignores_silent_video_when_a_real_video_exists(tmp
     out_dir = settings.tmp_dir / content_id
 
     def fake_run(command, **kwargs):
-        if command[0] == "gallery-dl":
+        if Path(command[0]).stem == "gallery-dl":
             out_dir.mkdir(parents=True, exist_ok=True)
             (out_dir / "post_1.mp4").write_bytes(b"fake-real-mp4")
             (out_dir / "post_2.mp4").write_bytes(b"fake-silent-mp4")
@@ -229,7 +268,7 @@ def test_gallery_dl_downloader_keeps_all_videos_in_multi_video_carousel(tmp_path
     out_dir = settings.tmp_dir / content_id
 
     def fake_run(command, **kwargs):
-        if command[0] == "gallery-dl":
+        if Path(command[0]).stem == "gallery-dl":
             out_dir.mkdir(parents=True, exist_ok=True)
             (out_dir / "post_1.mp4").write_bytes(b"fake-mp4-1")
             (out_dir / "post_2.mp4").write_bytes(b"fake-mp4-2")
@@ -264,7 +303,7 @@ def test_gallery_dl_downloader_passes_range_for_img_index(
     captured_command = []
 
     def fake_run(command, **kwargs):
-        if command[0] == "gallery-dl":
+        if Path(command[0]).stem == "gallery-dl":
             captured_command.extend(command)
             out_dir.mkdir(parents=True, exist_ok=True)
             (out_dir / "post_8.mp4").write_bytes(b"fake-mp4")
@@ -292,7 +331,7 @@ def test_gallery_dl_downloader_omits_range_without_img_index(tmp_path, monkeypat
     captured_command = []
 
     def fake_run(command, **kwargs):
-        if command[0] == "gallery-dl":
+        if Path(command[0]).stem == "gallery-dl":
             captured_command.extend(command)
             out_dir.mkdir(parents=True, exist_ok=True)
             (out_dir / "post_1.mp4").write_bytes(b"fake-mp4")

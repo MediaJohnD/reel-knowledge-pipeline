@@ -312,16 +312,16 @@ def is_private_or_local_host(host: str) -> bool:
     host = host.strip("[]").lower()
     if host == "localhost" or host.endswith(".localhost"):
         return True
-    if _is_non_public_ip(host):
+    if is_non_public_ip(host):
         return True
     try:
         infos = socket.getaddrinfo(host, None)
     except (OSError, UnicodeError):
         return False
-    return any(_is_non_public_ip(str(info[4][0])) for info in infos)
+    return any(is_non_public_ip(str(info[4][0])) for info in infos)
 
 
-def _is_non_public_ip(address: str) -> bool:
+def is_non_public_ip(address: str) -> bool:
     try:
         ip = ipaddress.ip_address(address.split("%")[0])
     except ValueError:

@@ -43,6 +43,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlparse
@@ -296,6 +297,15 @@ def _gallery_dl_caption(files: list[Path]) -> str | None:
     return None
 
 
+def _gallery_dl_executable() -> str:
+    """The gallery-dl installed beside this Python, else whatever PATH finds.
+
+    A venv's Python started without activation has no Scripts dir on PATH, so a bare
+    name fails with WinError 2 and costs the item one of its retries.
+    """
+    return shutil.which("gallery-dl", path=str(Path(sys.executable).parent)) or "gallery-dl"
+
+
 class GalleryDlDownloader:
     """Downloads Instagram media via the gallery-dl CLI, using a cookies file or
     browser cookie jar from the account owner's own logged-in session (never a
@@ -314,7 +324,7 @@ class GalleryDlDownloader:
         out_dir.mkdir(parents=True)
 
         # --write-metadata: a <file>.json beside each file, read below for the caption.
-        command = ["gallery-dl", "--dest", str(out_dir), "--quiet", "--write-metadata"]
+        command = [_gallery_dl_executable(), "--dest", str(out_dir), "--quiet", "--write-metadata"]
         if cookie_kind == "file":
             command += ["--cookies", cookie_value]
         else:

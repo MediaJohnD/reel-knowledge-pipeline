@@ -99,10 +99,13 @@ The system supports:
   the user themself submitted). See
   `docs/superpowers/specs/2026-07-16-text-capture-ingestion-design.md` for the original
   (now superseded) scoped-allow-list rationale. As of 2026-11-01 the catch-all refuses
-  loopback, private, link-local, and other non-public targets, on every redirect hop and in
-  the headless fallback's navigations (`is_private_or_local_host` in `validators.py`). A
-  submitted URL can no longer read a service on this machine or its network. Known gap: DNS
-  rebinding between the check and the connect.
+  loopback, private, link-local, and other non-public targets, on every redirect hop and on
+  every request the headless fallback makes (`is_private_or_local_host` in `validators.py`).
+  A submitted URL can no longer read a service on this machine or its network. The plain-HTTP
+  fetchers (`_guarded_client` in `text_fetcher.py`) resolve once and connect to the address
+  they checked, so DNS rebinding can't get past them; the client also ignores proxy
+  environment variables, because a proxy would resolve the name itself. Known gap: Chromium
+  does its own DNS, so rebinding stays open in the headless fallback only.
 - `scripts/recapture_carousels.py` (2026-11-01) re-captures carousel posts saved before the
   `img_index` fix. Owner-run only, never scheduled: at most 2 posts per day, halts 24 h on a
   failure, dry-run unless `--apply`. See `docs/runbook.md`.

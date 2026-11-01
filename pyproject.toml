@@ -19,6 +19,7 @@ dependencies = [
     "filelock>=4.2.6",
     "playwright>=1.64.1",
     "pypdf>=6.21.4",
+    "httpcore>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +47,12 @@ reel-pipeline = "reel_pipeline.cli:app"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv]
+# faster-whisper 1.2.1 passes av.open(metadata_errors=...), which PyAV 19 removed.
+# Lift this once a faster-whisper release works with it; see
+# test_real_faster_whisper_can_decode_audio_with_the_installed_av.
+constraint-dependencies = ["av<19"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/reel_pipeline"]

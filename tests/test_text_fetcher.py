@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import http.server
+import socket
 import sys
+import threading
 
+import httpcore
 import httpx
 import pytest
 import respx
@@ -17,6 +21,7 @@ from reel_pipeline.text_fetcher import (
     NotionFetcher,
     RenderedHtmlFetcher,
     TextFetchError,
+    _guarded_client,
     get_text_fetcher,
 )
 
@@ -868,6 +873,122 @@ def test_drive_fetcher_refuses_redirect_to_loopback(tmp_path):
     assert not secret.called
 
 
+class _RebindingDns:
+    """Answers `first` to the guard's check, then `then` to every later lookup."""
+
+    def __init__(self, first: str, then: str):
+        self.answers = [first]
+        self.then = then
+        self.lookups = 0
+
+    def __call__(self, host, port=None, *args, **kwargs):
+        self.lookups += 1
+        address = self.answers.pop(0) if self.answers else self.then
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, port or 0))]
+
+
+@pytest.fixture
+def loopback_secret():
+    """A real HTTP server on 127.0.0.1, standing in for a service on this machine."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b"<html><body>internal secret</body></html>"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server
+    server.shutdown()
+    server.server_close()
+
+
+def test_guarded_client_refuses_dns_rebinding_to_loopback(monkeypatch, loopback_secret):
+    """The hook's lookup says public, the connection's lookup says 127.0.0.1. Only
+    the address really connected to counts."""
+    monkeypatch.setattr(socket, "getaddrinfo", _RebindingDns("93.184.216.34", "127.0.0.1"))
+    port = loopback_secret.server_address[1]
+
+    with _guarded_client() as client, pytest.raises(TextFetchError, match="private or local"):
+        client.get(f"http://rebind.example.com:{port}/")
+
+
+def test_guarded_client_connects_to_the_address_it_checked(monkeypatch):
+    """Connecting by name would resolve again and reopen the gap, so the backend must
+    be handed the checked IP. TLS still verifies the name: httpcore takes SNI and the
+    certificate hostname from the URL, not from the address connected to."""
+    dns = _RebindingDns("93.184.216.34", "93.184.216.34")
+    monkeypatch.setattr(socket, "getaddrinfo", dns)
+    connected = []
+
+    def _record(self, host, port, *args, **kwargs):
+        connected.append((host, port))
+        raise httpcore.ConnectError("stop here")
+
+    monkeypatch.setattr(httpcore.SyncBackend, "connect_tcp", _record)
+
+    with _guarded_client() as client, pytest.raises(httpx.ConnectError):
+        client.get("https://public.example.com/")
+
+    assert connected == [("93.184.216.34", 443)]
+
+
+def test_guarded_client_tries_the_next_address_when_one_is_down(monkeypatch):
+    def _two_addresses(host, port=None, *args, **kwargs):
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (a, port or 0))
+            for a in ("93.184.216.34", "93.184.216.35")
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _two_addresses)
+    connected = []
+
+    def _record(self, host, port, *args, **kwargs):
+        connected.append(host)
+        raise httpcore.ConnectError("down")
+
+    monkeypatch.setattr(httpcore.SyncBackend, "connect_tcp", _record)
+
+    with _guarded_client() as client, pytest.raises(httpx.ConnectError):
+        client.get("https://public.example.com/")
+
+    assert connected == ["93.184.216.34", "93.184.216.35"]
+
+
+def test_guarded_client_refuses_when_any_resolved_address_is_private(monkeypatch):
+    """Round-robin answers can mix a public and a private address."""
+
+    def _mixed(host, port=None, *args, **kwargs):
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (a, port or 0))
+            for a in ("93.184.216.34", "10.0.0.5")
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _mixed)
+    with _guarded_client() as client, pytest.raises(TextFetchError, match="private or local"):
+        client.get("https://public.example.com/")
+
+
+def test_guarded_client_reports_unresolvable_host_as_a_connect_error():
+    with _guarded_client() as client, pytest.raises(httpx.ConnectError):
+        client.get("https://nowhere.example.com/")
+
+
+def test_guarded_client_ignores_proxy_environment(monkeypatch):
+    """A proxy would connect for us and resolve the name itself, past the guard."""
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    with _guarded_client() as client:
+        assert not client._mounts
+
+
 class _FakeRoute:
     def __init__(self, url, *, navigation):
         self.request = _FakeRouteRequest(url, navigation)
@@ -911,6 +1032,17 @@ def test_rendered_fetcher_blocks_navigation_to_private_host(tmp_path, monkeypatc
     subresource = _FakeRoute("https://cdn.example.com/app.js", navigation=False)
     handler(subresource)
     assert subresource.outcome == "continued"
+
+    # A page's script or image can reach this machine too, even if it can't read
+    # the answer back: fire-and-forget GETs still trigger things.
+    private_subresource = _FakeRoute("http://127.0.0.1:8787/trigger", navigation=False)
+    handler(private_subresource)
+    assert private_subresource.outcome == "aborted"
+
+    # No host at all: resolving "" would return this machine's own addresses.
+    inline = _FakeRoute("data:image/png;base64,AAAA", navigation=False)
+    handler(inline)
+    assert inline.outcome == "continued"
 
 
 def _drive_folder_listing(*entries: tuple[str, str, str]) -> str:

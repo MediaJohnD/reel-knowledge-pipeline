@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
+import wave
 
 import pytest
 
@@ -176,3 +177,20 @@ def test_model_resolves_device_and_compute_type_from_settings(tmp_path, monkeypa
     (args, kwargs) = init_calls[0]
     assert kwargs.get("device") == "cpu"
     assert kwargs.get("compute_type") == "int8"
+
+
+def test_real_faster_whisper_can_decode_audio_with_the_installed_av(tmp_path):
+    """The fakes above never touch PyAV, so they can't see the two falling out of step.
+
+    PyAV 19 dropped an av.open() argument faster-whisper 1.2.1 still passes, which failed
+    every local transcription while the rest of the suite stayed green.
+    """
+    faster_whisper = pytest.importorskip("faster_whisper")
+    audio = tmp_path / "silence.wav"
+    with wave.open(str(audio), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(bytes(32000))
+
+    assert abs(len(faster_whisper.decode_audio(str(audio))) - 16000) < 1600

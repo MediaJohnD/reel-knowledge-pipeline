@@ -20,6 +20,7 @@ import base64
 import html as html_lib
 import io
 import re
+import socket
 import sys
 import threading
 import zipfile
@@ -29,13 +30,14 @@ from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlparse
 
+import httpcore
 import httpx
 import pypdf
 import trafilatura
 
 from reel_pipeline.config import Settings
 from reel_pipeline.models import TranscriptResult
-from reel_pipeline.validators import is_private_or_local_host
+from reel_pipeline.validators import is_non_public_ip, is_private_or_local_host
 
 _GITHUB_API = "https://api.github.com"
 
@@ -80,9 +82,50 @@ def _refuse_private_target(request: httpx.Request) -> None:
         raise TextFetchError(f"refusing to fetch private or local address {request.url.host!r}")
 
 
+class _PublicOnlyBackend(httpcore.SyncBackend):
+    """Resolves the name once, checks every address, and connects to a checked IP.
+
+    The request hook above resolves on its own, so a DNS answer that changes between
+    that lookup and the connection (rebinding) would otherwise reach this machine.
+    TLS is unaffected: httpcore takes SNI and the certificate name from the URL.
+    """
+
+    def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        try:
+            infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        except (OSError, UnicodeError) as exc:
+            raise httpcore.ConnectError(f"could not resolve {host!r}: {exc}") from exc
+        addresses = list(dict.fromkeys(str(info[4][0]) for info in infos))
+        if any(is_non_public_ip(address) for address in addresses):
+            raise TextFetchError(f"refusing to fetch private or local address {host!r}")
+        last_error = httpcore.ConnectError(f"no addresses for {host!r}")
+        for address in addresses:
+            try:
+                return super().connect_tcp(address, port, timeout, local_address, socket_options)
+            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
+                last_error = exc
+        raise last_error
+
+
+class _PublicOnlyTransport(httpx.HTTPTransport):
+    def __init__(self) -> None:
+        super().__init__()
+        # HTTPTransport has no parameter for this. Replacing the private pool is
+        # covered by test_guarded_client_refuses_dns_rebinding_to_loopback, which
+        # fails against a real loopback server if a new httpx stops honoring it.
+        self._pool = httpcore.ConnectionPool(
+            ssl_context=httpx.create_ssl_context(), network_backend=_PublicOnlyBackend()
+        )
+
+
 def _guarded_client() -> httpx.Client:
+    # Passing a transport also makes httpx ignore HTTP_PROXY and friends, which is
+    # wanted here: a proxy would resolve the name itself, past the check.
     return httpx.Client(
-        timeout=30.0, follow_redirects=True, event_hooks={"request": [_refuse_private_target]}
+        timeout=30.0,
+        follow_redirects=True,
+        transport=_PublicOnlyTransport(),
+        event_hooks={"request": [_refuse_private_target]},
     )
 
 
@@ -742,17 +785,22 @@ class RenderedHtmlFetcher:
                 try:
                     page = browser.new_page()
 
-                    def _block_private_navigation(route) -> None:
-                        # Same rule as _refuse_private_target, for redirects and
-                        # script-driven navigation inside the browser.
-                        request = route.request
-                        host = urlparse(request.url).hostname or ""
-                        if request.is_navigation_request() and is_private_or_local_host(host):
+                    private_hosts: dict[str, bool] = {}
+
+                    def _block_private_requests(route) -> None:
+                        # Same rule as _refuse_private_target, for redirects, script
+                        # navigation, and subresources inside the browser. data: and
+                        # blob: URLs have no host and go nowhere. Chromium does its own
+                        # DNS, so unlike _PublicOnlyBackend this can't catch rebinding.
+                        host = urlparse(route.request.url).hostname or ""
+                        if host and host not in private_hosts:
+                            private_hosts[host] = is_private_or_local_host(host)
+                        if private_hosts.get(host):
                             route.abort()
                         else:
                             route.continue_()
 
-                    page.route("**/*", _block_private_navigation)
+                    page.route("**/*", _block_private_requests)
                     # "networkidle" is unreliable for real SPAs (Notion never
                     # goes network-idle - background websockets/polling keep
                     # firing - confirmed live: it hung to the full timeout on
