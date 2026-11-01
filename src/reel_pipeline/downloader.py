@@ -320,13 +320,13 @@ class GalleryDlDownloader:
         else:
             command += ["--cookies-from-browser", cookie_value]
 
-        # gallery-dl's --range is 1-based; combined with its own
+        # img_index and gallery-dl's --range are both 1-based; combined with its own
         # extractor.instagram.order-files=asc default (post-display order), this
         # addresses the same item a "?img_index=N" URL was deep-linking to, instead
         # of downloading (and then silently discarding) the whole carousel.
         img_index = parse_img_index(url)
         if img_index is not None:
-            command += ["--range", str(img_index + 1)]
+            command += ["--range", str(max(img_index, 1))]
 
         command.append(url)
 

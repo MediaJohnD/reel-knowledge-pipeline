@@ -77,8 +77,8 @@ _SECRET_QUERY_PARAMS = {
 
 
 def parse_img_index(url: str) -> int | None:
-    """Instagram URLs that deep-link into one item of a carousel carry a 0-based
-    "?img_index=N" query param - e.g. a URL pointing at the 8th of 9 clips. Returns
+    """Instagram URLs that deep-link into one item of a carousel carry a 1-based
+    "?img_index=N" query param - e.g. img_index=8 points at the 8th of 9 clips. Returns
     None if absent or unparseable, meaning "the whole post, no specific item".
 
     Shared by GalleryDlDownloader (which slide to download) and normalize_url (which

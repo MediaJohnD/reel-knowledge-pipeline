@@ -251,7 +251,13 @@ def test_gallery_dl_downloader_keeps_all_videos_in_multi_video_carousel(tmp_path
     ]
 
 
-def test_gallery_dl_downloader_passes_range_for_img_index(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("img_index", "expected_range"),
+    [("7", "7"), ("1", "1"), ("0", "1")],
+)
+def test_gallery_dl_downloader_passes_range_for_img_index(
+    tmp_path, monkeypatch, img_index, expected_range
+):
     settings = Settings(project_root=tmp_path, instagram_cookies_browser="chrome")
     content_id = "cid-img-index"
     out_dir = settings.tmp_dir / content_id
@@ -270,12 +276,13 @@ def test_gallery_dl_downloader_passes_range_for_img_index(tmp_path, monkeypatch)
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     GalleryDlDownloader(settings).download(
-        "https://www.instagram.com/p/abc/?img_index=7", content_id
+        f"https://www.instagram.com/p/abc/?img_index={img_index}", content_id
     )
 
-    # img_index is 0-based, gallery-dl's --range is 1-based.
+    # img_index and gallery-dl's --range are both 1-based. The last slide of a carousel
+    # carries img_index == slide count, so an off-by-one here finds no files at all.
     assert "--range" in captured_command
-    assert captured_command[captured_command.index("--range") + 1] == "8"
+    assert captured_command[captured_command.index("--range") + 1] == expected_range
 
 
 def test_gallery_dl_downloader_omits_range_without_img_index(tmp_path, monkeypatch):
