@@ -29,15 +29,15 @@ local-whisper = ["faster-whisper>=1.0"]
 # `uv sync` includes this by default (no --extra needed), unlike local-whisper above
 # which is a genuinely optional runtime feature.
 dev = [
-    "pytest>=8.0",
-    "pytest-mock>=3.14",
+    "pytest>=9.2.0",
+    "pytest-mock>=3.17.0",
     "respx>=0.21",
-    "ruff>=0.16.2",
+    "ruff>=0.17.3",
     "pyright>=1.1",
     # Starlette 1.0's TestClient prefers httpx2 over httpx; without it every
     # webhook_server test emits a StarletteDeprecationWarning (harmless today,
     # but httpx support is expected to be removed in a future Starlette release).
-    "httpx2>=2.9",
+    "httpx2>=2.16.0",
 ]
 
 [project.scripts]
