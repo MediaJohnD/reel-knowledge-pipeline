@@ -76,8 +76,9 @@ A note appears in your vault folder. Add URLs to `data/inbox/queue.txt` and run
 These are wired to the owner's own accounts and machine. They do nothing unless
 you set them up yourself:
 
-- `scripts/review_new_reels.py`, `config/prompts/review_reel.md`, `config/have.txt`:
-  the owner's personal reel-review step (their businesses, their gear list).
+- `scripts/review_new_reels.py`, `config/prompts/review_reel.md`: the owner's personal
+  reel-review step (their businesses, their gear list). Its `config/have.txt` is generated
+  on each machine with `--gen-have` and is not committed.
 - `comment_gate.py` / `cli comment-queue`: needs a hand-logged-in Instagram
   browser profile (`REEL_IG_BROWSER_PROFILE`). Off unless you configure it.
 - `run-pipeline.bat`, `run-review.bat`, `organize-vault.bat`,
