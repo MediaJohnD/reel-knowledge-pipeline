@@ -797,6 +797,49 @@ def test_resuming_with_a_cached_silent_video_routes_to_image_describer(tmp_path,
     assert describe_calls == [[frame_path]]
 
 
+def test_post_caption_survives_a_failure_between_download_and_transcribe(tmp_path):
+    """The caption only ever lived on the fresh DownloadResult, so a transcribe
+    failure dropped it from the note when the retry resumed from the cached
+    download."""
+
+    class CaptionedDownloader(FakeDownloaderWithRealTmpFile):
+        def download(self, url: str, content_id: str) -> DownloadResult:
+            result = super().download(url, content_id)
+            return result.model_copy(update={"caption": "Link is in my bio"})
+
+    class CrashingTranscriber:
+        def transcribe(self, media_path, content_id):
+            raise RuntimeError("simulated transcribe crash")
+
+    class NoRedownload:
+        def download(self, url: str, content_id: str) -> DownloadResult:
+            raise AssertionError("the cached download should have been reused")
+
+    settings = make_settings(tmp_path)
+    enricher = CapturingEnricher()
+    pipeline = build_pipeline(
+        settings,
+        CaptionedDownloader(settings),
+        transcriber=CrashingTranscriber(),
+        enricher=enricher,
+    )
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=caption-resume\n", encoding="utf-8"
+    )
+    pipeline.queue_manager.sync_queue_file_into_state()
+    (record,) = pipeline.queue_manager.load_state().values()
+
+    first = pipeline.process_item(record)
+    assert first.status != ItemStatus.DONE
+
+    pipeline.downloader = NoRedownload()
+    pipeline.transcriber = FakeTranscriber()
+    second = pipeline.process_item(first)
+
+    assert second.status == ItemStatus.DONE
+    assert "[Post caption]\nLink is in my bio" in enricher.transcripts[0].text
+
+
 def test_resuming_a_crash_interrupted_item_does_not_retranscribe_if_transcript_cached(tmp_path):
     """Regression test: a crash after a successful transcription (e.g. during
     enrichment) used to redo transcription on the next run_once() even though

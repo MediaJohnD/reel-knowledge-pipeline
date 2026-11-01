@@ -264,6 +264,11 @@ class WorkerPipeline:
                     record.status = ItemStatus.DOWNLOADING
                     self.queue_manager.update_record(record)
                     download_result = self.downloader.download(record.url, record.content_id)
+                    if download_result.caption:
+                        # Read back by _cached_download_result if transcribing fails.
+                        caption_file = self.settings.tmp_dir / record.content_id / "caption.txt"
+                        caption_file.parent.mkdir(parents=True, exist_ok=True)
+                        caption_file.write_text(download_result.caption, encoding="utf-8")
                     record.last_completed_stage = ItemStage.DOWNLOADED
                     log_context(
                         logger, 20, "downloaded", content_id=record.content_id, url=record.url
@@ -291,8 +296,6 @@ class WorkerPipeline:
                         frames = [f for p in videos for f in _extract_frames(p)]
                         transcript = self.image_describer.describe(frames, record.content_id)
                 if download_result.caption and download_result.caption.strip():
-                    # ponytail: lost if a crash lands between download and transcribe
-                    # (cached download has no caption); re-ingest the URL if it matters.
                     caption = download_result.caption.strip()[:_CAPTION_MAX_CHARS]
                     transcript = transcript.model_copy(
                         update={"text": f"{transcript.text}\n\n[Post caption]\n{caption}".strip()}
@@ -468,13 +471,17 @@ class WorkerPipeline:
         """Returns a DownloadResult reconstructed from files still present in
         data/tmp/<content_id>/, or None if the directory is empty/missing (e.g.
         _sweep_stale_tmp_dirs() already reclaimed it, or this is a fresh item).
-        Only media_paths/media_type are reconstructable this way - platform/
+        Only media_paths/media_type/caption are reconstructable this way - platform/
         source_title/duration_seconds are lost on resume, which is fine since
         nothing downstream of the download stage consumes them.
         """
         tmp_dir = self.settings.tmp_dir / content_id
         if not tmp_dir.is_dir():
             return None
+        # Written by process_item after a fresh download, and by
+        # QueueManager.add_share() when a screenshot is shared with text.
+        caption_file = tmp_dir / "caption.txt"
+        caption = caption_file.read_text(encoding="utf-8") if caption_file.is_file() else None
         files = sorted(p for p in tmp_dir.rglob("*") if p.is_file())
         if not files:
             return None
@@ -499,6 +506,7 @@ class WorkerPipeline:
                 media_type=MediaType.VIDEO,
                 media_paths=[str(p) for p in real_videos],
                 platform="cached",
+                caption=caption,
             )
 
         images = [p for p in files if p.suffix.lower() in image_suffixes]
@@ -506,16 +514,12 @@ class WorkerPipeline:
         silent_videos = [p for p in video_containers if p not in real_video_set]
         images += [_extract_first_frame(p) for p in silent_videos]
         if images:
-            # Written by QueueManager.add_share() when a screenshot is shared with text.
-            caption_file = tmp_dir / "caption.txt"
             return DownloadResult(
                 content_id=content_id,
                 media_type=MediaType.IMAGE,
                 media_paths=[str(p) for p in images],
                 platform="cached",
-                caption=caption_file.read_text(encoding="utf-8")
-                if caption_file.is_file()
-                else None,
+                caption=caption,
             )
         return None
 

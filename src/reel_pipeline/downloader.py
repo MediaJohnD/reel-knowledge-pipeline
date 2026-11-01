@@ -256,7 +256,7 @@ def _extract_frames(video_path: Path, count: int = 4) -> list[Path]:
             timeout=30,
         )
         duration = float(probe.stdout.strip())
-        # ponytail: fixed frame count, scale with duration if long reels lose text
+        # Fixed frame count: scale with duration if long reels lose text
         rate = count / duration
         result = subprocess.run(  # noqa: S603 - fixed argv, no shell, path is our own download
             [

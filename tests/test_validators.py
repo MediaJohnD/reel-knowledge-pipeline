@@ -276,6 +276,51 @@ def test_classify_url_kind_rejects_loopback_and_private_ip_targets(tmp_path):
     assert classify_url_kind("http://169.254.169.254/latest/meta-data/", settings) is None
 
 
+def test_classify_url_kind_rejects_hostname_resolving_to_private_address(tmp_path, fake_dns):
+    settings = make_settings(tmp_path, allowed=["youtube.com"])
+    fake_dns(
+        {
+            "intranet.example.com": ["10.0.0.5"],
+            "mixed.example.com": ["93.184.216.34", "192.168.1.9"],
+            "public.example.com": ["93.184.216.34"],
+        }
+    )
+
+    assert classify_url_kind("https://intranet.example.com/wiki", settings) is None
+    assert classify_url_kind("https://mixed.example.com/", settings) is None
+    assert classify_url_kind("https://public.example.com/post", settings) == "text"
+
+
+def test_classify_url_kind_keeps_text_when_dns_lookup_fails(tmp_path):
+    """A lookup failure proves nothing about the address, and the fetch reports
+    its own clear error later - rejecting here would just hide that error.
+    """
+    settings = make_settings(tmp_path, allowed=["youtube.com"])
+
+    assert classify_url_kind("https://does-not-resolve.example.com/", settings) == "text"
+
+
+def test_classify_url_kind_rejects_private_targets_hidden_by_url_syntax(tmp_path):
+    """Host parsing used to split the raw netloc on ":", so userinfo and
+    bracketed IPv6 slipped past the private-address check.
+    """
+    settings = make_settings(tmp_path, allowed=["youtube.com"])
+
+    assert classify_url_kind("http://user@127.0.0.1/", settings) is None
+    assert classify_url_kind("http://[::1]:8080/", settings) is None
+    assert classify_url_kind("http://[::ffff:127.0.0.1]/", settings) is None
+    assert classify_url_kind("http://foo.localhost/", settings) is None
+
+
+def test_classify_url_kind_rejects_tailnet_cgnat_addresses(tmp_path):
+    """100.64.0.0/10 is what Tailscale hands out - it reaches the owner's own
+    machines, but ipaddress doesn't count it as is_private.
+    """
+    settings = make_settings(tmp_path, allowed=["youtube.com"])
+
+    assert classify_url_kind("http://100.100.100.100:8787/healthz", settings) is None
+
+
 def test_classify_url_kind_prefers_media_on_overlap(tmp_path):
     """Documented tie-break (see validators.py) for the defensive case where a
     domain is misconfigured into both media and text-capture-blocked lists -

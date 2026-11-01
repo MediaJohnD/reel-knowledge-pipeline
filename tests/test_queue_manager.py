@@ -635,6 +635,41 @@ def test_google_doc_view_variants_are_one_item(tmp_path):
     assert len(qm.load_state()) == 2
 
 
+def test_drive_folder_view_variants_are_one_item(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    qm = QueueManager(settings)
+    first = qm.add_url(
+        "https://drive.google.com/drive/folders/1z3s_abc", source=QueueSource.WEBHOOK
+    )
+    for variant in (
+        "https://drive.google.com/drive/mobile/folders/1z3s_abc?usp=sharing",
+        "https://drive.google.com/drive/u/0/folders/1z3s_abc",
+        "https://drive.google.com/folderview?id=1z3s_abc&usp=sharing",
+    ):
+        assert qm.add_url(variant, source=QueueSource.COMMENT_GATE).content_id == first.content_id
+    other = qm.add_url(
+        "https://drive.google.com/drive/folders/2Other_x", source=QueueSource.WEBHOOK
+    )
+    assert other.content_id != first.content_id
+    assert len(qm.load_state()) == 2
+
+
+def test_drive_file_view_variants_are_one_item_but_not_a_folder_with_that_id(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    qm = QueueManager(settings)
+    first = qm.add_url(
+        "https://drive.google.com/file/d/1abc_x/view?usp=sharing", source=QueueSource.WEBHOOK
+    )
+    for variant in (
+        "https://drive.google.com/open?id=1abc_x",
+        "https://drive.google.com/uc?export=download&id=1abc_x",
+        "https://drive.google.com/file/d/1abc_x/edit",
+    ):
+        assert qm.add_url(variant, source=QueueSource.COMMENT_GATE).content_id == first.content_id
+    folder = qm.add_url("https://drive.google.com/drive/folders/1abc_x", source=QueueSource.WEBHOOK)
+    assert folder.content_id != first.content_id
+
+
 def test_link_inside_shared_text_is_extracted(tmp_path):
     settings = Settings(project_root=tmp_path)
     qm = QueueManager(settings)

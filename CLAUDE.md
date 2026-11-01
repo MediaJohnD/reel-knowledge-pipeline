@@ -98,7 +98,14 @@ The system supports:
   safety benefit (the risk profile is identical for every domain: an outbound GET to a URL
   the user themself submitted). See
   `docs/superpowers/specs/2026-07-16-text-capture-ingestion-design.md` for the original
-  (now superseded) scoped-allow-list rationale.
+  (now superseded) scoped-allow-list rationale. As of 2026-11-01 the catch-all refuses
+  loopback, private, link-local, and other non-public targets, on every redirect hop and in
+  the headless fallback's navigations (`is_private_or_local_host` in `validators.py`). A
+  submitted URL can no longer read a service on this machine or its network. Known gap: DNS
+  rebinding between the check and the connect.
+- `scripts/recapture_carousels.py` (2026-11-01) re-captures carousel posts saved before the
+  `img_index` fix. Owner-run only, never scheduled: at most 2 posts per day, halts 24 h on a
+  failure, dry-run unless `--apply`. See `docs/runbook.md`.
 - Notion pages (`notion.so`/`notion.site`/`notion.com`) get a dedicated `NotionFetcher` as
   of 2026-08-10, instead of falling through to the generic HTML fetcher. Reason: Notion's
   current frontend ships zero page content in the server-sent HTML for *any* page, public

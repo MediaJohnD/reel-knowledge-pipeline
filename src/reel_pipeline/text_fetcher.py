@@ -35,6 +35,7 @@ import trafilatura
 
 from reel_pipeline.config import Settings
 from reel_pipeline.models import TranscriptResult
+from reel_pipeline.validators import is_private_or_local_host
 
 _GITHUB_API = "https://api.github.com"
 
@@ -68,6 +69,21 @@ def _absolutize_relative_links(text: str, owner: str, repo: str, ref: str) -> st
         return f"{bang}[{label}]({absolute}{title})"
 
     return _MARKDOWN_LINK_RE.sub(_rewrite, text)
+
+
+def _refuse_private_target(request: httpx.Request) -> None:
+    """httpx request hook, so it runs on every redirect hop, not just the first
+    URL: a public page must not be able to redirect a fetch onto this machine or
+    its network (validators.classify_url_kind only ever sees the submitted URL).
+    """
+    if is_private_or_local_host(request.url.host):
+        raise TextFetchError(f"refusing to fetch private or local address {request.url.host!r}")
+
+
+def _guarded_client() -> httpx.Client:
+    return httpx.Client(
+        timeout=30.0, follow_redirects=True, event_hooks={"request": [_refuse_private_target]}
+    )
 
 
 class TextFetchError(RuntimeError):
@@ -400,7 +416,7 @@ class DriveFetcher:
         if folder_id is None and file_id is None:
             raise TextFetchError(f"could not find a Drive file id in {url!r}")
 
-        owned_client = self._client or httpx.Client(timeout=30.0, follow_redirects=True)
+        owned_client = self._client or _guarded_client()
         owns_client = self._client is None
         try:
             if folder_id is not None:
@@ -510,10 +526,12 @@ class DriveFetcher:
         text we can so enrichment has something to read (2026-09-28)."""
         match = re.search(r'filename="([^"]+)"', response.headers.get("content-disposition", ""))
         name = Path(match[1]).name if match else f"{file_id}.bin"
-        # ponytail: same-name files from different items overwrite each other;
-        # prefix content_id if that ever happens.
         dest = self.settings.vault_dir / "attachments" / name
         dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists() and dest.read_bytes() != response.content:
+            # A different file already holds this name; an earlier note embeds it.
+            name = f"{content_id}-{name}"
+            dest = dest.with_name(name)
         dest.write_bytes(response.content)
         extracted = _binary_text(response.content, name)
         text = f"![[{name}]]\n\n" + (extracted or f"(Attached file {name}; no text extracted.)")
@@ -655,7 +673,7 @@ def _subprocess_capable_event_loop_policy() -> Iterator[None]:
     its loop with asyncio.new_event_loop(), which reads the policy and ignores
     asyncio.set_event_loop(), so a thread-local loop doesn't help.
 
-    # ponytail: a process-wide swap held for the whole browser session and
+    # A process-wide swap held for the whole browser session and
     # serialized by a lock - fine at "handful of pages per run" scale. If
     # renders ever need to run concurrently, move Playwright into its own
     # process instead of widening this window.
@@ -694,7 +712,7 @@ class RenderedHtmlFetcher:
       filling anything.
     - One browser instance launched and closed per fetch call - no
       persistent process, no shared state between items.
-      # ponytail: per-call launch is O(items needing fallback) browser
+      # Per-call launch is O(items needing fallback) browser
       # startups; fine at "handful of pages per run" scale, upgrade to a
       # shared browser context if that stops being true.
     """
@@ -723,6 +741,18 @@ class RenderedHtmlFetcher:
                     ) from exc
                 try:
                     page = browser.new_page()
+
+                    def _block_private_navigation(route) -> None:
+                        # Same rule as _refuse_private_target, for redirects and
+                        # script-driven navigation inside the browser.
+                        request = route.request
+                        host = urlparse(request.url).hostname or ""
+                        if request.is_navigation_request() and is_private_or_local_host(host):
+                            route.abort()
+                        else:
+                            route.continue_()
+
+                    page.route("**/*", _block_private_navigation)
                     # "networkidle" is unreliable for real SPAs (Notion never
                     # goes network-idle - background websockets/polling keep
                     # firing - confirmed live: it hung to the full timeout on
@@ -799,7 +829,7 @@ class GenericHtmlFetcher:
             if google_doc
             else url
         )
-        owned_client = self._client or httpx.Client(timeout=30.0, follow_redirects=True)
+        owned_client = self._client or _guarded_client()
         owns_client = self._client is None
         try:
             try:

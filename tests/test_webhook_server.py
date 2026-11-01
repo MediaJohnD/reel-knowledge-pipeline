@@ -52,6 +52,40 @@ def test_healthz_reports_the_git_head_the_process_started_with(tmp_path):
     assert client.get("/healthz").json()["code_version"] == "4b28ef6aaaaa"
 
 
+def test_healthz_reads_a_packed_ref_when_the_loose_ref_is_gone(tmp_path):
+    """git gc moves refs into .git/packed-refs and deletes the loose file."""
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text("ref: refs/heads/master\n", encoding="utf-8")
+    (git_dir / "packed-refs").write_text(
+        "# pack-refs with: peeled fully-peeled sorted\n"
+        + "1" * 40
+        + " refs/heads/other\n"
+        + "abcdef1"
+        + "b" * 33
+        + " refs/heads/master\n"
+        + "^"
+        + "2" * 40
+        + "\n",
+        encoding="utf-8",
+    )
+
+    client = TestClient(create_app(make_settings(tmp_path)))
+
+    assert client.get("/healthz").json()["code_version"] == "abcdef1bbbbb"
+
+
+def test_healthz_reports_unknown_when_the_ref_is_nowhere(tmp_path):
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text("ref: refs/heads/master\n", encoding="utf-8")
+    (git_dir / "packed-refs").write_text("1" * 40 + " refs/heads/other\n", encoding="utf-8")
+
+    client = TestClient(create_app(make_settings(tmp_path)))
+
+    assert client.get("/healthz").json()["code_version"] == "unknown"
+
+
 def test_healthz_reports_queue_depth_failed_count_and_last_success(tmp_path):
     settings = make_settings(tmp_path)
     qm = QueueManager(settings)

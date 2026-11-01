@@ -445,7 +445,7 @@ def _find_existing(
     existing = state.get(content_id)
     if existing is not None:
         return existing
-    # ponytail: linear scan per new URL, fine at ~1k records; index if state grows 100x.
+    # Linear scan per new URL, fine at ~1k records; index if state grows 100x.
     target = _dedup_key(normalized_url)
     return next(
         (r for r in state.values() if r.normalized_url and _dedup_key(r.normalized_url) == target),
@@ -460,8 +460,24 @@ _GOOGLE_DOC = re.compile(
 )
 
 
+# Same for Drive: /drive/folders/<id> and /drive/mobile/folders/<id> are one folder
+# - two folders became duplicate notes on 2026-11-01. A file has the same problem.
+_DRIVE_FOLDER = re.compile(
+    r"^https://drive\.google\.com/(?:drive/(?:mobile/|u/\d+/)*folders/|folderview\?(?:[^#]*&)?id=)([\w-]+)"
+)
+_DRIVE_FILE = re.compile(
+    r"^https://drive\.google\.com/(?:(?:u/\d+/)?file/(?:u/\d+/)?d/|(?:open|uc)\?(?:[^#]*&)?id=)([\w-]+)"
+)
+
+
 def _dedup_key(normalized_url: str) -> str:
     url = sanitize_url(normalized_url)
-    # ponytail: a sheet's ?gid= tab is dropped too; keep it if per-tab captures ever matter.
+    # A sheet's ?gid= tab is dropped too; keep it if per-tab captures ever matter.
     match = _GOOGLE_DOC.match(url)
-    return f"{match.group(1)}d/{match.group(2)}" if match else url
+    if match:
+        return f"{match.group(1)}d/{match.group(2)}"
+    match = _DRIVE_FOLDER.match(url)
+    if match:
+        return f"https://drive.google.com/drive/folders/{match.group(1)}"
+    match = _DRIVE_FILE.match(url)
+    return f"https://drive.google.com/file/d/{match.group(1)}" if match else url

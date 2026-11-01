@@ -32,7 +32,7 @@ the installed tool lacks; name that gap in `reasoning`, or it is `already-have`.
 - knowledge base / second brain: the Obsidian vault and this reel pipeline
 - library and API docs for agents: context7
 - coding agents: Claude Code, Codex CLI, Gemini CLI
-- Claude token saving, lean-code or workflow discipline skills: Ponytail, Superpowers
+- Claude token saving, lean-code or workflow discipline skills: Superpowers
 - transactional email: Resend; lead and contact data: Apollo
 - video and reel download/transcription: yt-dlp and this pipeline
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import socket
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -246,14 +247,11 @@ def classify_url_kind(url: str, settings: Settings) -> Literal["media", "text"] 
     from that catch-all: settings.text_capture.blocked_domains, malformed URLs
     (this function is also reached for URLs validate_url() already rejected
     for other reasons - it must not silently launder those into "text"), and
-    hosts that are a literal loopback/private/link-local IP, which the old
-    allow-list made unreachable but the catch-all otherwise would not (e.g.
-    "http://127.0.0.1:11434/" hitting this machine's own Ollama).
-    # ponytail: literal-IP check only - a hostname that *resolves* to a
-    # private address (DNS rebinding) isn't caught without an actual DNS
-    # lookup here. Single-user tool ingesting URLs the owner themselves
-    # submits, so accepted as a real but low-priority gap; revisit if this
-    # pipeline ever takes URLs from an untrusted submitter.
+    hosts that are or resolve to a non-public address, which the old allow-list
+    made unreachable but the catch-all otherwise would not (e.g.
+    "http://127.0.0.1:11434/" hitting this machine's own Ollama). The fetchers
+    repeat the check on every redirect hop (text_fetcher.py). A DNS answer that
+    changes between that check and the connection itself is not caught.
     """
     parsed = urlparse(url.strip())
     if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
@@ -268,7 +266,7 @@ def classify_url_kind(url: str, settings: Settings) -> Literal["media", "text"] 
         return "media"
     if _matches_any(host, settings.text_capture.blocked_domains):
         return None
-    if host == "localhost" or _is_private_or_local_ip(host):
+    if is_private_or_local_host(parsed.hostname or ""):
         return None
     return "text"
 
@@ -305,9 +303,29 @@ def _classify_drive_url_kind(url: str) -> Literal["media", "text"]:
         return "text"
 
 
-def _is_private_or_local_ip(host: str) -> bool:
+def is_private_or_local_host(host: str) -> bool:
+    """True when a hostname or IP literal points anywhere but the public internet:
+    loopback, private, link-local, reserved, multicast, or the 100.64/10 range
+    Tailscale uses. A name that does not resolve counts as not private, since
+    the fetch then fails on its own.
+    """
+    host = host.strip("[]").lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    if _is_non_public_ip(host):
+        return True
     try:
-        ip = ipaddress.ip_address(host)
+        infos = socket.getaddrinfo(host, None)
+    except (OSError, UnicodeError):
+        return False
+    return any(_is_non_public_ip(str(info[4][0])) for info in infos)
+
+
+def _is_non_public_ip(address: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(address.split("%")[0])
     except ValueError:
         return False
-    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return not ip.is_global or ip.is_multicast

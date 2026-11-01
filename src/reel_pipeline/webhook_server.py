@@ -273,11 +273,16 @@ def _code_version(project_root: Path) -> str:
     try:
         head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
         if head.startswith("ref: "):
-            # ponytail: loose refs only - a packed ref reports "unknown", which is
-            # honest but useless. Shell out to git rev-parse if that ever happens here.
-            head = (git_dir / head.removeprefix("ref: ")).read_text(encoding="utf-8").strip()
+            ref = head.removeprefix("ref: ")
+            ref_file = git_dir / ref
+            if ref_file.is_file():
+                head = ref_file.read_text(encoding="utf-8").strip()
+            else:
+                # git gc moves refs into packed-refs: "<sha> <ref>" per line.
+                packed = (git_dir / "packed-refs").read_text(encoding="utf-8").splitlines()
+                head = next(ln.split()[0] for ln in packed if ln.endswith(f" {ref}"))
         return head[:12]
-    except OSError:
+    except (OSError, StopIteration):
         return "unknown"
 
 

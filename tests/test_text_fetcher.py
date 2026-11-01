@@ -33,6 +33,10 @@ class _FakePage:
         self._html = html
         self._timeout = timeout
         self._error = error
+        self.route_handler = None
+
+    def route(self, pattern, handler):
+        self.route_handler = handler
 
     def goto(self, url, wait_until=None, timeout=None):
         from playwright.sync_api import Error as PlaywrightError
@@ -782,6 +786,131 @@ def test_drive_fetcher_attaches_binary_file_to_vault(tmp_path):
     assert result.text.startswith("![[Guide.docx]]")
     assert "Setup & guide" in result.text
     assert result.backend == "drive-attachment"
+
+
+@respx.mock
+def test_drive_attachment_with_same_name_but_different_bytes_keeps_both_files(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    attachments = settings.vault_dir / "attachments"
+    attachments.mkdir(parents=True)
+    (attachments / "Guide.bin").write_bytes(b"first item's file")
+    respx.get("https://drive.google.com/uc?export=download&id=abc789").mock(
+        return_value=httpx.Response(
+            200,
+            content=b"\xff\xfesecond item's file",
+            headers={"content-disposition": 'attachment; filename="Guide.bin"'},
+        )
+    )
+
+    result = DriveFetcher(settings).fetch(
+        "https://drive.google.com/file/d/abc789/view", "cid-drive4"
+    )
+
+    assert (attachments / "Guide.bin").read_bytes() == b"first item's file"
+    assert (attachments / "cid-drive4-Guide.bin").read_bytes() == b"\xff\xfesecond item's file"
+    assert result.text.startswith("![[cid-drive4-Guide.bin]]")
+
+
+@respx.mock
+def test_drive_attachment_with_same_name_and_same_bytes_reuses_the_file(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    attachments = settings.vault_dir / "attachments"
+    attachments.mkdir(parents=True)
+    (attachments / "Guide.bin").write_bytes(b"\xff\xfesame file")
+    respx.get("https://drive.google.com/uc?export=download&id=abc789").mock(
+        return_value=httpx.Response(
+            200,
+            content=b"\xff\xfesame file",
+            headers={"content-disposition": 'attachment; filename="Guide.bin"'},
+        )
+    )
+
+    result = DriveFetcher(settings).fetch(
+        "https://drive.google.com/file/d/abc789/view", "cid-drive5"
+    )
+
+    assert sorted(p.name for p in attachments.iterdir()) == ["Guide.bin"]
+    assert result.text.startswith("![[Guide.bin]]")
+
+
+@respx.mock
+def test_generic_fetcher_refuses_redirect_to_private_host(tmp_path, fake_dns):
+    fake_dns({"public.example.com": ["93.184.216.34"], "intranet.example.com": ["10.0.0.5"]})
+    respx.get("https://public.example.com/start").mock(
+        return_value=httpx.Response(302, headers={"location": "http://intranet.example.com/admin"})
+    )
+    secret = respx.get("http://intranet.example.com/admin").mock(
+        return_value=httpx.Response(200, text="<html><body>internal</body></html>")
+    )
+
+    with pytest.raises(TextFetchError, match="private or local"):
+        GenericHtmlFetcher(Settings(project_root=tmp_path)).fetch(
+            "https://public.example.com/start", "cid-ssrf"
+        )
+
+    assert not secret.called
+
+
+@respx.mock
+def test_drive_fetcher_refuses_redirect_to_loopback(tmp_path):
+    respx.get("https://drive.google.com/uc?export=download&id=abc789").mock(
+        return_value=httpx.Response(302, headers={"location": "http://127.0.0.1:8787/healthz"})
+    )
+    secret = respx.get("http://127.0.0.1:8787/healthz").mock(
+        return_value=httpx.Response(200, text="internal")
+    )
+
+    with pytest.raises(TextFetchError, match="private or local"):
+        DriveFetcher(Settings(project_root=tmp_path)).fetch(
+            "https://drive.google.com/file/d/abc789/view", "cid-ssrf2"
+        )
+
+    assert not secret.called
+
+
+class _FakeRoute:
+    def __init__(self, url, *, navigation):
+        self.request = _FakeRouteRequest(url, navigation)
+        self.outcome = None
+
+    def abort(self):
+        self.outcome = "aborted"
+
+    def continue_(self):
+        self.outcome = "continued"
+
+
+class _FakeRouteRequest:
+    def __init__(self, url, navigation):
+        self.url = url
+        self._navigation = navigation
+
+    def is_navigation_request(self):
+        return self._navigation
+
+
+def test_rendered_fetcher_blocks_navigation_to_private_host(tmp_path, monkeypatch):
+    browser = _install_fake_playwright(monkeypatch, html="<html><body>x</body></html>")
+    fetcher = RenderedHtmlFetcher(_settings_with_render_fallback(tmp_path, enabled=True))
+    try:
+        fetcher.fetch("https://example.com/app", "cid-render-guard")
+    except TextFetchError:
+        pass  # the fake page's thin content is not what this test checks
+
+    handler = browser._page.route_handler
+    assert handler is not None
+
+    redirected = _FakeRoute("http://127.0.0.1:8787/healthz", navigation=True)
+    handler(redirected)
+    assert redirected.outcome == "aborted"
+
+    page_load = _FakeRoute("https://example.com/app", navigation=True)
+    handler(page_load)
+    assert page_load.outcome == "continued"
+
+    subresource = _FakeRoute("https://cdn.example.com/app.js", navigation=False)
+    handler(subresource)
+    assert subresource.outcome == "continued"
 
 
 def _drive_folder_listing(*entries: tuple[str, str, str]) -> str:

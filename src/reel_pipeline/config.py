@@ -159,7 +159,7 @@ class ImageDescriptionConfig(BaseModel):
     # end-to-end at this value, described across 4 batches. Note the cap, not
     # ollama_num_ctx, is the lever here: batching bounds a request to at most
     # this many images no matter how long the post is.
-    # ponytail: fixed count, not a token estimate - a batch of unusually large
+    # Fixed count, not a token estimate - a batch of unusually large
     # images could still overflow. Measure real prompt token counts and size
     # batches against ollama_num_ctx if that starts happening.
     # Lowered to 3 on 2026-10-24: Groq's qwen/qwen3.8-27b caps a request at 3

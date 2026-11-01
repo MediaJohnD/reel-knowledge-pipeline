@@ -76,6 +76,23 @@ description flows through the exact same enrichment/note/skill pipeline as a
 video transcript. Large carousels (many images) take proportionally longer
 and use more context; this is expected, not a bug.
 
+### Re-capturing carousels saved before the `img_index` fix
+
+Before 2026-11-01 a carousel link with `img_index` could capture only part of
+the post. `scripts/recapture_carousels.py` re-captures those notes in place. It
+keeps the note's folder, its inbound links, and any sections added by hand. The
+old note is backed up to `data/review/carousel-recapture-backup/`.
+
+```bash
+uv run python scripts/recapture_carousels.py            # dry run: what is left, what is next
+uv run python scripts/recapture_carousels.py --apply    # re-capture up to the daily cap
+```
+
+Run it by hand only. It takes at most 2 posts per day and halts for 24 hours on
+a failure, to keep Instagram volume low. Progress is in
+`data/review/carousel-recapture.json`. A failed post also adds a line to
+`needs-attention.txt`, as any failed item does.
+
 ## Ingesting content
 
 **Queue file (manual paste):** append one URL per line to
