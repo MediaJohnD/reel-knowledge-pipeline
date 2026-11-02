@@ -26,9 +26,11 @@ jobs:
       # errors otherwise. Plain `uv sync` would quietly re-lock, which would let
       # a stale committed lockfile sail past the `uv lock --check` inside
       # `make check` below - the check would be inspecting a lockfile this step
-      # had just fixed.
+      # had just fixed. local-whisper is the production backend, and without it
+      # the test that decodes audio with the real faster-whisper and PyAV skips:
+      # the fakes stayed green while PyAV 19 broke every real transcription.
       - name: Install dependencies
-        run: uv sync --locked
+        run: uv sync --locked --extra local-whisper
 
       # Deliberately one step calling `make check` rather than one step per
       # command. The two lists drifted apart once already: CI grew a
@@ -39,3 +41,12 @@ jobs:
       # Actions UI; the failing command and its output are still in the log.
       - name: Verify
         run: make check
+
+      # Not in `make check`, which has to run on a machine with no browser. These
+      # prove the render fallback's private-address guard in a real Chromium; the
+      # route-handler stubs in the unit tests can't see what the browser itself sends.
+      - name: Install Chromium
+        run: uv run playwright install --with-deps chromium
+
+      - name: Browser tests
+        run: make browser-test

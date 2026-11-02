@@ -446,6 +446,7 @@ device/browser, not just iOS.
 | `TranscriptionError: faster-whisper is not installed` | Run `uv sync --extra local-whisper`, or switch `REEL_TRANSCRIPTION_BACKEND=openai` |
 | Note not appearing where expected | Check `REEL_VAULT_DIR` / `paths.vault_dir` in `config/settings.yaml` |
 | Item stuck retrying every run | Check its `error` field in `data/inbox/state.json` and `needs-attention.txt` |
+| `PostUnavailableError`: Instagram says the post is gone | The post was deleted or hidden, and Instagram's API answered "Media not found or unavailable". The item gives up on the first attempt. Any other Instagram HTTP 400 (checkpoint, useragent mismatch) stays retryable, because it means account trouble rather than a missing post |
 | Item's `status` is `failed_permanent` and it never gets retried | Expected once `retry.max_attempts` is exhausted - fix the underlying cause, then run `uv run python -m reel_pipeline.cli retry <content_id>` (or `--all-failed-permanent`) |
 | `state.json has grown large enough that its per-mutation full-rewrite cost may start to matter` in the logs | Informational, not an error - see "Known limitations" below |
 | Webhook unreachable from phone | Confirm both devices show "Connected"/online in Tailscale, and `REEL_WEBHOOK_HOST` is set to this machine's Tailscale IP |

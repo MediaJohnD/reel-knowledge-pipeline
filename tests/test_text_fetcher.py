@@ -14,6 +14,7 @@ import respx
 
 from reel_pipeline.config import RenderFallbackConfig, Settings, TextCaptureConfig
 from reel_pipeline.text_fetcher import (
+    _CHROMIUM_NO_DIRECT_WEBRTC,
     DispatchingTextFetcher,
     DriveFetcher,
     GenericHtmlFetcher,
@@ -22,6 +23,7 @@ from reel_pipeline.text_fetcher import (
     RenderedHtmlFetcher,
     TextFetchError,
     _guarded_client,
+    _running_public_only_proxy,
     get_text_fetcher,
 )
 
@@ -39,6 +41,7 @@ class _FakePage:
         self._timeout = timeout
         self._error = error
         self.route_handler = None
+        self.url = "https://example.com/app"
 
     def route(self, pattern, handler):
         self.route_handler = handler
@@ -63,6 +66,7 @@ class _FakeBrowser:
     def __init__(self, page):
         self._page = page
         self.closed = False
+        self.launch_kwargs = {}
 
     def new_page(self):
         return self._page
@@ -76,9 +80,11 @@ class _FakeChromium:
         self._browser = browser
         self._launch_error = launch_error
 
-    def launch(self):
+    def launch(self, **kwargs):
         if self._launch_error is not None:
             raise self._launch_error
+        assert self._browser is not None
+        self._browser.launch_kwargs = kwargs
         return self._browser
 
 
@@ -887,12 +893,21 @@ class _RebindingDns:
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, port or 0))]
 
 
+class _RecordingServer(http.server.ThreadingHTTPServer):
+    seen: list
+
+
 @pytest.fixture
 def loopback_secret():
     """A real HTTP server on 127.0.0.1, standing in for a service on this machine."""
 
+    seen = []
+
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
+            seen.append(
+                (self.path, self.headers.get("Proxy-Connection"), self.headers.get("Connection"))
+            )
             body = b"<html><body>internal secret</body></html>"
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
@@ -902,7 +917,8 @@ def loopback_secret():
         def log_message(self, *args):
             pass
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = _RecordingServer(("127.0.0.1", 0), Handler)
+    server.seen = seen
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     yield server
@@ -987,6 +1003,212 @@ def test_guarded_client_ignores_proxy_environment(monkeypatch):
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
     with _guarded_client() as client:
         assert not client._mounts
+
+
+@pytest.mark.playwright
+def test_rendered_fetcher_refuses_dns_rebinding_in_real_chromium(
+    tmp_path, monkeypatch, loopback_secret
+):
+    """Python's lookups first say public, then 127.0.0.1, and Chromium's own resolver is
+    forced to 127.0.0.1. Whatever the fetch returns, the loopback server must not be hit."""
+    from playwright.sync_api import BrowserType
+
+    monkeypatch.setattr(socket, "getaddrinfo", _RebindingDns("93.184.216.34", "127.0.0.1"))
+
+    original_launch = BrowserType.launch
+
+    def _launch(self, **kwargs):
+        args = [*kwargs.pop("args", []), "--host-resolver-rules=MAP rebind.test 127.0.0.1"]
+        return original_launch(self, args=args, **kwargs)
+
+    monkeypatch.setattr(BrowserType, "launch", _launch)
+    port = loopback_secret.server_address[1]
+
+    fetcher = RenderedHtmlFetcher(_settings_with_render_fallback(tmp_path, enabled=True))
+    with pytest.raises(TextFetchError) as refused:
+        fetcher.fetch(f"http://rebind.test:{port}/", "cid-rebind-real")
+
+    assert loopback_secret.seen == []
+    assert "private or local" in str(refused.value)
+
+
+@pytest.mark.playwright
+def test_rendered_fetcher_proxy_covers_what_the_route_handler_cannot(tmp_path, monkeypatch):
+    """A page on an allowed host points a WebSocket, a fetch, and an image at a host that
+    resolves to a refused address, then the same at the address itself, plus a WebRTC
+    STUN request. The route handler is switched off and never sees WebSockets or WebRTC
+    anyway, so nothing but the proxy and the WebRTC policy stands in the way."""
+    from playwright.sync_api import BrowserType
+
+    page_body = (
+        "<html><body><article><h1>Public page</h1><p>"
+        + "This paragraph is ordinary public text for the extractor to find. " * 20
+        + "</p></article><script>const t='http://rebind.test:SECRET_PORT/';"
+        "try{new WebSocket(t.replace('http','ws')+'ws')}catch(e){}"
+        "fetch(t+'fetch',{mode:'no-cors'}).catch(()=>{});"
+        "document.body.appendChild(new Image()).src=t+'img';"
+        "const l=t.replace('rebind.test','127.0.0.2');"
+        "try{new WebSocket(l.replace('http','ws')+'literal-ws')}catch(e){}"
+        "fetch(l+'literal-fetch',{mode:'no-cors'}).catch(()=>{});"
+        "const pc=new RTCPeerConnection({iceServers:[{urls:'stun:127.0.0.2:STUN_PORT'}]});"
+        "pc.createDataChannel('x');pc.createOffer().then(o=>pc.setLocalDescription(o));"
+        "</script></body></html>"
+    )
+    served, secret_seen = [], []
+
+    class Page(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            served.append(self.path)
+            port = secret.server_address[1]
+            stun_port = stun.getsockname()[1]
+            body = page_body.replace("SECRET_PORT", str(port))
+            body = body.replace("STUN_PORT", str(stun_port)).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    class Secret(Page):
+        def do_GET(self):
+            secret_seen.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    public = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Page)
+    secret = http.server.ThreadingHTTPServer(("127.0.0.2", 0), Secret)
+    for server in (public, secret):
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    stun_seen = []
+    stun = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    stun.bind(("127.0.0.2", 0))
+
+    def _record_stun():
+        try:
+            while True:
+                stun_seen.append(stun.recv(2048))
+        except OSError:
+            pass
+
+    threading.Thread(target=_record_stun, daemon=True).start()
+
+    def _dns(host, port=None, *args, **kwargs):
+        address = "127.0.0.2" if host == "rebind.test" else "127.0.0.1"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, port or 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _dns)
+    monkeypatch.setattr("reel_pipeline.text_fetcher.is_private_or_local_host", lambda host: False)
+    monkeypatch.setattr(
+        "reel_pipeline.text_fetcher.is_non_public_ip", lambda address: address == "127.0.0.2"
+    )
+    original_launch = BrowserType.launch
+
+    def _launch(self, **kwargs):
+        rules = "--host-resolver-rules=MAP rebind.test 127.0.0.2, MAP public.test 127.0.0.1"
+        return original_launch(self, args=[*kwargs.pop("args", []), rules], **kwargs)
+
+    monkeypatch.setattr(BrowserType, "launch", _launch)
+
+    try:
+        result = RenderedHtmlFetcher(_settings_with_render_fallback(tmp_path, enabled=True)).fetch(
+            f"http://public.test:{public.server_address[1]}/", "cid-proxy-real"
+        )
+    finally:
+        stun.close()
+        for server in (public, secret):
+            server.shutdown()
+            server.server_close()
+
+    assert "ordinary public text" in result.text
+    assert "/" in served
+    assert secret_seen == []
+    assert stun_seen == []
+
+
+@pytest.fixture
+def proxy_reaches_loopback(monkeypatch):
+    """The proxy refuses loopback, so its forwarding can only be tested against a real
+    local server with the address check turned off."""
+    monkeypatch.setattr("reel_pipeline.text_fetcher.is_non_public_ip", lambda address: False)
+    monkeypatch.setattr(socket, "getaddrinfo", _RebindingDns("127.0.0.1", "127.0.0.1"))
+
+
+def _proxy_exchange(proxy, request: bytes, then: bytes = b"") -> bytes:
+    with socket.create_connection(proxy.server_address, timeout=5) as client:
+        client.sendall(request)
+        if then:
+            assert client.recv(4096).startswith(b"HTTP/1.1 200")
+            client.sendall(then)
+        received = b""
+        while data := client.recv(4096):
+            received += data
+        return received
+
+
+def test_proxy_forwards_plain_http_in_origin_form(proxy_reaches_loopback, loopback_secret):
+    target = f"127.0.0.1:{loopback_secret.server_address[1]}"
+    with _running_public_only_proxy() as proxy:
+        response = _proxy_exchange(
+            proxy,
+            f"GET http://{target}/page?q=1 HTTP/1.1\r\n"
+            f"Host: {target}\r\nProxy-Connection: keep-alive\r\n\r\n".encode(),
+        )
+
+    assert b"internal secret" in response
+    assert loopback_secret.seen == [("/page?q=1", None, "close")]
+
+
+def test_proxy_tunnels_connect(proxy_reaches_loopback, loopback_secret):
+    target = f"127.0.0.1:{loopback_secret.server_address[1]}"
+    with _running_public_only_proxy() as proxy:
+        response = _proxy_exchange(
+            proxy,
+            f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n".encode(),
+            then=b"GET /t HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        )
+
+    assert b"internal secret" in response
+    assert [seen[0] for seen in loopback_secret.seen] == ["/t"]
+
+
+@pytest.mark.parametrize("form", ["GET http://{}/ HTTP/1.1", "CONNECT {} HTTP/1.1"])
+def test_proxy_refuses_a_name_resolving_to_loopback(monkeypatch, loopback_secret, form):
+    monkeypatch.setattr(socket, "getaddrinfo", _RebindingDns("127.0.0.1", "127.0.0.1"))
+    target = f"rebind.example.com:{loopback_secret.server_address[1]}"
+    with _running_public_only_proxy() as proxy:
+        response = _proxy_exchange(proxy, f"{form.format(target)}\r\n\r\n".encode())
+
+    assert response.startswith(b"HTTP/1.1 403")
+    assert proxy.refused == {"rebind.example.com"}
+    assert loopback_secret.seen == []
+
+
+@pytest.mark.parametrize(
+    "request_line",
+    [b"GET ftp://example.com/ HTTP/1.1", b"GET /relative HTTP/1.1", b"nonsense"],
+)
+def test_proxy_rejects_anything_but_a_proxy_request(monkeypatch, request_line):
+    monkeypatch.setattr(socket, "getaddrinfo", _RebindingDns("127.0.0.1", "127.0.0.1"))
+    with _running_public_only_proxy() as proxy:
+        response = _proxy_exchange(proxy, request_line + b"\r\n\r\n")
+
+    assert response.startswith(b"HTTP/1.1 400")
+
+
+def test_rendered_fetcher_launches_chromium_behind_the_proxy(tmp_path, monkeypatch):
+    browser = _install_fake_playwright(monkeypatch, html="<html><body>x</body></html>")
+    with pytest.raises(TextFetchError):
+        RenderedHtmlFetcher(_settings_with_render_fallback(tmp_path, enabled=True)).fetch(
+            "https://example.com/app", "cid-render-proxy"
+        )
+
+    assert browser.launch_kwargs["proxy"]["server"].startswith("http://127.0.0.1:")
+    assert browser.launch_kwargs["proxy"]["bypass"] == "<-loopback>"
+    assert _CHROMIUM_NO_DIRECT_WEBRTC in browser.launch_kwargs["args"]
 
 
 class _FakeRoute:

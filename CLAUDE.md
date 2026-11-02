@@ -39,7 +39,7 @@ The system supports:
   keyword, read the DM, press allowlisted quick-reply buttons, and type the reel's keyword back once if the bot asks for it (added 2026-10-02, `reply_keyword`). It is
   owner-run only (`cli comment-queue run`, never the worker or webhook; since
   2026-10-02 the owner-created Task Scheduler task "Reel Comment Queue" runs it
-  daily at 10:00 local, the rate limits still apply) and
+  daily at 14:00 UTC (10:00 EDT, 09:00 EST), the rate limits still apply) and
   dry-run by default (`--apply` to act). Hard rate limits live in
   `comment_gate:` in `config/settings.yaml`: 3 writes per 15 min, random
   3-6 min gaps, 8 comments per day (the day resets at 07:00 local) in the first week (raised from 3 on 2026-09-28, to 8 on 2026-10-02, at the owner's request). It halts for 24 h on any
@@ -104,8 +104,10 @@ The system supports:
   A submitted URL can no longer read a service on this machine or its network. The plain-HTTP
   fetchers (`_guarded_client` in `text_fetcher.py`) resolve once and connect to the address
   they checked, so DNS rebinding can't get past them; the client also ignores proxy
-  environment variables, because a proxy would resolve the name itself. Known gap: Chromium
-  does its own DNS, so rebinding stays open in the headless fallback only.
+  environment variables, because a proxy would resolve the name itself. The headless fallback
+  sends all its traffic through a local proxy (`_PublicOnlyProxy` in `text_fetcher.py`) that
+  applies the same check and connects to the address it checked, so rebinding is closed there
+  too. WebRTC can't use a proxy, so Chromium is told not to send it outside one.
 - `scripts/recapture_carousels.py` (2026-11-01) re-captures carousel posts saved before the
   `img_index` fix. Owner-run only, never scheduled: at most 2 posts per day, halts 24 h on a
   failure, dry-run unless `--apply`. See `docs/runbook.md`.

@@ -41,9 +41,11 @@ for non-Instagram URLs.)
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlparse
@@ -61,6 +63,13 @@ class Downloader(Protocol):
 
 class DownloadError(RuntimeError):
     """Raised when a downloader backend fails to produce a usable media file."""
+
+
+class PostUnavailableError(DownloadError):
+    """Instagram's API said the post itself is gone (deleted, or its account removed).
+
+    Waiting can't bring it back, so the worker parks the item instead of retrying.
+    """
 
 
 class YtDlpDownloader:
@@ -306,6 +315,34 @@ def _gallery_dl_executable() -> str:
     return shutil.which("gallery-dl", path=str(Path(sys.executable).parent)) or "gallery-dl"
 
 
+_MEDIA_INFO_400 = re.compile(r"HttpError: '400 Bad Request' for '\S*/api/v1/media/")
+_API_MESSAGE = re.compile(r'"message"\s*:\s*"([^"]*)"')
+_POST_GONE_MESSAGE = "Media not found or unavailable"
+
+
+def _instagram_api_message(command: list[str]) -> str | None:
+    """Re-run a failed media lookup with --write-pages to read the API's own message.
+
+    gallery-dl's stderr names only the status and endpoint, and 400 alone proves
+    nothing: Instagram also answers 400 for account trouble such as a checkpoint.
+    --simulate fetches no media; the dump lands in a directory removed right after.
+    """
+    probe = [*command[:-1], "--simulate", "--write-pages", command[-1]]
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            subprocess.run(  # noqa: S603 - same fixed argv as the caller, no shell
+                probe, capture_output=True, text=True, timeout=120, cwd=tmp
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        for page in sorted(Path(tmp).rglob("*")):
+            if page.is_file():
+                match = _API_MESSAGE.search(page.read_text(encoding="utf-8", errors="replace"))
+                if match:
+                    return match.group(1)
+    return None
+
+
 class GalleryDlDownloader:
     """Downloads Instagram media via the gallery-dl CLI, using a cookies file or
     browser cookie jar from the account owner's own logged-in session (never a
@@ -349,6 +386,10 @@ class GalleryDlDownloader:
 
         if result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip()
+            if _MEDIA_INFO_400.search(detail):
+                message = _instagram_api_message(command)
+                if message == _POST_GONE_MESSAGE:
+                    raise PostUnavailableError(f"Instagram post unavailable {url!r}: {message}")
             raise DownloadError(f"gallery-dl failed to download {url!r}: {detail}")
 
         all_files = sorted(p for p in out_dir.rglob("*") if p.is_file())

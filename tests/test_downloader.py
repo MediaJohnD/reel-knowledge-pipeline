@@ -8,7 +8,13 @@ from pathlib import Path
 import pytest
 
 from reel_pipeline.config import Settings
-from reel_pipeline.downloader import DispatchingDownloader, GalleryDlDownloader, YtDlpDownloader
+from reel_pipeline.downloader import (
+    DispatchingDownloader,
+    DownloadError,
+    GalleryDlDownloader,
+    PostUnavailableError,
+    YtDlpDownloader,
+)
 from reel_pipeline.models import DownloadResult, MediaType
 
 
@@ -457,3 +463,67 @@ def test_gallery_dl_caption_reads_description_from_metadata_json(tmp_path):
     (tmp_path / "a.jpg.json").write_text(json.dumps({"description": "see link"}), encoding="utf-8")
     assert _gallery_dl_caption(sorted(tmp_path.iterdir())) == "see link"
     assert _gallery_dl_caption([tmp_path / "a.jpg"]) is None
+
+
+_MEDIA_INFO_400 = (
+    "[instagram][error] HttpError: '400 Bad Request' for "
+    "'https://www.instagram.com/api/v1/media/123/info/'"
+)
+
+
+def _gallery_dl_400(tmp_path, monkeypatch, page_body, stderr=_MEDIA_INFO_400):
+    """gallery-dl exits 1 with stderr naming only the status; the API's own message is
+    only in the page dump the second, --write-pages run leaves in its working directory."""
+    settings = Settings(project_root=tmp_path, instagram_cookies_browser="chrome")
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if "--write-pages" in command and page_body is not None:
+            Path(kwargs["cwd"], "instagram.com_api_v1_media.txt").write_text(
+                page_body, encoding="utf-8"
+            )
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr=stderr)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return GalleryDlDownloader(settings), calls
+
+
+def test_gallery_dl_raises_post_unavailable_when_instagram_says_the_media_is_gone(
+    tmp_path, monkeypatch
+):
+    downloader, calls = _gallery_dl_400(
+        tmp_path, monkeypatch, '{"message":"Media not found or unavailable","status":"fail"}'
+    )
+
+    with pytest.raises(PostUnavailableError, match="Media not found or unavailable"):
+        downloader.download("https://www.instagram.com/p/gone/", "cid-gone")
+
+    assert len(calls) == 2
+    assert "--simulate" in calls[1]
+
+
+@pytest.mark.parametrize(
+    "page_body",
+    ['{"message":"checkpoint_required","status":"fail"}', '{"message":"useragent mismatch"}', None],
+)
+def test_gallery_dl_keeps_other_400s_retryable(tmp_path, monkeypatch, page_body):
+    """Instagram answers 400 for account trouble too. Calling those terminal would
+    permanently fail every reel over one expired session."""
+    downloader, _ = _gallery_dl_400(tmp_path, monkeypatch, page_body)
+
+    with pytest.raises(DownloadError) as excinfo:
+        downloader.download("https://www.instagram.com/p/x/", "cid-x")
+
+    assert not isinstance(excinfo.value, PostUnavailableError)
+
+
+def test_gallery_dl_does_not_probe_on_other_failures(tmp_path, monkeypatch):
+    downloader, calls = _gallery_dl_400(
+        tmp_path, monkeypatch, None, stderr="[instagram][error] HttpError: '429 Too Many Requests'"
+    )
+
+    with pytest.raises(DownloadError):
+        downloader.download("https://www.instagram.com/p/x/", "cid-x")
+
+    assert len(calls) == 1

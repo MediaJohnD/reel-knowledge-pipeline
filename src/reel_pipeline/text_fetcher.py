@@ -21,6 +21,7 @@ import html as html_lib
 import io
 import re
 import socket
+import socketserver
 import sys
 import threading
 import zipfile
@@ -28,7 +29,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import httpcore
 import httpx
@@ -82,6 +83,17 @@ def _refuse_private_target(request: httpx.Request) -> None:
         raise TextFetchError(f"refusing to fetch private or local address {request.url.host!r}")
 
 
+def _checked_public_addresses(host: str, port: int) -> list[str]:
+    """Resolves once. Callers connect to these addresses, never to the name, so an
+    answer that changes after this lookup (DNS rebinding) can't reach this machine.
+    """
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    addresses = list(dict.fromkeys(str(info[4][0]) for info in infos))
+    if any(is_non_public_ip(address) for address in addresses):
+        raise TextFetchError(f"refusing to fetch private or local address {host!r}")
+    return addresses
+
+
 class _PublicOnlyBackend(httpcore.SyncBackend):
     """Resolves the name once, checks every address, and connects to a checked IP.
 
@@ -92,12 +104,9 @@ class _PublicOnlyBackend(httpcore.SyncBackend):
 
     def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
         try:
-            infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+            addresses = _checked_public_addresses(host, port)
         except (OSError, UnicodeError) as exc:
             raise httpcore.ConnectError(f"could not resolve {host!r}: {exc}") from exc
-        addresses = list(dict.fromkeys(str(info[4][0]) for info in infos))
-        if any(is_non_public_ip(address) for address in addresses):
-            raise TextFetchError(f"refusing to fetch private or local address {host!r}")
         last_error = httpcore.ConnectError(f"no addresses for {host!r}")
         for address in addresses:
             try:
@@ -737,6 +746,163 @@ def _subprocess_capable_event_loop_policy() -> Iterator[None]:
             asyncio.set_event_loop_policy(previous)
 
 
+# WebRTC doesn't use the proxy: without this a page's STUN packets went straight to
+# 127.0.0.2 in a real Chromium test.
+_CHROMIUM_NO_DIRECT_WEBRTC = "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"
+_PROXY_HOP_HEADERS = (b"connection:", b"proxy-connection:", b"proxy-authorization:")
+_PROXY_MAX_HEAD_LINES = 200
+_PROXY_CONNECT_TIMEOUT_SECONDS = 15
+
+
+class _PublicOnlyProxyHandler(socketserver.StreamRequestHandler):
+    """One browser connection: CONNECT (https, wss, ws) or an absolute-URL http request."""
+
+    server: _PublicOnlyProxy
+
+    def handle(self) -> None:
+        head = self._read_head()
+        if not head:
+            return
+        parts = head[0].split()
+        if len(parts) != 3:
+            self._reply(b"400 Bad Request")
+            return
+        method, target, version = parts
+        tunnel = method == b"CONNECT"
+        try:
+            text = target.decode("ascii")
+            parsed = urlsplit(f"//{text}" if tunnel else text)
+            host, port = parsed.hostname, parsed.port or (443 if tunnel else 80)
+        except (UnicodeError, ValueError):
+            self._reply(b"400 Bad Request")
+            return
+        if not host or not (tunnel or parsed.scheme == "http"):
+            self._reply(b"400 Bad Request")
+            return
+
+        try:
+            upstream = self._connect(host, port)
+        except TextFetchError:
+            self.server.refused.add(host)
+            self._reply(b"403 Forbidden")
+            return
+        except (OSError, UnicodeError):
+            self._reply(b"502 Bad Gateway")
+            return
+
+        with upstream:
+            if tunnel:
+                self._reply(b"200 Connection established")
+            else:
+                origin_form = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+                request_line = b" ".join((method, origin_form.encode("ascii"), version))
+                kept = [
+                    line for line in head[1:] if not line.lower().startswith(_PROXY_HOP_HEADERS)
+                ]
+                # Without this the connection could stay open for the browser's next
+                # request, maybe for another host, to the address checked for this one.
+                upstream.sendall(
+                    b"\r\n".join([request_line, *kept, b"Connection: close", b"", b""])
+                )
+            self._relay(upstream)
+
+    def _read_head(self) -> list[bytes]:
+        lines: list[bytes] = []
+        for _ in range(_PROXY_MAX_HEAD_LINES):
+            line = self.rfile.readline(65537).rstrip(b"\r\n")
+            if not line:
+                return lines
+            lines.append(line)
+        return []
+
+    def _reply(self, status: bytes) -> None:
+        self.wfile.write(b"HTTP/1.1 " + status + b"\r\nContent-Length: 0\r\n\r\n")
+
+    def _connect(self, host: str, port: int) -> socket.socket:
+        last_error = OSError(f"no addresses for {host!r}")
+        for address in _checked_public_addresses(host, port):
+            try:
+                upstream = socket.create_connection(
+                    (address, port), timeout=_PROXY_CONNECT_TIMEOUT_SECONDS
+                )
+                upstream.settimeout(None)
+                return upstream
+            except OSError as exc:
+                last_error = exc
+        raise last_error
+
+    def _relay(self, upstream: socket.socket) -> None:
+        def _downstream() -> None:
+            try:
+                while data := upstream.recv(65536):
+                    self.connection.sendall(data)
+            except OSError:
+                pass
+            finally:
+                _shutdown(self.connection)
+
+        thread = threading.Thread(target=_downstream, daemon=True)
+        thread.start()
+        try:
+            # rfile, not the socket: it may already hold bytes read past the head.
+            while data := self.rfile.read1(65536):
+                upstream.sendall(data)
+        except OSError:
+            pass
+        finally:
+            _shutdown(upstream)
+        thread.join()
+
+
+def _shutdown(connection: socket.socket) -> None:
+    try:
+        connection.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+
+
+class _PublicOnlyProxy(socketserver.ThreadingTCPServer):
+    """Local forward proxy for the headless browser, so names are resolved here, by
+    the same check as _PublicOnlyBackend, instead of by Chromium's own resolver. The
+    route handler can only look a name up separately, and never sees WebSockets.
+    Certificates are still verified by Chromium: https is an opaque CONNECT tunnel.
+    """
+
+    daemon_threads = True
+
+    def __init__(self) -> None:
+        super().__init__(("127.0.0.1", 0), _PublicOnlyProxyHandler)
+        self.refused: set[str] = set()
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.server_address[1]}"
+
+    def handle_error(self, request, client_address) -> None:
+        # The browser resetting a connection is routine, and it sees the failure itself.
+        pass
+
+
+@contextmanager
+def _running_public_only_proxy() -> Iterator[_PublicOnlyProxy]:
+    with _PublicOnlyProxy() as proxy:
+        thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield proxy
+        finally:
+            proxy.shutdown()
+            thread.join()
+
+
+def _raise_if_refused_by_proxy(url: str, proxy: _PublicOnlyProxy) -> None:
+    # A refused http page renders as an empty 403, which would otherwise be reported
+    # as "no usable text", and a refused tunnel only as ERR_TUNNEL_CONNECTION_FAILED.
+    host = urlparse(url).hostname
+    if host in proxy.refused:
+        raise TextFetchError(f"refusing to fetch private or local address {host!r}")
+
+
 class RenderedHtmlFetcher:
     """Read-only headless-Chromium fallback for GenericHtmlFetcher, used only
     when the plain-GET path already produced an app shell (see
@@ -753,6 +919,9 @@ class RenderedHtmlFetcher:
       yt-dlp/gallery-dl cookie config. A login-gated page still fails.
     - No interaction - navigate, wait, read. No clicking, scrolling, or
       filling anything.
+    - Every connection goes through _PublicOnlyProxy, so the browser can't
+      reach this machine or its network, even by DNS rebinding. WebRTC is
+      limited to the proxy too, which leaves it no way out.
     - One browser instance launched and closed per fetch call - no
       persistent process, no shared state between items.
       # Per-call launch is O(items needing fallback) browser
@@ -770,9 +939,19 @@ class RenderedHtmlFetcher:
 
         timeout_ms = self.settings.text_capture.render_fallback.timeout_seconds * 1000
         try:
-            with _subprocess_capable_event_loop_policy(), sync_playwright() as playwright:
+            with (
+                _running_public_only_proxy() as proxy,
+                _subprocess_capable_event_loop_policy(),
+                sync_playwright() as playwright,
+            ):
                 try:
-                    browser = playwright.chromium.launch()
+                    # Chromium skips a proxy for loopback unless told otherwise.
+                    # Playwright adds this rule itself, but an environment
+                    # variable can turn that off, so it is set explicitly.
+                    browser = playwright.chromium.launch(
+                        proxy={"server": proxy.url, "bypass": "<-loopback>"},
+                        args=[_CHROMIUM_NO_DIRECT_WEBRTC],
+                    )
                 except PlaywrightError as exc:
                     if "Executable doesn't exist" in str(exc):
                         raise TextFetchError(
@@ -790,8 +969,8 @@ class RenderedHtmlFetcher:
                     def _block_private_requests(route) -> None:
                         # Same rule as _refuse_private_target, for redirects, script
                         # navigation, and subresources inside the browser. data: and
-                        # blob: URLs have no host and go nowhere. Chromium does its own
-                        # DNS, so unlike _PublicOnlyBackend this can't catch rebinding.
+                        # blob: URLs have no host and go nowhere. Rebinding is caught
+                        # by the proxy, which also sees the WebSockets this can't.
                         host = urlparse(route.request.url).hostname or ""
                         if host and host not in private_hosts:
                             private_hosts[host] = is_private_or_local_host(host)
@@ -807,7 +986,12 @@ class RenderedHtmlFetcher:
                     # a page that actually loaded in ~3s). "domcontentloaded"
                     # plus a short bounded settle wait for post-load JS to
                     # finish rendering is what real testing showed works.
-                    page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                    try:
+                        page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                    except PlaywrightError:
+                        _raise_if_refused_by_proxy(url, proxy)
+                        raise
+                    _raise_if_refused_by_proxy(page.url, proxy)
                     # Bounded by timeout_ms too - a small timeout_seconds
                     # config shouldn't be able to add an unbounded extra 3s
                     # on top of the navigation timeout it's supposed to cap.

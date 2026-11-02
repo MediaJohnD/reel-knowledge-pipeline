@@ -17,7 +17,8 @@ cp .env.example .env             # fill in what you need for the change you're m
 
 ## Before opening a pull request
 
-Run the full check suite locally - this is exactly what CI runs:
+Run the full check suite locally - this is what CI runs, plus `make browser-test`
+(real Chromium; needs `uv run playwright install chromium` once):
 
 ```bash
 make check   # uv lock --check, ruff check, pyright, pytest, uv audit

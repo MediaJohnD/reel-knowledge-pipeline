@@ -590,3 +590,10 @@ def test_daily_budget_resets_at_day_start_hour() -> None:
     morning = datetime(2026, 9, 29, 7, 0).astimezone()
     assert cg.write_wait(q, morning - timedelta(minutes=1), cfg, "comment") is None
     assert cg.write_wait(q, morning, cfg, "comment") == 0  # new day at 07:00
+
+
+def test_final_url_refuses_a_private_target():
+    from reel_pipeline.text_fetcher import TextFetchError
+
+    with pytest.raises(TextFetchError):
+        cg._final_url("http://127.0.0.1:9/")

@@ -40,6 +40,7 @@ from filelock import Timeout as FileLockTimeout
 from reel_pipeline.config import Settings
 from reel_pipeline.downloader import (
     Downloader,
+    PostUnavailableError,
     _extract_first_frame,
     _extract_frames,
     _video_has_audio_stream,
@@ -93,12 +94,16 @@ def _is_terminal_failure(exc: BaseException) -> bool:
 
     Deliberately conservative - only failures that are deterministic *by type
     or status code* qualify, never ones guessed at from message text, so a
-    reworded error can't silently change retry behaviour. Notably absent:
+    reworded error can't silently change retry behaviour. (PostUnavailableError
+    is typed from Instagram's API message field, and a reworded message there
+    falls back to normal retries, never the other way.) Notably absent:
     yt-dlp's HTTP 403, which looks deterministic and is not (an item that gave
     up "permanently" at 19:06 on 2026-08-21 succeeded at 19:49 untouched).
     """
     if isinstance(exc, LlmCallError):
         return exc.is_terminal
+    if isinstance(exc, PostUnavailableError):
+        return True
     if isinstance(exc, EmptyTranscriptError):
         # Waiting adds no speech to a silent clip and no text to a page that
         # has none. Every transcript source raises rather than returning an

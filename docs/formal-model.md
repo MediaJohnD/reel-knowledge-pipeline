@@ -419,6 +419,10 @@ loopback, private, or link-local IP address, since $\chi(u) = \bot$ for those.
 A hostname passes $\chi$, so the text path checks what it resolves to at fetch
 time: `text_fetcher._guarded_client` resolves once, refuses if any address is
 non-public, and connects only to an address it checked, on every redirect hop.
+The headless render fallback gets the same guarantee from a local proxy,
+`_PublicOnlyProxy`, which carries all of Chromium's traffic and does its own
+resolving; WebRTC cannot use a proxy, so Chromium is told not to send it outside
+one.
 
 **S3 (credential isolation).** Cookies are passed only to the media
 downloaders. The text path, including the headless render fallback, sends
@@ -461,12 +465,6 @@ was obtained.
 
 ## 12. Known gaps and threats to validity
 
-- **DNS rebinding in the headless fallback.** Chromium does its own DNS, so the
-  render fallback checks each host when a request starts and cannot pin the
-  address it connects to. A name that changes its answer between the two can
-  still reach a private address there. The plain-HTTP fetchers are not affected.
-  Acceptable for a single-user tool that only ingests URLs its owner submits;
-  not acceptable if submissions ever come from untrusted parties.
 - **Undocumented Notion API.** The Notion fetcher calls Notion's internal
   `loadPageChunk` endpoint. It can change without notice, and only the first
   100-block chunk is read.

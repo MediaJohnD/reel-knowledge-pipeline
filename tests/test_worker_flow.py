@@ -13,6 +13,7 @@ from reel_pipeline.config import (
     PromptsConfig,
     Settings,
 )
+from reel_pipeline.downloader import PostUnavailableError
 from reel_pipeline.enricher import Enricher
 from reel_pipeline.image_describer import LlmImageDescriber
 from reel_pipeline.llm_client import LlmCallError
@@ -1410,6 +1411,30 @@ def test_terminal_llm_error_gives_up_on_the_first_attempt(tmp_path):
     (record,) = pipeline.queue_manager.load_state().values()
     assert record.status is ItemStatus.FAILED_PERMANENT
     assert record.attempt_count == 1  # not 5 - the other 4 were pure delay
+    assert record.next_retry_at is None
+
+
+def test_removed_instagram_post_gives_up_on_the_first_attempt(tmp_path):
+    """Instagram said the post is gone, so another attempt only re-asks it the same
+    question. A plain DownloadError still takes the full budget (see FailingDownloader)."""
+
+    class RemovedPostDownloader:
+        def download(self, url, content_id):
+            raise PostUnavailableError(f"Instagram post unavailable {url!r}")
+
+    settings = make_settings(tmp_path)
+    settings.retry.max_attempts = 5
+    settings.retry.backoff_schedule_minutes = [1, 5, 30, 120, 480]
+    pipeline = build_pipeline(settings, RemovedPostDownloader())
+    pipeline.queue_manager.queue_file.write_text(
+        "https://www.youtube.com/watch?v=gone1\n", encoding="utf-8"
+    )
+
+    pipeline.run_once()
+
+    (record,) = pipeline.queue_manager.load_state().values()
+    assert record.status is ItemStatus.FAILED_PERMANENT
+    assert record.attempt_count == 1
     assert record.next_retry_at is None
 
 

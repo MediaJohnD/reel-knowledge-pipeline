@@ -170,11 +170,11 @@ def _is_redirector(url: str) -> bool:
 
 
 def _final_url(url: str) -> str:
-    import httpx
-
+    from reel_pipeline.text_fetcher import _guarded_client
     from reel_pipeline.validators import sanitize_url  # drops ManyChat's mcp_token JWT
 
-    resp = httpx.get(url, follow_redirects=True, timeout=20)
+    with _guarded_client() as client:  # the link came from a stranger's DM: no local targets
+        resp = client.get(url, timeout=20)
     final = str(resp.url)
     if _is_redirector(final):  # JS "open in app" page (InstantDM): target is in og:url
         m = _OG_URL.search(resp.text)

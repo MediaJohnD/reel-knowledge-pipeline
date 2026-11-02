@@ -111,7 +111,8 @@ external services beyond whichever LLM/transcription backend you configure.
 A `Makefile` wraps the verification commands (`make install`, `make test`, `make check`, etc.).
 `make check` runs the lockfile check, lint, format check, typecheck, tests and
 audit, and CI runs `make check` itself rather than repeating the list, so the
-two cannot drift apart.
+two cannot drift apart. CI also runs `make browser-test`, the real-Chromium tests
+that need `uv run playwright install chromium` first.
 
 Windows has no `make` by default. Either install one with
 `winget install --id ezwinports.make --exact --scope user` (no elevation needed;

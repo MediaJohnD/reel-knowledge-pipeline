@@ -1,4 +1,4 @@
-.PHONY: install test lint format format-check typecheck audit lockcheck run-once serve-webhook check
+.PHONY: install test browser-test lint format format-check typecheck audit lockcheck run-once serve-webhook check
 
 install:
 	# settings.yaml defaults to the local transcription backend; a bare `uv sync`
@@ -7,6 +7,11 @@ install:
 
 test:
 	uv run pytest
+
+# The real-Chromium tests that need no network. Separate from `check` because they
+# need `uv run playwright install chromium` first.
+browser-test:
+	uv run pytest -m playwright -k "dns_rebinding or route_handler"
 
 lint:
 	uv run ruff check .
