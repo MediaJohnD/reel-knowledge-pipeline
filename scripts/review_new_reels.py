@@ -1154,15 +1154,22 @@ CAREER_RE = re.compile(
     r"|\bconsultant\s*gigs?\b",  # not "advisory board": AI-agent reels use it
     re.I,
 )
+# Matched on title + tags only: "interview" and "resume" are common words in transcripts.
+JOB_SEARCH_RE = re.compile(
+    r"\bjob[\s-]+(?:search\w*|boards?|hunt\w*|seekers?|applications?|interviews?)\b"
+    r"|\b(?:remote|hidden)[\s-]+jobs?\b|(?<![\w-])interviews?\b|\brecruiters?\b|\bresumes?\b"
+    r"|\bcover[\s-]+letters?\b|\bupwork\b",
+    re.I,
+)
 
 
-def career_verdict(j, text):
-    """Fractional/consulting career reels are for the owner's job search, not a tool
-    to install, so the judge always skips them. Tag them `career` instead so the
-    digest keeps them findable. -> True if overridden."""
-    if j["verdict"] != "skip" or not CAREER_RE.search(text):
+def career_verdict(j, text, pattern=CAREER_RE):
+    """Career reels are for the owner's job search, not a tool to install, so the judge
+    always skips them. Tag them `career` instead so the digest keeps them findable.
+    -> True if overridden."""
+    if j["verdict"] != "skip" or not pattern.search(text):
         return False
-    j["verdict"], j["cap_reason"] = "career", "fractional/consulting career signal"
+    j["verdict"], j["cap_reason"] = "career", "career or job-search signal"
     return True
 
 
@@ -1176,7 +1183,10 @@ PERSONAL_RE = re.compile(
     r"|workouts?|wellness|longevity|morning routine|discipline"
     r"|dating|relationships?|tinder|hinge|bumble|first dates?|attraction"
     r"|emergency|prepper|prepping|preparedness|survival|go[\s-]bag|bug[\s-]out|disaster|first aid"
-    r"|blackouts?|power outages?)\b",
+    r"|blackouts?|power outages?"
+    r"|new[\s-]zealand|m[aā]ori|health|immune|vaccines?|personality|self[\s-]help|motivation\w*"
+    r"|hobb(?:y|ies)|chargers?|eyeglass\w*|productivity system"
+    r"|algo(?:rithmic)?[\s-]+trading|trading\s+bots?)\b",
     re.I,
 )
 
@@ -1199,8 +1209,8 @@ def personal_text(fm):
 
 
 def backfill_personal(settings, apply):
-    """Relabel past `skip` reviews that are personal-interest reels: manifest, digest row,
-    and the note's review line. Idempotent."""
+    """Relabel past `skip` reviews that are career or personal-interest reels: manifest,
+    digest row, and the note's review line. Idempotent."""
     from reel_pipeline.comment_gate import atomic_write
     from reel_pipeline.obsidian_writer import read_frontmatter
 
@@ -1213,22 +1223,28 @@ def backfill_personal(settings, apply):
             continue
         text = p.read_bytes().decode("utf-8")
         j = {"verdict": "skip"}
-        if not personal_verdict(j, personal_text(read_frontmatter(p) or {})):
+        about = personal_text(read_frontmatter(p) or {})
+        if not (
+            career_verdict(j, about)
+            or career_verdict(j, about, JOB_SEARCH_RE)
+            or personal_verdict(j, about)
+        ):
             continue
         n += 1
-        print(f"  {cid}: skip -> personal: {p.name}")
+        new = j["verdict"]
+        print(f"  {cid}: skip -> {new}: {p.name}")
         if apply:
-            r["verdict"], r["cap_reason"] = j["verdict"], j["cap_reason"]
+            r["verdict"], r["cap_reason"] = new, j["cap_reason"]
             atomic_write(
-                p, re.sub(r"(?m)^- verdict: skip\b.*$", "- verdict: personal", text, count=1)
+                p, re.sub(r"(?m)^- verdict: skip\b.*$", f"- verdict: {new}", text, count=1)
             )
             dtext = re.sub(
-                rf"(?m)^(\|.*)\| `skip` \|(.*\| `{cid}` \|.*)$", r"\1| `personal` |\2", dtext
+                rf"(?m)^(\|.*)\| `skip` \|(.*\| `{cid}` \|.*)$", rf"\1| `{new}` |\2", dtext
             )
     if apply and n:
         save_manifest(m)
         atomic_write(digest, dtext)
-    print(f"{'APPLY' if apply else 'DRY-RUN'}: {n} skip review(s) relabelled personal")
+    print(f"{'APPLY' if apply else 'DRY-RUN'}: {n} skip review(s) relabelled")
 
 
 def apply_comment_gate(settings, cid, text, fm, a):
@@ -1241,7 +1257,10 @@ def apply_comment_gate(settings, cid, text, fm, a):
     body = re.split(r"\r?\n\r?\n## Review \(auto,", text)[0]
     kw = cg.detect_comment_gate(body)
     if kw is None and a["j"]:
-        career_verdict(a["j"], body) or personal_verdict(a["j"], personal_text(fm))
+        about = personal_text(fm)
+        career_verdict(a["j"], body) or career_verdict(
+            a["j"], about, JOB_SEARCH_RE
+        ) or personal_verdict(a["j"], about)
     if kw is None or not a["j"]:
         return
     import filelock
@@ -1869,6 +1888,13 @@ def self_check():
     assert career_verdict({"verdict": "skip"}, "Join GLG, the expert network")
     assert not career_verdict({"verdict": "skip"}, "Buy fractional shares on Robinhood")
     assert not career_verdict({"verdict": "try-now"}, "fractional CTO toolkit repo")
+    for t in ("Alternative Job Boards", "Finding Remote Jobs", "Recruiter Message Templates"):
+        assert career_verdict({"verdict": "skip"}, t, JOB_SEARCH_RE), t
+    assert not career_verdict({"verdict": "skip"}, "Scrape any job with cron", JOB_SEARCH_RE)
+    assert not career_verdict({"verdict": "skip"}, "Funnel high-ticket ai-interview", JOB_SEARCH_RE)
+    assert not personal_verdict({"verdict": "skip"}, "Skool community ai-agents trading-bot")
+    assert personal_verdict({"verdict": "skip"}, "How Vaccines Harness the Immune System")
+    assert personal_verdict({"verdict": "skip"}, "Building an Algorithmic Trading Bot")
     j = {"verdict": "skip"}
     assert (
         personal_verdict(j, "Step-by-Step Guide to Packing an Emergency Supply Bin")
