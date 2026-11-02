@@ -153,6 +153,30 @@ def test_enqueue_is_idempotent() -> None:
     assert q["items"]["c1"]["status"] == cg.COMMENTED
 
 
+@pytest.mark.parametrize(
+    "other",
+    [
+        "https://instagram.com/p/A?img_index=4",
+        "https://www.instagram.com/reel/A/",
+    ],
+)
+def test_enqueue_refuses_a_second_entry_for_the_same_post(other: str) -> None:
+    # Two slides of one carousel have different content ids but one comment box.
+    q = _q()
+    assert cg.enqueue(q, "c1", "https://instagram.com/p/A?img_index=2", "X", T0)
+    assert not cg.enqueue(q, "c2", other, "X", T0)
+    assert list(q["items"]) == ["c1"]
+
+
+def test_enqueue_keeps_different_posts_and_urls_without_a_shortcode() -> None:
+    q = _q()
+    assert cg.enqueue(q, "c1", "https://instagram.com/p/A", "X", T0)
+    assert cg.enqueue(q, "c2", "https://instagram.com/p/a", "X", T0)  # case-sensitive
+    assert cg.enqueue(q, "c3", "https://instagram.com/stories/x", "X", T0)
+    assert cg.enqueue(q, "c4", "https://instagram.com/stories/x", "X", T0)
+    assert list(q["items"]) == ["c1", "c2", "c3", "c4"]
+
+
 def test_insert_gated_section_goes_above_review() -> None:
     note = (
         "---\ntitle: t\n---\n\n# T\n\n## Transcript\nhi\n\n"

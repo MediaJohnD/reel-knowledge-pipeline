@@ -270,8 +270,12 @@ def _dt(s: str) -> datetime:
 
 
 def enqueue(q: dict[str, Any], cid: str, reel_url: str, keyword: str, now: datetime) -> bool:
-    """Add a gated reel. Idempotent: never touches an existing record."""
+    """Add a gated reel. Idempotent: never touches an existing record, and never
+    adds a second record for one post (carousel slides have their own content ids)."""
     if cid in q["items"]:
+        return False
+    code = _shortcode(reel_url)
+    if code and any(_shortcode(r["reel_url"]) == code for r in q["items"].values()):
         return False
     q["items"][cid] = {
         "reel_url": reel_url,
@@ -867,13 +871,18 @@ _SHORTCODE = re.compile(r"/(?:p|reels?|tv)/([A-Za-z0-9_-]+)")
 _OG = re.compile(r' - ([A-Za-z0-9._]{1,30}) on [^:]+: "(.*)"\.?\s*$', re.S)
 
 
+def _shortcode(url: str) -> str | None:
+    m = _SHORTCODE.search(urlparse(url).path)
+    return m.group(1) if m else None
+
+
 def post_url(url: str) -> str:
     """The single-post page for a reel. /reel/ links redirect into the Reels feed,
     which shows other creators' reels (and comment boxes) on the same page."""
-    m = _SHORTCODE.search(urlparse(url).path)
-    if not m:
+    code = _shortcode(url)
+    if not code:
         raise ValueError(f"no post shortcode in {url}")
-    return f"https://www.instagram.com/p/{m.group(1)}/"
+    return f"https://www.instagram.com/p/{code}/"
 
 
 def parse_og_description(og: str) -> tuple[str | None, str]:
