@@ -126,6 +126,26 @@ def test_paid_ad_click_ids_do_not_change_content_id():
     )
 
 
+def test_ad_tracking_variants_do_not_change_content_id():
+    """Regression test: consultantgigs.org/onboarding/consultants (utm_adname etc.),
+    fractionalinabox.com/registration1 (cmc_adid/fbc_id/h_ad_id, three notes) and
+    github.com/d4vinci/Scrapling (utm_referrer) each became duplicate notes in
+    2026-09/10 through params the blocklist didn't name."""
+    page = "https://example.com/registration1"
+    variants = [
+        f"{page}?utm_adname=INT-481&utm_adset=a&utm_adset_id=1&utm_campaign_id=2",
+        f"{page}?utm_referrer=sp_auto_dm",
+        f"{page}?UTM_Whatever=x",
+        f"{page}?cmc_adid=fb_1&fbc_id=2&h_ad_id=3",
+        f"{page}?adset_id=4",
+    ]
+
+    for variant in variants:
+        assert compute_content_id(variant) == compute_content_id(page), variant
+    # A param that merely contains "utm" is not tracking and still identifies content.
+    assert normalize_url(f"{page}?autumn=1") != normalize_url(page)
+
+
 def test_normalize_url_strips_notion_copy_link_source_only_on_notion_hosts():
     """Regression test: the same Notion page ingested with and without Notion's
     `?source=copy_link` minted two content_ids and two notes (23-things-..., 2026-10-04)."""

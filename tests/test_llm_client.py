@@ -17,6 +17,12 @@ from reel_pipeline.llm_client import (
 )
 
 
+@pytest.fixture
+def no_sleep(monkeypatch):
+    """Skip the real throttle and rate-limit waits, about 80 s of the suite otherwise."""
+    monkeypatch.setattr("reel_pipeline.llm_client.time.sleep", lambda _seconds: None)
+
+
 def test_call_llm_dispatches_to_ollama(tmp_path):
     settings = Settings(
         project_root=tmp_path,
@@ -142,7 +148,7 @@ def test_call_llm_dispatches_to_groq(tmp_path):
     assert result == "hello from groq"
 
 
-def test_call_llm_groq_never_sends_reasoning_format(tmp_path):
+def test_call_llm_groq_never_sends_reasoning_format(tmp_path, no_sleep):
     """Groq 400s on reasoning_format for non-reasoning models, and on "raw"
     specifically for gpt-oss-120b (verified live 2026-08-15) - sending it at
     all made the whole provider unusable. Covers the vision path too, which
@@ -203,7 +209,7 @@ def test_call_llm_groq_truncated_reasoning_raises_instead_of_leaking_fragment(tm
             call_llm(settings, "prompt text", model="qwen/qwen3.6-27b", max_tokens=50)
 
 
-def test_gemini_key_goes_in_a_header_and_never_into_an_error_message(tmp_path):
+def test_gemini_key_goes_in_a_header_and_never_into_an_error_message(tmp_path, no_sleep):
     """A ?key= query param leaks into httpx's HTTPStatusError message, which
     this module wraps into LlmCallError -> record.error ->
     data/inbox/needs-attention.txt. That wrote the real key to disk twice on
@@ -597,7 +603,7 @@ def test_request_level_4xx_is_terminal(tmp_path):
 
 
 @pytest.mark.parametrize("status", [408, 429])
-def test_transient_client_errors_are_not_terminal(tmp_path, status):
+def test_transient_client_errors_are_not_terminal(tmp_path, status, no_sleep):
     """408 and 429 are 4xx that genuinely change on retry - they must stay on
     the normal backoff rather than being parked immediately.
     """
@@ -656,7 +662,7 @@ def test_call_llm_waterfall_falls_through_a_dead_provider(tmp_path):
     assert result == "hello from groq"
 
 
-def test_call_llm_waterfall_raises_last_error_when_every_step_fails(tmp_path):
+def test_call_llm_waterfall_raises_last_error_when_every_step_fails(tmp_path, no_sleep):
     settings = Settings(
         project_root=tmp_path,
         llm=LlmConfig(

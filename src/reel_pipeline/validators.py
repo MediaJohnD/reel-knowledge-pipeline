@@ -22,11 +22,6 @@ from reel_pipeline.config import Settings
 # exact same GitHub URL during manual testing - a link shared once directly and once
 # re-shared/relayed through Facebook normalized to two different URLs without this.
 _STRIP_QUERY_PARAMS = {
-    "utm_source",
-    "utm_medium",
-    "utm_campaign",
-    "utm_term",
-    "utm_content",
     "si",
     "feature",
     "igshid",
@@ -45,7 +40,10 @@ _STRIP_QUERY_PARAMS = {
     # creatives minted two content_ids and two notes for one page.
     "ad_id",
     "campaign_id",
-    "utm_id",
+    "adset_id",
+    "cmc_adid",
+    "fbc_id",
+    "h_ad_id",
     "dm_ad",
     "dm_cam",
     "dm_grp",
@@ -53,6 +51,10 @@ _STRIP_QUERY_PARAMS = {
     "li_fat_id",
     "rcm",
 }
+
+# Every utm_* param is tracking, and ad tools keep inventing new ones (utm_adname,
+# utm_adset, utm_referrer), each of which minted a second note for one page.
+_STRIP_QUERY_PREFIX = "utm_"
 
 # Query params that carry a credential or per-share token. Only sanitize_url() drops
 # these - see its docstring for why they must stay out of _STRIP_QUERY_PARAMS.
@@ -124,7 +126,9 @@ def normalize_url(url: str) -> str:
             # `source` can identify content on other sites.
             strip = strip | {"source"}
         kept_params = sorted(
-            (key, value) for key, value in parse_qsl(parsed.query) if key.lower() not in strip
+            (key, value)
+            for key, value in parse_qsl(parsed.query)
+            if key.lower() not in strip and not key.lower().startswith(_STRIP_QUERY_PREFIX)
         )
     query = urlencode(kept_params)
     return urlunparse((scheme, netloc, path, "", query, ""))

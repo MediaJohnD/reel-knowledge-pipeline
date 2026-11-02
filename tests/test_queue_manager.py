@@ -623,6 +623,29 @@ def test_plain_link_after_mcp_token_link_is_a_duplicate(tmp_path):
     assert len(qm.load_state()) == 1
 
 
+def test_url_saved_with_an_old_ad_param_still_catches_a_resubmission(tmp_path):
+    """Items saved before utm_adname etc. were stripped keep them in normalized_url and
+    their old content_id, so only re-normalizing the stored URL finds the match."""
+    settings = Settings(project_root=tmp_path)
+    qm = QueueManager(settings)
+    first = qm.add_url("https://consultantgigs.org/onboarding", source=QueueSource.WEBHOOK)
+    state = qm.load_state()
+    saved = state.pop(first.content_id).model_copy(
+        update={
+            "content_id": "old_id",
+            "normalized_url": "https://consultantgigs.org/onboarding?utm_adname=INT-481",
+        }
+    )
+    qm.save_state({"old_id": saved})
+
+    again = qm.add_url(
+        "https://consultantgigs.org/onboarding?utm_adset=b", source=QueueSource.COMMENT_GATE
+    )
+
+    assert again.content_id == "old_id"
+    assert list(qm.load_state()) == ["old_id"]
+
+
 def test_google_doc_view_variants_are_one_item(tmp_path):
     settings = Settings(project_root=tmp_path)
     qm = QueueManager(settings)
