@@ -6,14 +6,17 @@ import types
 from pathlib import Path
 
 import pytest
+import yaml
 
-from reel_pipeline.config import Settings
+from reel_pipeline.config import DownloadConfig, Settings
 from reel_pipeline.downloader import (
     DispatchingDownloader,
     DownloadError,
     GalleryDlDownloader,
+    NoMediaError,
     PostUnavailableError,
     YtDlpDownloader,
+    is_refusal,
 )
 from reel_pipeline.models import DownloadResult, MediaType
 
@@ -527,3 +530,275 @@ def test_gallery_dl_does_not_probe_on_other_failures(tmp_path, monkeypatch):
         downloader.download("https://www.instagram.com/p/x/", "cid-x")
 
     assert len(calls) == 1
+
+
+def _raise_yt_dlp(message):
+    def impl(url):
+        raise sys.modules["yt_dlp.utils"].DownloadError(message)
+
+    return impl
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "ERROR: Unsupported URL: https://x.com/a/status/1",
+        "ERROR: [twitter] 1: No video could be found in this tweet",
+        "ERROR: There's no media in this post",
+        "ERROR: Nothing to download",
+        "ERROR: Requested format is not available",
+    ],
+)
+def test_yt_dlp_says_no_media_raises_no_media_error(tmp_path, monkeypatch, message):
+    _install_fake_yt_dlp(monkeypatch, extract_info_impl=_raise_yt_dlp(message))
+    downloader = YtDlpDownloader(Settings(project_root=tmp_path))
+
+    with pytest.raises(NoMediaError):
+        downloader.download("https://x.com/a/status/1", "cid-no-media")
+
+
+def test_yt_dlp_network_failure_stays_a_plain_download_error(tmp_path, monkeypatch):
+    _install_fake_yt_dlp(monkeypatch, extract_info_impl=_raise_yt_dlp("HTTP Error 500"))
+    downloader = YtDlpDownloader(Settings(project_root=tmp_path))
+
+    with pytest.raises(DownloadError) as caught:
+        downloader.download("https://x.com/a/status/1", "cid-plain")
+
+    assert not isinstance(caught.value, NoMediaError)
+
+
+def test_gallery_dl_empty_range_retries_the_whole_post(tmp_path, monkeypatch):
+    """Live case Dd3xE-qDS2N: img_index=9 on a post gallery-dl sees fewer items in. The
+    range matched nothing, exit 0, and the post looked empty when it wasn't."""
+    settings = Settings(project_root=tmp_path, instagram_cookies_browser="chrome")
+    out_dir = settings.tmp_dir / "cid-range"
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        if "--range" not in command:
+            (out_dir / "post_1.jpg").write_bytes(b"fake-jpg")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    url = "https://www.instagram.com/p/Dd3xE-qDS2N/?img_index=9"
+    result = GalleryDlDownloader(settings).download(url, "cid-range")
+
+    assert [("--range" in c) for c in commands] == [True, False]
+    assert result.media_paths == [str(out_dir / "post_1.jpg")]
+
+
+def test_gallery_dl_empty_without_range_does_not_retry(tmp_path, monkeypatch):
+    settings = Settings(project_root=tmp_path, instagram_cookies_browser="chrome")
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(DownloadError, match="no video or image"):
+        GalleryDlDownloader(settings).download("https://www.instagram.com/p/abc/", "cid-empty")
+
+    assert len(commands) == 1
+
+
+def test_gallery_dl_failure_falls_to_yt_dlp_once(tmp_path, monkeypatch):
+    settings = Settings(project_root=tmp_path)
+    calls = []
+
+    def gallery(self, url, content_id):
+        raise DownloadError("gallery-dl failed: extractor found nothing usable")
+
+    def yt_dlp(self, url, content_id):
+        calls.append(url)
+        return DownloadResult(content_id=content_id, media_paths=["x"], platform="Instagram")
+
+    monkeypatch.setattr(GalleryDlDownloader, "download", gallery)
+    monkeypatch.setattr(YtDlpDownloader, "download", yt_dlp)
+
+    url = "https://www.instagram.com/reel/abc/"
+    result = DispatchingDownloader(settings).download(url, "cid-ladder")
+
+    assert calls == [url]
+    assert result.platform == "Instagram"
+
+
+def test_both_downloaders_failing_reports_both(tmp_path, monkeypatch):
+    settings = Settings(project_root=tmp_path)
+
+    def gallery(self, url, content_id):
+        raise DownloadError("gallery-dl said one thing")
+
+    def yt_dlp(self, url, content_id):
+        raise NoMediaError("yt-dlp said another")
+
+    monkeypatch.setattr(GalleryDlDownloader, "download", gallery)
+    monkeypatch.setattr(YtDlpDownloader, "download", yt_dlp)
+
+    with pytest.raises(DownloadError) as caught:
+        DispatchingDownloader(settings).download("https://www.instagram.com/p/abc/", "cid-both")
+
+    assert "gallery-dl said one thing" in str(caught.value)
+    assert "yt-dlp said another" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "HTTP 429 from instagram",
+        "Rate limit reached, slow down",
+        "rate-limited",
+        "Too many requests",
+        "challenge_required",
+        "redirect to /challenge/",
+        "checkpoint_required",
+        "Account checkpoint required",
+        "login required",
+        "Redirected to /accounts/login/",
+        "please log in",
+        "you need to be logged in",
+        "sign in to confirm",
+        "HTTP 403",
+        "HTTP 401",
+        "HTTP Error 403: Forbidden",
+        "403 Forbidden",
+        "Unauthorized",
+    ],
+)
+def test_gallery_dl_refusals_do_not_fall_to_yt_dlp(tmp_path, monkeypatch, detail):
+    """Being rate limited or challenged is an answer to respect, not a reason to come
+    at the same account again from a second tool."""
+    settings = Settings(project_root=tmp_path)
+
+    def gallery(self, url, content_id):
+        raise DownloadError(f"gallery-dl failed to download {url!r}: {detail}")
+
+    monkeypatch.setattr(GalleryDlDownloader, "download", gallery)
+    monkeypatch.setattr(
+        YtDlpDownloader,
+        "download",
+        lambda self, url, content_id: pytest.fail("yt-dlp must not run after a refusal"),
+    )
+
+    with pytest.raises(DownloadError, match="gallery-dl failed"):
+        DispatchingDownloader(settings).download("https://www.instagram.com/p/abc/", "cid-r")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.instagram.com/p/403/",
+        "https://www.instagram.com/rate/login/challenge",
+        "https://x.com/someone/status/429",
+    ],
+)
+def test_a_url_inside_the_error_is_not_read_as_a_refusal(url):
+    error = DownloadError(f"gallery-dl failed to download {url!r}: no extractor")
+    assert not is_refusal(error, url)
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "ffmpeg: unsupported frame rate 240",
+        "low bit rate",
+        "Requested format 401 is not available",
+        "format 403 has no audio",
+        "frame 429 is damaged",
+    ],
+)
+def test_a_media_problem_is_not_read_as_a_refusal(detail):
+    url = "https://www.instagram.com/p/abc/"
+    assert not is_refusal(DownloadError(f"gallery-dl failed: {detail}"), url)
+
+
+def test_a_redirect_to_a_login_page_in_the_error_is_still_a_refusal():
+    url = "https://www.instagram.com/p/abc/"
+    error = DownloadError(f"{url!r} redirected to https://www.instagram.com/accounts/login/")
+    assert is_refusal(error, url)
+
+
+def test_generate_is_not_read_as_rate_limited(tmp_path, monkeypatch):
+    settings = Settings(project_root=tmp_path)
+
+    def gallery(self, url, content_id):
+        raise DownloadError("gallery-dl could not generate a file name")
+
+    monkeypatch.setattr(GalleryDlDownloader, "download", gallery)
+    monkeypatch.setattr(
+        YtDlpDownloader,
+        "download",
+        lambda self, url, content_id: DownloadResult(
+            content_id=content_id, media_paths=["x"], platform="Instagram"
+        ),
+    )
+
+    result = DispatchingDownloader(settings).download("https://www.instagram.com/p/abc/", "cid-gen")
+
+    assert result.platform == "Instagram"
+
+
+def test_post_gone_does_not_fall_to_yt_dlp(tmp_path, monkeypatch):
+    settings = Settings(project_root=tmp_path)
+
+    def gallery(self, url, content_id):
+        raise PostUnavailableError("gone")
+
+    monkeypatch.setattr(GalleryDlDownloader, "download", gallery)
+    monkeypatch.setattr(
+        YtDlpDownloader,
+        "download",
+        lambda self, url, content_id: pytest.fail("a deleted post has nothing to retry"),
+    )
+
+    with pytest.raises(PostUnavailableError):
+        DispatchingDownloader(settings).download("https://www.instagram.com/p/abc/", "cid-gone")
+
+
+def test_gallery_dl_sees_the_wider_file_types(tmp_path, monkeypatch):
+    settings = Settings(project_root=tmp_path, instagram_cookies_browser="chrome")
+    out_dir = settings.tmp_dir / "cid-avif"
+
+    def fake_run(command, **kwargs):
+        (out_dir / "post_1.avif").write_bytes(b"fake")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = GalleryDlDownloader(settings).download("https://www.instagram.com/p/a/", "cid-avif")
+
+    assert result.media_type is MediaType.IMAGE
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.loom.com/share/abc",
+        "https://www.reddit.com/r/x/comments/1/y",
+        "https://v.redd.it/abc",
+        "https://soundcloud.com/a/b",
+        "https://www.twitch.tv/videos/1",
+        "https://rumble.com/v1-a.html",
+        "https://www.dailymotion.com/video/x1",
+        "https://www.ted.com/talks/a",
+        "https://streamable.com/a",
+        "https://fast.wistia.com/medias/a",
+        "https://fast.wistia.net/embed/iframe/a",
+    ],
+)
+def test_yt_dlp_cookies_never_reach_an_anonymous_host(tmp_path, monkeypatch, url):
+    shipped = yaml.safe_load(Path("config/settings.yaml").read_text(encoding="utf-8"))
+    settings = Settings(
+        project_root=tmp_path,
+        ytdlp_cookies_file="C:/fake/cookies.txt",
+        download=DownloadConfig(anonymous_domains=shipped["download"]["anonymous_domains"]),
+    )
+    captured_opts = _install_fake_yt_dlp(monkeypatch)
+
+    YtDlpDownloader(settings).download(url, "cid-anon")
+
+    assert "cookiefile" not in captured_opts[0]
+    assert "cookiesfrombrowser" not in captured_opts[0]

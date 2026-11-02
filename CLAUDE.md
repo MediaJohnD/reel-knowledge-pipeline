@@ -43,7 +43,7 @@ The system supports:
   dry-run by default (`--apply` to act). Hard rate limits live in
   `comment_gate:` in `config/settings.yaml`: 3 writes per 15 min, random
   3-6 min gaps, 8 comments per day (the day resets at 07:00 local) in the first week (raised from 3 on 2026-09-28, to 8 on 2026-10-02, at the owner's request). It halts for 24 h on any
-  challenge or action-blocked dialog. Code never sees or types the password,
+  challenge or action-blocked dialog. Timed-out DM threads get read again (10 per run, weekly, 6 times at most, added 2026-11-01); those are reads and use no write slots. Code never sees or types the password,
   never reuses the yt-dlp/gallery-dl cookies, and uses no anti-detection
   tooling. Confined to `comment_gate.py`. See
   `docs/superpowers/specs/2026-09-26-comment-gated-links-design.md`.
@@ -111,6 +111,11 @@ The system supports:
 - `scripts/recapture_carousels.py` (2026-11-01) re-captures carousel posts saved before the
   `img_index` fix. Owner-run only, never scheduled: at most 2 posts per day, halts 24 h on a
   failure, dry-run unless `--apply`. See `docs/runbook.md`.
+- Monthly audits (2026-11-01), run from `run-review.bat` once 30 days have passed.
+  `scripts/recheck_links.py` requests note URLs through the same private-target guard as
+  text capture, without cookies. `scripts/vet_repos.py` reads repos through the GitHub API
+  as text only and never clones, installs, or runs them. Neither edits a reel note. See
+  `docs/runbook.md`.
 - Notion pages (`notion.so`/`notion.site`/`notion.com`) get a dedicated `NotionFetcher` as
   of 2026-08-10, instead of falling through to the generic HTML fetcher. Reason: Notion's
   current frontend ships zero page content in the server-sent HTML for *any* page, public
@@ -126,10 +131,51 @@ The system supports:
   unofficial/undocumented (reverse-engineered by the open-source community, e.g.
   `react-notion-x`) and could change or break without notice - an accepted tradeoff,
   since Notion has no official public read API for pages the requester doesn't own.
-  Known v1 gaps, documented rather than silently wrong: no pagination past the first
-  100-block chunk, linked-database rows aren't expanded (noted by title only), and a bare
+  Known gaps, documented rather than silently wrong: pagination stops after 10 chunks
+  (about 1000 blocks; added 2026-11-01, the note says when it stopped early),
+  linked-database rows aren't expanded (noted by title only), and a bare
   custom-subdomain root URL with no page id in the path (as opposed to the standard
   `.../Some-Title-<id>` share-link shape) isn't resolvable.
+- More formats and fallbacks, 2026-11-01, at the owner's direction ("accept more formats and
+  links, and fix the issues before discarding or erroring them"). See
+  `docs/superpowers/specs/2026-11-01-more-formats-and-fallbacks-design.md`.
+  - `download.allowed_domains` adds `loom.com`, `reddit.com`, `v.redd.it`, `soundcloud.com`,
+    `twitch.tv`, `rumble.com`, `dailymotion.com`, `ted.com`, `streamable.com`, `wistia.com`,
+    `wistia.net`. No cookies were added for them, and `download.anonymous_domains` lists the
+    same hosts, so `REEL_YTDLP_COOKIES_*` never reaches them even when set. Checked live
+    2026-11-01: TED, SoundCloud, Streamable, Loom, Twitch VODs and Wistia work. Three don't
+    work anonymously today: Reddit (yt-dlp wants an account, the page blocks automation),
+    Dailymotion (yt-dlp needs impersonation tooling, which is refused as anti-detection), and
+    Rumble (403 to yt-dlp and to text capture). Reddit cookies stay off: on 2026-11-01 none of
+    the 773 items, the queue, or the needs-attention history was a Reddit link. Reconsider if
+    Reddit links start arriving; turning them on is a new login-gated platform decision.
+  - Text capture now reads `.xlsx`, `.epub`, `.odt`/`.ods`/`.odp` (`document_text.py`, standard
+    library, zip-bomb guard), PDF, DOCX and PPTX, CSV/TSV/YAML/JSON, RSS and Atom (regex, no
+    XML parser, no entity expansion), and Sheets exports. A scanned PDF goes to the vision
+    path, up to 40 images and 256 MB, skipping an image it can't use before decoding it. Downloads
+    are capped by `text_capture.max_document_mb` and `max_media_mb`.
+  - Embedded media on a thin page (direct file, allow-listed iframe or `og:video`, one guarded
+    hop for a `text/html` player, HLS) is downloaded. HLS playlists and segments stay on the
+    guarded client and never go to yt-dlp, and an encrypted stream (any `EXT-X-KEY` other than
+    NONE) is refused, not worked around. yt-dlp and gallery-dl only get hosts that pass
+    `validate_url`.
+  - A thin page whose render failed or is off keeps its title and a description of at least 60
+    chars, labeled as such. Never after a challenge or on login text.
+  - Wayback fallback (`fetch_archived`): 404/410 go to the archive at once, 5xx and connection
+    errors only on the last attempt. 403/401/429 and challenge pages never go to the render or
+    the archive: a site that blocks automation is still respected. A URL with a login in it, or
+    whose query or fragment looks private (token, key, secret, signature, auth, sig, session,
+    credential and variants), is never sent to the archive. Text capture still sends no cookies.
+  - Media-to-text fallback: `NoMediaError` at once, other download errors on the last attempt,
+    and an empty transcript go to text capture, only for
+    `text_capture.media_text_fallback_domains`, with at least 200 chars.
+    `PostUnavailableError` stays terminal. gallery-dl falls to yt-dlp once. A failure that reads
+    as a refusal (401, 403, 429, 451, rate limit, challenge, checkpoint, login; `is_refusal` in
+    `downloader.py`) goes to neither: it keeps its normal retries and nothing else.
+  - Pastes: bare `domain.tld/path`, `<https://...>`, markdown links and several links in one
+    paste are accepted. Known wrappers (`l.instagram.com`, `l.facebook.com`, `lm.facebook.com`,
+    `google.com/url`, `linkedin.com/safety/go`, `youtube.com/redirect`) are unwrapped
+    (`unwrap_redirect` in `validators.py`), and the target is still validated.
 - Any `download.blocked_domains` entries are still enforced up front - blocked URLs route
   to `data/inbox/needs-attention.txt`, never downloaded.
 - Treat any other third-party account automation as out of scope unless explicitly requested.

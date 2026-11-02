@@ -28,8 +28,33 @@ def plan(records, vault_files):
     return moves, lost
 
 
+def plan_manifest(items, ledger, vault_files):
+    """reviewed.json entries with a stale note_path -> {id: new}. The ledger wins because
+    the organizer renames files; a basename match is the fallback. No note is fine here:
+    skipped reels never had one."""
+    moves = {}
+    stale = {c: v["note_path"] for c, v in items.items() if v.get("note_path")}
+    for cid, p in stale.items():
+        if Path(p).exists():
+            continue
+        if ledger.get(cid) and Path(ledger[cid]).exists():
+            moves[cid] = ledger[cid]
+    rest = {c: p for c, p in stale.items() if c not in moves}
+    moves.update(plan(rest, vault_files)[0])
+    return moves
+
+
+def still_open(done, items):
+    """A skipped reel's note was removed on purpose; don't report it as drift every night."""
+    return {c: p for c, p in done.items() if (items.get(c) or {}).get("status") != "skipped"}
+
+
 def self_check():
     import tempfile
+
+    done = {"a": "a.md", "b": "b.md", "c": "c.md"}
+    kept = still_open(done, {"a": {"status": "skipped"}, "b": {"status": "reviewed"}})
+    assert kept == {"b": "b.md", "c": "c.md"}, kept
 
     with tempfile.TemporaryDirectory() as t:
         a = Path(t, "a.md")
@@ -42,7 +67,35 @@ def self_check():
             [a, b / "b.md"],
         )
         assert m == {"2": str(b / "b.md")} and lost == ["3"], (m, lost)
+        renamed = Path(t, "renamed.md")
+        renamed.write_text("x")
+        m = plan_manifest(
+            {
+                "ok": {"note_path": str(a)},
+                "by-ledger": {"note_path": str(Path(t, "old-title.md"))},
+                "by-name": {"note_path": str(Path(t, "old", "b.md"))},
+                "gone": {"note_path": str(Path(t, "gone.md"))},
+                "no-note": {"status": "skipped"},
+            },
+            {"by-ledger": str(renamed)},
+            [a, b / "b.md", renamed],
+        )
+        assert m == {"by-ledger": str(renamed), "by-name": str(b / "b.md")}, m
     print("self-check ok")
+
+
+def reconcile_manifest(qm, vault_files):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import review_new_reels as r
+
+    ledger = {c: str(v.note_path) for c, v in qm.load_state().items() if v.note_path}
+    m = r.load_manifest()  # read last: the review run writes this file too
+    moves = plan_manifest(m["items"], ledger, vault_files)
+    for c, p in moves.items():
+        m["items"][c]["note_path"] = p
+    if moves:
+        r.save_manifest(m)
+    print(f"manifest note paths repointed: {len(moves)}")
 
 
 def main(argv):
@@ -65,7 +118,10 @@ def main(argv):
         for c, r in qm.load_state().items()
         if str(r.status.value if hasattr(r.status, "value") else r.status) == "done"
     }
-    moves, lost = plan(done, vault_files)
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import review_new_reels as review
+
+    moves, lost = plan(still_open(done, review.load_manifest()["items"]), vault_files)
     for c, p in moves.items():
         print(f"moved {c}: {done[c]} -> {p}")
     for c in lost:
@@ -81,6 +137,7 @@ def main(argv):
 
     if moves:
         qm.mutate_state(fix)
+    reconcile_manifest(qm, vault_files)
     if lost:
         na = ROOT / "data" / "inbox" / "needs-attention.txt"
         old = na.read_text(encoding="utf-8") if na.exists() else ""

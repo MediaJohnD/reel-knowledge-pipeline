@@ -36,6 +36,13 @@ and added cookie-invalidation detection; gallery-dl 1.32.6 shipped no
 Instagram-specific changes in the same window. Neither changes the gallery-dl-
 for-Instagram recommendation above - yt-dlp here only ever handles bestaudio
 for non-Instagram URLs.)
+
+Ladder (2026-11-01): an Instagram `?img_index=N` that matches nothing retries the
+whole post, because gallery-dl exits 0 with no files and the post only looks empty.
+A gallery-dl failure falls to yt-dlp once, unless it was a refusal (429, rate limit,
+challenge, checkpoint, login) - those are respected, not retried from a second tool.
+NoMediaError marks yt-dlp saying a page has no media, which lets the worker try text
+capture for the hosts in `text_capture.media_text_fallback_domains`.
 """
 
 from __future__ import annotations
@@ -51,7 +58,7 @@ from typing import Protocol
 from urllib.parse import urlparse
 
 from reel_pipeline.config import Settings
-from reel_pipeline.models import DownloadResult, MediaType
+from reel_pipeline.models import IMAGE_SUFFIXES, VIDEO_SUFFIXES, DownloadResult, MediaType
 from reel_pipeline.validators import parse_img_index
 
 _INSTAGRAM_DOMAINS = ("instagram.com",)
@@ -63,6 +70,20 @@ class Downloader(Protocol):
 
 class DownloadError(RuntimeError):
     """Raised when a downloader backend fails to produce a usable media file."""
+
+
+class NoMediaError(DownloadError):
+    """yt-dlp reached the page and says there is nothing on it to download."""
+
+
+_NO_MEDIA_RE = re.compile(
+    r"unsupported url|no video|no media|nothing to download|requested format", re.IGNORECASE
+)
+
+
+def _yt_dlp_error(message: str, cause: Exception) -> DownloadError:
+    full = f"{message}: {cause}"
+    return NoMediaError(full) if _NO_MEDIA_RE.search(str(cause)) else DownloadError(full)
 
 
 class PostUnavailableError(DownloadError):
@@ -116,16 +137,16 @@ class YtDlpDownloader:
         # logged-in session the same way Instagram does. LinkedIn is the exception - see
         # this module's docstring: yt-dlp 2026.07.04 dropped LinkedIn login support, so
         # this option is inert there regardless of config. If configured, yt-dlp uses it
-        # for every domain it handles; if not, yt-dlp
+        # for every domain except download.anonymous_domains; if not, yt-dlp
         # attempts anonymous access and raises its own clear "log in required" error
         # for content that needs it.
-        self._add_cookies(ydl_opts)
+        self._add_cookies(ydl_opts, url)
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # pyright: ignore[reportArgumentType]
                 info = ydl.extract_info(url, download=True)
         except YtDlpDownloadError as exc:
-            raise DownloadError(f"yt-dlp failed to download {url!r}: {exc}") from exc
+            raise _yt_dlp_error(f"yt-dlp failed to download {url!r}", exc) from exc
 
         media_path = out_dir / "audio.mp3"
         if not media_path.exists():
@@ -160,18 +181,22 @@ class YtDlpDownloader:
             "noplaylist": True,
             "socket_timeout": 30,
         }
-        self._add_cookies(ydl_opts)
+        self._add_cookies(ydl_opts, url)
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # pyright: ignore[reportArgumentType]
                 ydl.extract_info(url, download=True)
         except YtDlpDownloadError as exc:
-            raise DownloadError(f"yt-dlp failed to download video for {url!r}: {exc}") from exc
-        videos = [p for p in sorted(out_dir.glob("video.*")) if p.suffix.lower() in _VIDEO_SUFFIXES]
+            raise _yt_dlp_error(f"yt-dlp failed to download video for {url!r}", exc) from exc
+        videos = [p for p in sorted(out_dir.glob("video.*")) if p.suffix.lower() in VIDEO_SUFFIXES]
         if not videos:
             raise DownloadError(f"yt-dlp produced no video file for {url!r}")
         return videos[0]
 
-    def _add_cookies(self, ydl_opts: dict) -> None:
+    def _add_cookies(self, ydl_opts: dict, url: str) -> None:
+        host = (urlparse(url).hostname or "").lower()
+        anonymous = self.settings.download.anonymous_domains
+        if any(host == d or host.endswith(f".{d}") for d in anonymous):
+            return
         cookies = self.settings.optional_ytdlp_cookies()
         if cookies is not None:
             cookie_kind, cookie_value = cookies
@@ -179,10 +204,6 @@ class YtDlpDownloader:
                 ydl_opts["cookiefile"] = cookie_value
             else:
                 ydl_opts["cookiesfrombrowser"] = (cookie_value,)
-
-
-_VIDEO_SUFFIXES = (".mp4", ".mov", ".webm", ".mkv")
-_IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
 
 
 def _video_has_audio_stream(path: Path) -> bool:
@@ -372,30 +393,19 @@ class GalleryDlDownloader:
         # addresses the same item a "?img_index=N" URL was deep-linking to, instead
         # of downloading (and then silently discarding) the whole carousel.
         img_index = parse_img_index(url)
-        if img_index is not None:
-            command += ["--range", str(max(img_index, 1))]
-
-        command.append(url)
-
-        try:
-            result = subprocess.run(  # noqa: S603 - fixed argv, no shell, url already validated upstream
-                command, capture_output=True, text=True, timeout=300
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise DownloadError(f"gallery-dl failed to run for {url!r}: {exc}") from exc
-
-        if result.returncode != 0:
-            detail = result.stderr.strip() or result.stdout.strip()
-            if _MEDIA_INFO_400.search(detail):
-                message = _instagram_api_message(command)
-                if message == _POST_GONE_MESSAGE:
-                    raise PostUnavailableError(f"Instagram post unavailable {url!r}: {message}")
-            raise DownloadError(f"gallery-dl failed to download {url!r}: {detail}")
+        if img_index is None:
+            self._run(command + [url], url)
+        else:
+            self._run(command + ["--range", str(max(img_index, 1)), url], url)
+            if not _has_media(out_dir):
+                # The index points past what gallery-dl sees (exit 0, no files). The
+                # post still has content, and a wrong picture beats no note.
+                self._run(command + [url], url)
 
         all_files = sorted(p for p in out_dir.rglob("*") if p.is_file())
         caption = _gallery_dl_caption(all_files)
-        all_videos = [p for p in all_files if p.suffix.lower() in _VIDEO_SUFFIXES]
-        images = [p for p in all_files if p.suffix.lower() in _IMAGE_SUFFIXES]
+        all_videos = [p for p in all_files if p.suffix.lower() in VIDEO_SUFFIXES]
+        images = [p for p in all_files if p.suffix.lower() in IMAGE_SUFFIXES]
 
         videos = [p for p in all_videos if _video_has_audio_stream(p)]
         video_set = set(videos)
@@ -434,6 +444,45 @@ class GalleryDlDownloader:
 
         raise DownloadError(f"gallery-dl produced no video or image files for {url!r}")
 
+    def _run(self, command: list[str], url: str) -> None:
+        try:
+            result = subprocess.run(  # noqa: S603 - fixed argv, no shell, url already validated upstream
+                command, capture_output=True, text=True, timeout=300
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise DownloadError(f"gallery-dl failed to run for {url!r}: {exc}") from exc
+
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip()
+            if _MEDIA_INFO_400.search(detail):
+                message = _instagram_api_message(command)
+                if message == _POST_GONE_MESSAGE:
+                    raise PostUnavailableError(f"Instagram post unavailable {url!r}: {message}")
+            raise DownloadError(f"gallery-dl failed to download {url!r}: {detail}")
+
+
+def _has_media(out_dir: Path) -> bool:
+    return any(
+        p.is_file() and p.suffix.lower() in VIDEO_SUFFIXES + IMAGE_SUFFIXES
+        for p in out_dir.rglob("*")
+    )
+
+
+# A refusal is respected, not retried from a second tool against the same account.
+_REFUSAL_RE = re.compile(
+    # A bare 401 or 403 can be a yt-dlp format id, and a bare "rate" a frame rate.
+    r"(?:http|status|code|error)\W*(?:error\W*|code\W*)?(?:401|403|429|451)\b"
+    r"|forbidden|unauthori[sz]ed|\brate.?limit|\brate.?exceed|too many requests"
+    r"|challenge|checkpoint|\blog(?:ged)?.?in\b|\bsign(?:ed)?.?in\b",
+    re.IGNORECASE,
+)
+
+
+def is_refusal(error: Exception, url: str) -> bool:
+    """Whether a download error reads as the site saying no. The submitted URL is left out,
+    since errors quote it and a post id of 403 or a path with "login" in it says nothing."""
+    return bool(_REFUSAL_RE.search(str(error).replace(url, "")))
+
 
 def _registrable_domain(netloc: str) -> str:
     host = netloc.split(":")[0].lower()
@@ -449,9 +498,19 @@ class DispatchingDownloader:
 
     def download(self, url: str, content_id: str) -> DownloadResult:
         domain = _registrable_domain(urlparse(url).netloc)
-        if any(domain == d or domain.endswith(f".{d}") for d in _INSTAGRAM_DOMAINS):
+        if not any(domain == d or domain.endswith(f".{d}") for d in _INSTAGRAM_DOMAINS):
+            return self._yt_dlp.download(url, content_id)
+        try:
             return self._gallery_dl.download(url, content_id)
-        return self._yt_dlp.download(url, content_id)
+        except PostUnavailableError:
+            raise
+        except DownloadError as gallery_error:
+            if is_refusal(gallery_error, url):
+                raise
+            try:
+                return self._yt_dlp.download(url, content_id)
+            except DownloadError as yt_dlp_error:
+                raise DownloadError(f"{gallery_error}; then {yt_dlp_error}") from gallery_error
 
     def download_video(self, url: str, content_id: str) -> Path:
         # gallery-dl (Instagram) already returns video files; only yt-dlp is audio-only.

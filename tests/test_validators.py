@@ -3,12 +3,15 @@ from __future__ import annotations
 import sys
 import types
 
+import pytest
+
 from reel_pipeline.config import DownloadConfig, Settings
 from reel_pipeline.validators import (
     classify_url_kind,
     compute_content_id,
     normalize_url,
     sanitize_url,
+    unwrap_redirect,
     validate_url,
 )
 
@@ -375,3 +378,55 @@ def test_classify_url_kind_drive_non_video_url_becomes_text(tmp_path, monkeypatc
     settings = make_settings(tmp_path, allowed=["drive.google.com"])
 
     assert classify_url_kind("https://drive.google.com/file/d/abc123/view", settings) == "text"
+
+
+@pytest.mark.parametrize(
+    ("wrapped", "target"),
+    [
+        (
+            "https://l.instagram.com/?u=https%3A%2F%2Fa.example%2Fb%3Fc%3D1&e=AT0x",
+            "https://a.example/b?c=1",
+        ),
+        ("https://l.facebook.com/l.php?u=https%3A%2F%2Fa.example%2Fb&h=AT0", "https://a.example/b"),
+        ("https://lm.facebook.com/l.php?u=https%3A%2F%2Fa.example%2Fb", "https://a.example/b"),
+        ("https://www.google.com/url?q=https%3A%2F%2Fa.example%2Fb&sa=D", "https://a.example/b"),
+        ("https://www.google.com/url?url=https%3A%2F%2Fa.example%2Fb", "https://a.example/b"),
+        (
+            "https://www.linkedin.com/safety/go?url=https%3A%2F%2Fa.example%2Fb",
+            "https://a.example/b",
+        ),
+        (
+            "https://www.youtube.com/redirect?q=https%3A%2F%2Fa.example%2Fb&v=1",
+            "https://a.example/b",
+        ),
+    ],
+)
+def test_unwrap_redirect_finds_the_real_link(wrapped, target):
+    assert unwrap_redirect(wrapped) == target
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.instagram.com/p/abc/?u=https%3A%2F%2Fa.example",
+        "https://www.google.com/search?q=https%3A%2F%2Fa.example",
+        "https://www.youtube.com/watch?v=abc",
+        "https://evil.example/l.php?u=https%3A%2F%2Fa.example",
+        "https://l.facebook.com/l.php?u=javascript%3Aalert(1)",
+        "https://l.facebook.com/l.php?u=file%3A%2F%2F%2Fetc%2Fpasswd",
+        "https://l.facebook.com/l.php",
+        "not a url",
+    ],
+)
+def test_unwrap_redirect_leaves_everything_else_alone(url):
+    assert unwrap_redirect(url) == url
+
+
+def test_unwrap_redirect_handles_a_wrapper_inside_a_wrapper():
+    inner = "https%253A%252F%252Fa.example%252Fb"
+    assert (
+        unwrap_redirect(
+            f"https://www.google.com/url?q=https%3A%2F%2Fl.facebook.com%2Fl.php%3Fu%3D{inner}"
+        )
+        == "https://a.example/b"
+    )

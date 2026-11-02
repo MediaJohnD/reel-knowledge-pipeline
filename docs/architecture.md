@@ -36,12 +36,13 @@ identical regardless of which branch produced the text.
 | --- | --- |
 | `config.py` | Typed `Settings`, loaded from `config/settings.yaml` + env overrides + secrets |
 | `models.py` | Pydantic models shared by every stage (the enrichment output contract lives here) |
-| `validators.py` | URL normalization, deterministic `content_id` hashing, allow/block-list checks |
-| `queue_manager.py` | Reads `queue.txt`, persists `state.json`, writes `needs-attention.txt` |
-| `downloader.py` | Media download - dispatches Instagram to gallery-dl (cookie-authenticated), everything else (YouTube, Facebook, LinkedIn, TikTok, X, Vimeo, Google Drive) to yt-dlp, optionally cookie-authenticated. Detects photo-only posts and returns `media_type=IMAGE` with all carousel image paths. A downloaded ".mp4" with no audio track (Instagram sometimes serves a "photo" as a silent motion-photo clip) is probed via `ffprobe` and reclassified as `IMAGE` too - a frame is extracted via `ffmpeg` so it goes through the vision path instead of failing transcription with "no audio track" |
+| `validators.py` | URL normalization, deterministic `content_id` hashing, allow/block-list checks, redirect-wrapper unwrapping (`unwrap_redirect`), private-target check |
+| `queue_manager.py` | Reads `queue.txt` (bare domains, `<url>`, markdown links, several links per paste), persists `state.json`, writes `needs-attention.txt` |
+| `downloader.py` | Media download - dispatches Instagram to gallery-dl (cookie-authenticated), everything else (YouTube, Facebook, LinkedIn, TikTok, X, Vimeo, Google Drive) to yt-dlp, optionally cookie-authenticated. Detects photo-only posts and returns `media_type=IMAGE` with all carousel image paths. A downloaded ".mp4" with no audio track (Instagram sometimes serves a "photo" as a silent motion-photo clip) is probed via `ffprobe` and reclassified as `IMAGE` too - a frame is extracted via `ffmpeg` so it goes through the vision path instead of failing transcription with "no audio track". Instagram retries the whole post on an empty `--range` result and falls to yt-dlp once unless the failure reads as a refusal. `NoMediaError` marks a post with nothing to download, for the worker's text fallback |
 | `transcriber.py` | Pluggable transcription backends (local faster-whisper / OpenAI API) - video/audio only |
 | `image_describer.py` | Turns photo posts/carousels into a text description via a vision-capable LLM (`config/prompts/describe_image_post.md`), producing the same `TranscriptResult` shape as `transcriber.py`. A carousel longer than `image_description.max_images_per_call` is split across several vision calls and the descriptions joined (`[Images x-y of n]`, mirroring `worker._transcribe_media_paths`' `[Clip i/n]`) - one request per image-batch keeps the prompt inside the model's context window |
-| `text_fetcher.py` | Text-content capture for non-media sources - GitHub (public REST API: repo metadata + README, or a specific file for a `blob/` URL), Notion (its own internal JSON API, `loadPageChunk` - see below), Drive documents (unauthenticated direct-download endpoint - see below), everything else via plain HTTP GET + `trafilatura` extraction (no JS execution). Produces the same `TranscriptResult` shape `transcriber.py`/`image_describer.py` do |
+| `text_fetcher.py` | Text-content capture for non-media sources - GitHub (public REST API: repo metadata + README, or a specific file for a `blob/` URL), Notion (its own internal JSON API, `loadPageChunk` - see below), Drive documents (unauthenticated direct-download endpoint - see below), everything else via a streamed guarded GET routed on what came back: HTML through `trafilatura`, then the render fallback, then title and description; documents and text; direct media, embeds and HLS raise `MediaFound` for the worker. `fetch_archived` reads a Wayback snapshot. Produces the same `TranscriptResult` shape `transcriber.py`/`image_describer.py` do |
+| `document_text.py` | Binary and feed extraction with no network: PDF (`pypdf`), DOCX, PPTX, XLSX, EPUB, ODF, RSS and Atom, with a zip-bomb guard |
 | `enricher.py` | Calls an LLM (via `llm_client.py`) with `config/prompts/enrich_transcript.md`, parses `EnrichmentResult` |
 | `obsidian_writer.py` | Deterministic markdown note writer |
 | `skill_writer.py` | Conditional `SKILL.md` generator for high-signal content |
@@ -148,7 +149,9 @@ or webhook - converges on `state.json` before any processing begins, so:
   separate, public-links-only path (GitHub's REST API for `github.com`,
   Notion's own internal JSON API for `notion.so`/`notion.site`/`notion.com`,
   plain HTTP GET + `trafilatura` extraction for everything else) - no OAuth,
-  no API keys, no browser automation, no JS execution. As of 2026-08-10 this
+  no API keys, no cookies. JS only runs in the read-only render fallback. Every
+  fetch, including embeds, HLS segments and Wayback, goes through the
+  private-target guard. As of 2026-08-10 this
   is a catch-all (`classify_url_kind()` in `validators.py`), not an
   enumerated allow-list - see `CLAUDE.md`'s 2026-08-10 entry for why. Notion
   specifically needed its own fetcher (`NotionFetcher`) rather than the

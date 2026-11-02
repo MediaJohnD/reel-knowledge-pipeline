@@ -93,6 +93,32 @@ a failure, to keep Instagram volume low. Progress is in
 `data/review/carousel-recapture.json`. A failed post also adds a line to
 `needs-attention.txt`, as any failed item does.
 
+## Monthly link and repo audits
+
+`run-review.bat` runs both audits after each review. Each one does nothing until
+its last run is 30 days old, so no separate scheduled task is needed.
+
+- `scripts/recheck_links.py` requests the URLs in every reel note and writes
+  `data/review/link_health.json` plus a dated `Reels Link Recheck` note in the
+  Reels folder. It skips login-walled social hosts, image assets, GitHub, and URLs
+  carrying a token. `live` means the URL answered, not that its content still
+  matches the note. `answers` means an API endpoint answered 401 or 405 (it exists
+  and wants a key or another method), or an API base URL such as `/api/v1` answered
+  404 because it has no route of its own. `blocked` means the site refuses scripts, so
+  its state is unknown, and the audit does not pose as a browser to find out.
+  Notes citing 200 or more URLs count as link directories and are reported apart
+  from the reels.
+- `scripts/vet_repos.py` checks every GitHub repo named in a note through the API
+  and writes `data/review/repo_vetting.json` plus a dated `Reel Repos Vetting` note
+  in `20-Resources/comparisons/`. It never clones, installs, or runs anything. A
+  `review` grade means a serious pattern matched and someone has to read it. Record
+  the decision in `data/review/repo_vetting_overrides.json`. It stands until the
+  flags change.
+
+Both notes are read-only toward the reel notes. Run either by hand with no flags to
+force a fresh run. If a run misses, the Loop Digest marks that audit STALE at 45
+days, and the session brief shows it.
+
 ## Ingesting content
 
 **Queue file (manual paste):** append one URL per line to
@@ -101,6 +127,13 @@ a failure, to keep Instagram volume low. Progress is in
 ```bash
 uv run python -m reel_pipeline.cli run-once
 ```
+
+The queue file and the webhook accept the same paste forms: a bare
+`domain.tld/path`, `<https://...>`, a markdown link, or text holding several
+links (each one becomes its own item). Redirect wrappers (`l.instagram.com`,
+`l.facebook.com`, `lm.facebook.com`, `google.com/url`,
+`linkedin.com/safety/go`, `youtube.com/redirect`) are unwrapped first, and the
+real target is what gets validated.
 
 **Webhook:** start the server, then POST to it (e.g. from a Shortcuts
 share-sheet action, a phone automation, or curl):
@@ -159,7 +192,8 @@ re-runs the same CLI command.
 5. On failure at any stage: `status` becomes `failed`, the error is recorded
    in `state.json`, and a line is appended to `needs-attention.txt`. The item
    stays actionable and is retried on a capped exponential backoff schedule -
-   see the retry behavior note below for details.
+   see the retry behavior note below for details. Before an item ends as an
+   error, the legitimate fallbacks run: see "Fallbacks before an error" below.
 
 ## Guardrails you should know about
 
@@ -173,6 +207,10 @@ re-runs the same CLI command.
   tooling. Toggle it off with `text_capture.render_fallback.enabled: false`
   in `config/settings.yaml`. Requires a one-time
   `uv run playwright install chromium` after `uv sync`.
+- **A site that blocks automation is respected.** HTTP 403/401/429 and
+  challenge pages never escalate to the headless render or the Wayback archive,
+  and there are no unlockers or identity changes beyond the existing browser
+  user agent then bot user agent order.
 - **Instagram is a deliberate, scoped exception, not the default-open case.**
   `CLAUDE.md`'s baseline guardrail is "no Instagram by default"; this project
   explicitly enables it via `gallery-dl` for low-volume, personal use with the
@@ -297,7 +335,8 @@ One-time setup:
 2. `uv run python -m reel_pipeline.cli comment-queue login`. A Chrome window
    opens; log into Instagram by hand, then press Enter in the terminal.
 
-Working the queue (run it yourself; nothing schedules it):
+Working the queue (the "Reel Comment Queue" task runs it daily; you can also run
+it yourself, and the rate limits apply either way):
 - `uv run python -m reel_pipeline.cli comment-queue run`: a dry-run. It opens each
   reel and reports what it would do, with no follows, comments or clicks.
 - `... comment-queue run --apply --max 1`: this one really acts. It follows the
@@ -308,6 +347,12 @@ Working the queue (run it yourself; nothing schedules it):
   running it more often never goes faster than the limits in `comment_gate:`.
 - Exit code 2 means a halt: Instagram showed a challenge or an "action blocked"
   dialog. Everything stops for 24 h. Open the profile by hand and resolve it.
+- A reel whose DM never brought a link becomes `dm-timeout`. Each `--apply` run
+  re-reads up to 10 of those threads, each one weekly and at most 6 times. These
+  are reads only and use no write slots.
+- A bot's quick-reply buttons don't render on instagram.com. The queue note lists
+  those threads under `Tap in the Instagram app`. Tap the button in the app, and
+  the next run picks up the link.
 - The next `review_new_reels.py --apply` re-reviews reels whose links arrived.
   `review_new_reels.py --backfill-comment-gates` lists the older gated `skip`
   reels, and `--apply` re-reviews them.
@@ -377,17 +422,73 @@ this only ever does an unauthenticated, no-JS HTTP GET:
   Drive link could be a video (handled by the media/yt-dlp path, see
   "Google Drive setup" below) or a document (text, markdown, PDF, PPT, ...) -
   the pipeline runs a quick check to tell which before fetching either way,
-  so this needs no separate setup. Text/markdown documents work directly;
-  binary formats (PDF/PPTX/DOCX) aren't parsed yet and fail with a clear
-  error rather than garbage output. See
+  so this needs no separate setup. Text, markdown and the binary formats
+  listed below all work, and a large public file's virus-scan page is followed
+  through its confirm form. See
   `docs/superpowers/specs/2026-08-10-drive-text-capture-design.md`.
-- **Everything else** (Google Docs, Airtable, blog posts, GitHub Pages,
-  personal knowledge links, ...): fetches the page directly and extracts the
-  main text content with `trafilatura`. Only works for pages that actually
-  render their content server-side - a client-rendered app shell (common on
-  Airtable and similar SPA-heavy sites) or a private/login-gated page fails
-  with a clear "produced no usable text" error rather than silently producing
-  an empty or boilerplate note.
+- **Everything else** (Google Docs and Sheets, Airtable, blog posts, gists,
+  GitHub Pages, personal knowledge links, ...): fetches the URL directly and
+  routes on what actually came back (magic bytes, then content type, then URL
+  suffix):
+  - HTML: main text extracted with `trafilatura`. A client-rendered app shell
+    goes to the headless fallback. A private or login-gated page fails with a
+    clear error rather than producing a boilerplate note.
+  - Documents: PDF, DOCX, PPTX, XLSX, EPUB, ODT/ODS/ODP. The file is attached
+    in the vault next to the note. A scanned PDF with no text layer goes to
+    the vision path. Capped by `text_capture.max_document_mb` (default 100).
+  - Text and data: CSV, TSV, plain text, markdown, YAML, pretty-printed JSON,
+    and RSS or Atom feeds.
+  - Direct audio, video and image files download to the transcribe or vision
+    path, capped by `text_capture.max_media_mb` (default 2048).
+  - A thin page (under about 400 chars) with embedded media: a direct file, an
+    iframe or `og:video` on an allow-listed host, one hop through an HTML
+    player, or an HLS playlist. HLS is downloaded through the guarded client at
+    the lowest bandwidth, never handed to yt-dlp. Encrypted HLS is refused.
+
+### Fallbacks before an error
+
+Each fallback only runs when the one before it had nothing to offer:
+
+- **Thin page, render failed or off:** a note from the title and description
+  (at least 60 chars), labeled "Only the page's title and description were
+  available". Pages with neither still fail, with a clear error. Not used after
+  a challenge page or on login text.
+- **HTTP 404/410:** the Wayback Machine at once, and the note says so ("Archived
+  copy from YYYY-MM-DD; the live page returned HTTP 404"). **5xx or connection
+  errors:** normal retries, then the archive on the last attempt. If there's no
+  snapshot, or the archive itself refuses the lookup, the error names both
+  statuses. A URL whose query has token-like params is never sent to the archive.
+  Snapshots repeat the original page's `Content-Encoding` over bytes that may not
+  be compressed, so archived bodies are read raw and gunzipped only if the bytes
+  are really gzip.
+- **GitHub or Notion capture failed:** generic capture, keeping both messages.
+- **Instagram:** an empty result for one carousel slide retries the whole post.
+  A gallery-dl failure tries yt-dlp once, unless it reads as a rate limit,
+  challenge, checkpoint or login.
+- **Media host with no media** (text post on `x.com`, `twitter.com`,
+  `facebook.com`, `fb.watch`, `linkedin.com`, `reddit.com`; the list is
+  `text_capture.media_text_fallback_domains`): text capture, needing at least
+  200 chars. "Post unavailable" stays terminal.
+
+The media allow-list (`download.allowed_domains`) gained `loom.com`, `reddit.com`, `v.redd.it`, `soundcloud.com`, `twitch.tv`,
+`rumble.com`, `dailymotion.com`, `ted.com`, `streamable.com`, `wistia.com` and
+`wistia.net` on 2026-11-01. They need no setup. `download.anonymous_domains` lists
+the same hosts: `REEL_YTDLP_COOKIES_FILE` and `REEL_YTDLP_COOKIES_BROWSER` never
+go to them, even when set.
+
+Three of them fail anonymously today, checked live on 2026-11-01. These are limits, not
+bugs, so requeueing won't help unless the site changes:
+
+- **Reddit, `v.redd.it`:** yt-dlp asks for an account, and the page blocks
+  automation. Cookies stay off, because no Reddit link was on record as of
+  2026-11-01. Reconsider if they start arriving.
+- **Dailymotion:** yt-dlp needs impersonation tooling (`curl_cffi`), which this
+  pipeline refuses as anti-detection.
+- **Rumble:** 403 to yt-dlp and to text capture.
+
+Each tab of a Google Sheet is its own item (`gid=0` is the sheet itself). A thin
+rendered page (under 400 chars) that is only the site's own error message is
+rejected and falls back to page metadata, so it does not become a note.
 
 None of this requires an environment variable or credential. As of 2026-08-10
 this is a catch-all by default (see `CLAUDE.md`'s 2026-08-10 entry) -
@@ -446,6 +547,10 @@ device/browser, not just iOS.
 | `TranscriptionError: faster-whisper is not installed` | Run `uv sync --extra local-whisper`, or switch `REEL_TRANSCRIPTION_BACKEND=openai` |
 | Note not appearing where expected | Check `REEL_VAULT_DIR` / `paths.vault_dir` in `config/settings.yaml` |
 | Item stuck retrying every run | Check its `error` field in `data/inbox/state.json` and `needs-attention.txt` |
+| `returned HTTP 404; no usable archived copy (...)` | The page is gone and the archive had no snapshot, or refused the lookup (the bracket says which, for example `archive lookup returned HTTP 429`). A later retry may get through; an archive refusal isn't worked around |
+| `produced no usable text even after rendering` | A thin page with no description of at least 60 chars, so there was nothing to keep. Expected on API doc shells such as Redoc pages |
+| `HLS stream ... is encrypted` | The stream uses `EXT-X-KEY`. Refused on purpose: no DRM or key handling. When the stream came from a page rather than a submitted `.m3u8` URL, the page carries on to the render and title-and-description fallbacks |
+| `is larger than the N MB limit` | The file passed the size cap. Raise `text_capture.max_document_mb` or `max_media_mb` in `config/settings.yaml` if you really want the file |
 | `PostUnavailableError`: Instagram says the post is gone | The post was deleted or hidden, and Instagram's API answered "Media not found or unavailable". The item gives up on the first attempt. Any other Instagram HTTP 400 (checkpoint, useragent mismatch) stays retryable, because it means account trouble rather than a missing post |
 | Item's `status` is `failed_permanent` and it never gets retried | Expected once `retry.max_attempts` is exhausted - fix the underlying cause, then run `uv run python -m reel_pipeline.cli retry <content_id>` (or `--all-failed-permanent`) |
 | `state.json has grown large enough that its per-mutation full-rewrite cost may start to matter` in the logs | Informational, not an error - see "Known limitations" below |

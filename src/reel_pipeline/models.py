@@ -8,6 +8,12 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+# File suffixes for each media kind, shared so the downloader, worker and text
+# capture can't disagree about what a file is.
+VIDEO_SUFFIXES = (".mp4", ".mov", ".webm", ".mkv", ".m4v", ".avi", ".ts")
+AUDIO_SUFFIXES = (".mp3", ".m4a", ".wav", ".ogg", ".opus", ".flac", ".aac")
+IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".heic", ".gif", ".avif", ".bmp")
+
 
 class ItemStatus(StrEnum):
     """Lifecycle status of a queued content item, persisted in state.json."""

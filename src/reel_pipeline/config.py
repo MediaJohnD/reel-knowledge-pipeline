@@ -170,6 +170,8 @@ class ImageDescriptionConfig(BaseModel):
 class DownloadConfig(BaseModel):
     allowed_domains: list[str] = Field(default_factory=list)
     blocked_domains: list[str] = Field(default_factory=list)
+    # REEL_YTDLP_COOKIES_* never go to these hosts, even when set.
+    anonymous_domains: list[str] = Field(default_factory=list)
 
 
 class RenderFallbackConfig(BaseModel):
@@ -188,6 +190,22 @@ class TextCaptureConfig(BaseModel):
     # only for explicitly excluding a domain from that catch-all.
     blocked_domains: list[str] = Field(default_factory=list)
     render_fallback: RenderFallbackConfig = Field(default_factory=RenderFallbackConfig)
+    # Size caps for what text capture will pull down. Going over either one raises
+    # a clear TextFetchError instead of filling the disk.
+    max_document_mb: int = Field(default=100, ge=1)
+    max_media_mb: int = Field(default=2048, ge=1)
+    # Hosts where a post can be text with no media at all. The worker tries text
+    # capture for these when the media path finds nothing (see worker.py).
+    media_text_fallback_domains: list[str] = Field(
+        default_factory=lambda: [
+            "x.com",
+            "twitter.com",
+            "facebook.com",
+            "fb.watch",
+            "linkedin.com",
+            "reddit.com",
+        ]
+    )
 
 
 class CommentGateConfig(BaseModel):
@@ -209,6 +227,12 @@ class CommentGateConfig(BaseModel):
     first_week_follow_wait_seconds: tuple[float, float] = (1200, 5400)
     dm_min_wait_seconds: int = 120
     dm_timeout_hours: int = 48
+    # Read-only second looks at timed-out threads, for links that came late or after
+    # the owner tapped a bot button in the app. Never presses or types anything.
+    dm_recheck_per_run: int = Field(default=10, ge=0)  # 0 turns it off
+    dm_recheck_days: int = Field(default=7, ge=1)
+    dm_recheck_max: int = Field(default=6, ge=0)
+    dm_recheck_gap_seconds: tuple[float, float] = (20, 60)
     halt_hours: int = 24
     max_attempts: int = 3
     max_button_presses: int = 2

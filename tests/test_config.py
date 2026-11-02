@@ -180,3 +180,32 @@ def test_retry_config_overridable_from_yaml(tmp_path):
 
     assert settings.retry.max_attempts == 3
     assert settings.retry.backoff_schedule_minutes == [2, 10]
+
+
+def test_more_formats_config_defaults_and_allow_list():
+    settings = load_settings(config_path=DEFAULT_SETTINGS_PATH, env={})
+
+    for host in (
+        "loom.com",
+        "reddit.com",
+        "v.redd.it",
+        "soundcloud.com",
+        "twitch.tv",
+        "rumble.com",
+        "dailymotion.com",
+        "ted.com",
+        "streamable.com",
+        "wistia.com",
+        "wistia.net",
+    ):
+        assert host in settings.download.allowed_domains
+    assert settings.text_capture.max_document_mb == 100
+    assert settings.text_capture.max_media_mb == 2048
+    assert set(settings.text_capture.media_text_fallback_domains) == {
+        "x.com",
+        "twitter.com",
+        "facebook.com",
+        "fb.watch",
+        "linkedin.com",
+        "reddit.com",
+    }

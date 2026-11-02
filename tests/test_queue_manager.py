@@ -4,6 +4,8 @@ import sys
 import types
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from reel_pipeline.config import DownloadConfig, Settings, TextCaptureConfig
 from reel_pipeline.models import ItemStatus, QueueSource
 from reel_pipeline.queue_manager import QueueManager
@@ -736,3 +738,177 @@ def test_text_share_is_staged_as_transcribed(tmp_path):
         (qm.settings.tmp_dir / record.content_id / "transcript.json").read_text(encoding="utf-8")
     )
     assert saved.text == "Farmers market Saturday 9am at the park"
+
+
+def _urls(manager: QueueManager) -> list[str]:
+    return [record.url for record in manager.load_state().values()]
+
+
+def _manager(tmp_path) -> QueueManager:
+    return QueueManager(
+        Settings(project_root=tmp_path, download=DownloadConfig(allowed_domains=["youtube.com"]))
+    )
+
+
+@pytest.mark.parametrize(
+    ("pasted", "expected"),
+    [
+        ("example.com/some/page", "https://example.com/some/page"),
+        ("www.example.com", "https://www.example.com"),
+        ("<https://example.com/a>", "https://example.com/a"),
+        ("[A title](https://example.com/a)", "https://example.com/a"),
+        ("[Wiki](https://example.com/Foo_(bar))", "https://example.com/Foo_(bar)"),
+        ("see https://example.com/Foo_(bar).", "https://example.com/Foo_(bar)"),
+        ("(see https://example.com/a).", "https://example.com/a"),
+        ("Check this https://example.com/a out", "https://example.com/a"),
+        ("https://example.com/a", "https://example.com/a"),
+    ],
+)
+def test_pasted_forms_register_the_link(tmp_path, pasted, expected):
+    record = _manager(tmp_path).add_url(pasted, QueueSource.WEBHOOK)
+
+    assert record.url == expected
+    assert record.status is ItemStatus.PENDING
+
+
+def test_a_sentence_with_no_link_is_not_read_as_a_domain(tmp_path):
+    record = _manager(tmp_path).add_url("remember to call the vet.", QueueSource.WEBHOOK)
+
+    assert record.status is ItemStatus.BLOCKED
+
+
+def test_redirect_wrappers_register_their_target(tmp_path):
+    record = _manager(tmp_path).add_url(
+        "https://l.instagram.com/?u=https%3A%2F%2Fexample.com%2Fa&e=x", QueueSource.WEBHOOK
+    )
+
+    assert record.url == "https://example.com/a"
+
+
+def test_a_wrapped_blocked_target_is_still_blocked(tmp_path):
+    manager = QueueManager(
+        Settings(
+            project_root=tmp_path,
+            download=DownloadConfig(
+                allowed_domains=["youtube.com"], blocked_domains=["bad.example"]
+            ),
+        )
+    )
+
+    record = manager.add_url(
+        "https://l.facebook.com/l.php?u=https%3A%2F%2Fbad.example%2Fa", QueueSource.WEBHOOK
+    )
+
+    assert record.status is ItemStatus.BLOCKED
+
+
+def test_a_wrapped_private_target_is_still_refused(tmp_path):
+    record = _manager(tmp_path).add_url(
+        "https://l.facebook.com/l.php?u=http%3A%2F%2F127.0.0.1%3A8000%2Fadmin", QueueSource.WEBHOOK
+    )
+
+    assert record.status is ItemStatus.BLOCKED
+
+
+def test_add_url_registers_every_link_and_returns_the_first(tmp_path):
+    manager = _manager(tmp_path)
+
+    record = manager.add_url(
+        "two good ones: https://example.com/a and https://example.com/b, plus [c](https://example.com/c)",
+        QueueSource.WEBHOOK,
+    )
+
+    assert record.url == "https://example.com/a"
+    assert _urls(manager) == [
+        "https://example.com/a",
+        "https://example.com/b",
+        "https://example.com/c",
+    ]
+
+
+def test_bare_links_in_a_mixed_paste_are_kept_in_order(tmp_path):
+    manager = _manager(tmp_path)
+
+    manager.add_url(
+        "first https://example.com/a then example.org/b, and www.example.net too",
+        QueueSource.WEBHOOK,
+    )
+
+    assert _urls(manager) == [
+        "https://example.com/a",
+        "https://example.org/b",
+        "https://www.example.net",
+    ]
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        "built with Node.js/TypeScript and e.g. Vue.js",
+        "write to me@example.com/inbox please",
+        "open docs/runbook.md and src/app/main.py today",
+        "version 1.5/2 of it, etc.",
+    ],
+)
+def test_words_that_only_look_like_domains_are_not_links(tmp_path, words):
+    manager = _manager(tmp_path)
+
+    manager.add_url(f"{words} https://example.com/a", QueueSource.WEBHOOK)
+
+    assert _urls(manager) == ["https://example.com/a"]
+
+
+def test_add_url_counts_a_repeated_link_once(tmp_path):
+    manager = _manager(tmp_path)
+
+    manager.add_url("https://example.com/a https://example.com/a", QueueSource.WEBHOOK)
+
+    assert _urls(manager) == ["https://example.com/a"]
+
+
+def test_queue_file_line_with_several_links_registers_them_all(tmp_path):
+    manager = _manager(tmp_path)
+    manager.queue_file.write_text(
+        "https://example.com/a https://example.com/b\nexample.com/c\n", encoding="utf-8"
+    )
+
+    new = manager.sync_queue_file_into_state()
+
+    assert [record.url for record in new] == [
+        "https://example.com/a",
+        "https://example.com/b",
+        "https://example.com/c",
+    ]
+    assert manager.queue_file.read_text(encoding="utf-8") == ""
+
+
+def test_a_url_carrying_another_url_stays_one_link(tmp_path):
+    manager = _manager(tmp_path)
+
+    manager.add_url("https://example.com/share?to=https://other.example/x", QueueSource.WEBHOOK)
+
+    assert _urls(manager) == ["https://example.com/share?to=https://other.example/x"]
+
+
+def test_two_tabs_of_one_sheet_are_two_items(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    qm = QueueManager(settings)
+    sheet = "https://docs.google.com/spreadsheets/d/1Sheet/edit"
+    first = qm.add_url(f"{sheet}?gid=77", source=QueueSource.WEBHOOK)
+    assert qm.add_url(f"{sheet}?gid=77&usp=sharing", source=QueueSource.WEBHOOK).content_id == (
+        first.content_id
+    )
+    assert qm.add_url(f"{sheet}#gid=77", source=QueueSource.WEBHOOK).content_id == first.content_id
+    second_tab = qm.add_url(f"{sheet}#gid=88", source=QueueSource.WEBHOOK)
+    assert second_tab.content_id != first.content_id
+    assert len(qm.load_state()) == 2
+
+
+def test_a_sheets_first_tab_is_the_sheet_itself(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    qm = QueueManager(settings)
+    sheet = "https://docs.google.com/spreadsheets/d/1Sheet/edit"
+    first = qm.add_url(sheet, source=QueueSource.WEBHOOK)
+    for variant in (f"{sheet}?gid=0", f"{sheet}#gid=0", f"{sheet}?usp=sharing"):
+        assert qm.add_url(variant, source=QueueSource.WEBHOOK).content_id == first.content_id
+    assert len(qm.load_state()) == 1
