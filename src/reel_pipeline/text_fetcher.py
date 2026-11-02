@@ -543,8 +543,10 @@ class DriveFetcher:
     `attachments/` folder and embedded in the note, with best-effort text
     extraction (document_text.binary_text). Drive's "can't scan this file for
     viruses" interstitial, served instead of the raw bytes for files too large for
-    that scan (roughly >25MB), carries a form whose hidden fields are the real
-    download link. That one follow-up GET is made if the form points at Google and
+    that scan, carries a form whose hidden fields are the real download link (seen
+    live on a 499 MB file; the size where it starts isn't documented or measured,
+    and anything past `max_document_mb` is refused after following it either way).
+    That one follow-up GET is made if the form points at Google and
     names this file; otherwise, or if the interstitial comes back, it raises rather
     than becoming note content.
 
