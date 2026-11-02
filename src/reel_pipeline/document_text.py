@@ -65,9 +65,7 @@ _FEED_TYPES = ("application/rss+xml", "application/atom+xml")
 _XML_TYPES = ("text/xml", "application/xml")
 _TEXTY_APPLICATION_TYPES = ("application/yaml", "application/x-yaml", "application/csv")
 
-_HTML_START_RE = re.compile(
-    rb"\s*(?:<!--.*?-->\s*)*<(?:!doctype\s+html|html|head|body)\b", re.I | re.S
-)
+_HTML_START_RE = re.compile(rb"<(?:!doctype\s+html|html|head|body)\b", re.I)
 _TAG_RE = re.compile(r"<[^>]+>")
 _CDATA_RE = re.compile(r"<!\[CDATA\[(.*?)\]\]>", re.DOTALL)
 _DOCTYPE_RE = re.compile(r"<!DOCTYPE[^>\[]*(?:\[.*?\])?\s*>", re.DOTALL | re.IGNORECASE)
@@ -78,7 +76,15 @@ _BLOCK_END_RE = re.compile(r"</(?:p|div|h[1-6]|li|tr|section|article|blockquote)
 
 
 def looks_like_html(head: bytes) -> bool:
-    return bool(_HTML_START_RE.match(head.removeprefix(codecs.BOM_UTF8)[:4096]))
+    # A loop, not a regex: a repeated comment group backtracks exponentially on
+    # bytes the server chooses, and 200 of them took 29 s.
+    rest = head.removeprefix(codecs.BOM_UTF8)[:4096].lstrip()
+    while rest.startswith(b"<!--"):
+        end = rest.find(b"-->", 4)
+        if end < 0:
+            return False
+        rest = rest[end + 3 :].lstrip()
+    return bool(_HTML_START_RE.match(rest))
 
 
 def _decodes_as_text(head: bytes) -> bool:

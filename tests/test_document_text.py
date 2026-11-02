@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 import json
 import struct
+import subprocess
+import sys
 import zipfile
 import zlib
 
@@ -16,10 +18,40 @@ from reel_pipeline.document_text import (
     binary_text,
     classify_response,
     feed_text,
+    looks_like_html,
     pdf_images,
     pretty_json,
     strip_xml_tags,
 )
+
+
+@pytest.mark.parametrize(
+    ("head", "expected"),
+    [
+        (b"<html><body>", True),
+        (b"\xef\xbb\xbf  <!DOCTYPE html>", True),
+        (b"<!-- one -->\n<!-- two --> <body>", True),
+        (b"<!---->\n<head>", True),
+        (b"<!-- never closed <html>", False),
+        (b"<!-- one --> not a tag <html>", False),
+        (b"<htmlish>", False),
+        (b"plain text", False),
+    ],
+)
+def test_looks_like_html(head: bytes, expected: bool) -> None:
+    assert looks_like_html(head) is expected
+
+
+def test_looks_like_html_is_fast_on_many_comment_markers() -> None:
+    # A server picks these bytes. In a subprocess so a slow match fails here, not hangs the suite.
+    code = (
+        "from reel_pipeline.document_text import looks_like_html\n"
+        "print(looks_like_html(b'<!--' + b'--><!--' * 580))\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=20, check=True
+    )
+    assert done.stdout.strip() == "False"
 
 
 def _zip(files: dict[str, str]) -> bytes:

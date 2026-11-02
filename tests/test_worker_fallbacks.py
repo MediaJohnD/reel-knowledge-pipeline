@@ -189,7 +189,7 @@ def test_media_found_url_that_does_not_validate_never_reaches_a_downloader(tmp_p
     assert downloader.calls == []
     record = _only_record(pipeline)
     assert record.status is not ItemStatus.DONE
-    assert "evil.example.net" in (record.error or "")
+    assert "refusing to download unvalidated media" in (record.error or "")
 
 
 def test_silent_clip_retry_uses_the_found_url_not_the_original(tmp_path):
