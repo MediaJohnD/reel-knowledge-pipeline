@@ -30,7 +30,12 @@ from filelock import Timeout as FileLockTimeout
 
 from reel_pipeline.config import Settings
 from reel_pipeline.models import ItemStage, ItemStatus, QueueSource, StateRecord, TranscriptResult
-from reel_pipeline.validators import classify_url_kind, sanitize_url, validate_url
+from reel_pipeline.validators import (
+    classify_url_kind,
+    sanitize_url,
+    unwrap_redirect,
+    validate_url,
+)
 
 _T = TypeVar("_T")
 
@@ -217,7 +222,13 @@ class QueueManager:
         """Validate and register a single URL directly into state.json (webhook path)."""
 
         def mutate(state: dict[str, StateRecord]) -> StateRecord:
-            return self._register(url, source, state)
+            # A paste can hold several links. Each gets registered; the caller hears
+            # about the first.
+            first, *extras = _embedded_urls(url)
+            record = self._register(first, source, state)
+            for extra in extras:
+                self._register(extra, source, state)
+            return record
 
         return self._locked_mutate(mutate)
 
@@ -272,7 +283,7 @@ class QueueManager:
     def _register(
         self, url: str, source: QueueSource, state: dict[str, StateRecord]
     ) -> StateRecord:
-        url = _embedded_url(url)
+        url = unwrap_redirect(url)
         result = validate_url(url, self.settings)
         now = datetime.now(UTC)
 
@@ -354,10 +365,11 @@ class QueueManager:
                 if not stripped or stripped.startswith("#"):
                     kept_lines.append(line)
                     continue
-                before = set(state.keys())
-                record = self._register(stripped, QueueSource.QUEUE_FILE, state)
-                if record.content_id not in before:
-                    newly_registered.append(record)
+                for url in _embedded_urls(stripped):
+                    before = set(state.keys())
+                    record = self._register(url, QueueSource.QUEUE_FILE, state)
+                    if record.content_id not in before:
+                        newly_registered.append(record)
                 # Line is consumed either way: state.json (or needs-attention.txt
                 # for blocked/invalid URLs) is now the durable record of this URL.
 
@@ -424,15 +436,56 @@ class QueueManager:
         ]
 
 
-_URL_IN_TEXT = re.compile(r"https?://\S+")
+# A bare domain inside other words needs a path or "www.", so "Node.js" and "e.g." stay words.
+_URL_IN_TEXT = re.compile(
+    r"https?://[^\s<>]+"
+    r"|(?<![\w@./:-])www\.(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[/?][^\s<>]*)?"
+    r"|(?<![\w@./:-])(?:[a-z0-9-]+\.)+[a-z]{2,}/[^\s<>]*",
+    re.IGNORECASE,
+)
+# Reads as a filename or language in a sentence far more often than as a site.
+_FILE_LIKE_ENDINGS = frozenset(
+    {"js", "jsx", "ts", "tsx", "py", "md", "txt", "json", "yaml", "yml", "html", "css", "sh", "exe"}
+)
+# [label](target), allowing one level of parentheses inside the target.
+_MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\((https?://(?:[^\s()]|\([^\s()]*\))+)\)", re.IGNORECASE)
+_BARE_DOMAIN = re.compile(r"(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[/?]\S*)?", re.IGNORECASE)
+_TRAILING_PUNCTUATION = ".,;:!?]}>\"'"
 
 
-def _embedded_url(text: str) -> str:
-    """The first link inside shared text ("check this https://..."), else the text as-is."""
-    if text.strip().lower().startswith(("http://", "https://")):
-        return text
-    match = _URL_IN_TEXT.search(text)
-    return match.group().rstrip(".,;:!?)]}>\"'") if match else text
+def _embedded_urls(text: str) -> list[str]:
+    """Each distinct link in shared text, in order. Handles a bare `domain.tld/path`,
+    `<https://...>` and markdown links. With no link at all, the text as-is, so it gets
+    refused and recorded the way anything else invalid does.
+    """
+    stripped = text.strip()
+    if not re.search(r"\s", stripped):
+        if stripped.lower().startswith(("http://", "https://")):
+            return [stripped]
+        if _BARE_DOMAIN.fullmatch(stripped):
+            return [f"https://{stripped}"]
+    without_markdown = _MARKDOWN_LINK.sub(lambda link: f" {link[1]} ", stripped)
+    found: list[str] = []
+    for match in _URL_IN_TEXT.findall(without_markdown):
+        url = _trim_url(match)
+        if url.lower().startswith(("http://", "https://")):
+            found.append(url)
+        elif re.split(r"[/?]", url)[0].rsplit(".", 1)[-1].lower() not in _FILE_LIKE_ENDINGS:
+            found.append(f"https://{url}")
+    return list(dict.fromkeys(found)) or [text]
+
+
+def _trim_url(url: str) -> str:
+    """Drops sentence punctuation stuck to a link. A closing parenthesis stays when it
+    has a partner inside the URL, as in `.../wiki/Foo_(bar)`."""
+    while url:
+        if url[-1] in _TRAILING_PUNCTUATION:
+            url = url[:-1]
+        elif url[-1] == ")" and url.count(")") > url.count("("):
+            url = url[:-1]
+        else:
+            break
+    return url
 
 
 def _find_existing(
@@ -472,10 +525,12 @@ _DRIVE_FILE = re.compile(
 
 def _dedup_key(normalized_url: str) -> str:
     url = sanitize_url(normalized_url)
-    # A sheet's ?gid= tab is dropped too; keep it if per-tab captures ever matter.
     match = _GOOGLE_DOC.match(url)
     if match:
-        return f"{match.group(1)}d/{match.group(2)}"
+        key = f"{match.group(1)}d/{match.group(2)}"
+        # Each tab of a sheet is different content; normalize_url has dropped tab 0.
+        tab = re.search(r"[?&]gid=(\d+)", url) if "/spreadsheets/" in key else None
+        return f"{key}?gid={tab[1]}" if tab else key
     match = _DRIVE_FOLDER.match(url)
     if match:
         return f"https://drive.google.com/drive/folders/{match.group(1)}"

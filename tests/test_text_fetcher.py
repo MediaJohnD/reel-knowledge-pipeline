@@ -430,6 +430,25 @@ def test_generic_html_fetcher_falls_back_to_render_when_app_shell(tmp_path, monk
 
 
 @respx.mock
+def test_network_security_block_page_is_refused_not_captured(tmp_path):
+    """Reddit's wording, seen live on 2026-11-01: 143 chars that came back as a
+    successful render, stopped only by a length floor elsewhere.
+    """
+    block_html = (
+        "<html><body><article><p>You've been blocked by network security. To continue, "
+        "log in to your account or use your developer token. If you think you've been "
+        "blocked by mistake, file a ticket below and we'll look into it.</p></article>"
+        "</body></html>"
+    )
+    respx.get("https://example.com/gated").mock(return_value=httpx.Response(200, text=block_html))
+
+    with pytest.raises(TextFetchError, match="bot-detection challenge"):
+        GenericHtmlFetcher(Settings(project_root=tmp_path)).fetch(
+            "https://example.com/gated", "cid-network-block"
+        )
+
+
+@respx.mock
 def test_generic_html_fetcher_detects_bot_challenge_on_plain_get(tmp_path):
     """A challenge page served as a plain HTTP 200 - long/non-shell enough to
     pass the app-shell heuristic on its own - must still be rejected, not
@@ -477,6 +496,9 @@ def test_generic_html_fetcher_does_not_flag_incidental_phrase_in_long_article(tm
 def test_notion_fetcher_raises_clear_error_on_http_failure(tmp_path):
     settings = Settings(project_root=tmp_path)
     respx.get("https://www.notion.so/Missing-Page").mock(return_value=httpx.Response(404))
+    respx.get("https://archive.org/wayback/available").mock(
+        return_value=httpx.Response(200, json={"archived_snapshots": {}})
+    )
 
     with pytest.raises(TextFetchError, match="404"):
         GenericHtmlFetcher(settings).fetch("https://www.notion.so/Missing-Page", "cid7")
@@ -629,6 +651,37 @@ def test_rendered_html_fetcher_raises_when_still_app_shell_after_render(tmp_path
 
     with pytest.raises(TextFetchError, match="no usable text even after rendering"):
         RenderedHtmlFetcher(settings).fetch("https://example.com/broken-spa", "cid-render2")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "A required part of this site couldn’t load. This may be due to a browser "
+        "extension, network issues, or browser settings. Please check your connection, "
+        "disable any ad blockers, or try using a different browser.",
+        "Application error: a client-side exception has occurred while loading this page, "
+        "see the browser console for more information.",
+        "Something went wrong. We are sorry, this page could not be displayed right now.",
+    ],
+)
+def test_rendered_html_fetcher_rejects_a_thin_error_page(tmp_path, monkeypatch, body):
+    settings = Settings(project_root=tmp_path)
+    _install_fake_playwright(monkeypatch, html=f"<html><body><p>{body}</p></body></html>")
+
+    with pytest.raises(TextFetchError, match="no usable text even after rendering"):
+        RenderedHtmlFetcher(settings).fetch("https://example.com/broken", "cid-render-err")
+
+
+def test_rendered_html_fetcher_keeps_a_long_article_that_mentions_an_error(tmp_path, monkeypatch):
+    settings = Settings(project_root=tmp_path)
+    body = "Something went wrong at the launch, and this is the story of why. " + (
+        "We traced the outage step by step through every service involved. " * 12
+    )
+    _install_fake_playwright(monkeypatch, html=f"<html><body><p>{body}</p></body></html>")
+
+    result = RenderedHtmlFetcher(settings).fetch("https://example.com/post", "cid-render-ok")
+
+    assert result.backend == "playwright-render"
 
 
 def test_rendered_html_fetcher_raises_on_bot_detection_challenge(tmp_path, monkeypatch):

@@ -56,6 +56,12 @@ def test_ignores_non_gates(text: str) -> None:
     assert detect_comment_gate(text) is None
 
 
+def test_detects_a_spoken_keyword_set_off_by_commas() -> None:
+    # Speech-to-text punctuation; "and it'll" is the bot, not the speaker.
+    text = "So comment, campaign, and it'll all send you the full guide."
+    assert detect_comment_gate(text) == "campaign"
+
+
 def test_keyword_preferred_over_blank_gate() -> None:
     assert detect_comment_gate("comment below for the link. Comment 'AGENT' to get it") == "AGENT"
 
@@ -490,6 +496,119 @@ def test_dm_timeout_after_48h() -> None:
     clock.sleep(49 * 3600)
     _runner(page, q, clock=clock).run(max_items=1)
     assert q["items"]["c1"]["status"] == cg.DM_TIMEOUT
+
+
+def _verify_comment_rec(q: dict) -> dict:
+    rec = q["items"]["c1"]
+    rec.update(status=cg.VERIFY_COMMENT, creator="alice")
+    rec["events"].append(f"{cg._iso(T0)} {cg.VERIFY_COMMENT}: found mid-comment on restart")
+    return rec
+
+
+def test_verify_comment_without_commented_at_times_out() -> None:
+    page, q, clock = FakePage(), _queued(), Clock()
+    page.thread = []
+    rec = _verify_comment_rec(q)
+    clock.sleep(49 * 3600)
+    _runner(page, q, clock=clock).run(max_items=0)
+    assert rec["status"] == cg.DM_TIMEOUT
+
+
+def test_fresh_verify_comment_keeps_waiting() -> None:
+    page, q, clock = FakePage(), _queued(), Clock()
+    page.thread = []
+    rec = _verify_comment_rec(q)
+    clock.sleep(3600)
+    _runner(page, q, clock=clock).run(max_items=0)
+    assert rec["status"] == cg.VERIFY_COMMENT
+
+
+def _timed_out(q: dict, cid: str = "c1", creator: str = "alice", at: datetime = T0) -> dict:
+    rec = q["items"][cid]
+    rec.update(status=cg.DM_TIMEOUT, creator=creator, commented_at=cg._iso(at), dm_marker="old")
+    return rec
+
+
+def _ms(t: datetime) -> int:
+    return int(t.timestamp() * 1000)
+
+
+def _recheck_runner(page: FakePage, q: dict, clock: Clock) -> Runner:
+    cfg = CommentGateConfig(dm_recheck_per_run=2, dm_recheck_days=7, dm_recheck_max=2)
+    return Runner(page, q, cfg, "me", True, now=clock.now, sleep=clock.sleep,
+                  rng=random.Random(0))  # fmt: skip
+
+
+def test_recheck_finds_a_link_that_arrived_after_the_timeout() -> None:
+    page, q, clock = FakePage(), _queued(), Clock()
+    rec = _timed_out(q)
+    clock.sleep(9 * 86400)
+    page.thread = [Message("late https://github.com/s/g", sender="alice", ts=_ms(clock.now()))]
+    _recheck_runner(page, q, clock).run(max_items=0)
+    assert rec["status"] == cg.LINK_RECEIVED and rec["links"] == ["https://github.com/s/g"]
+
+
+def test_recheck_never_writes() -> None:
+    page, q, clock = FakePage(), _queued(), Clock()
+    rec = _timed_out(q)
+    clock.sleep(9 * 86400)
+    page.thread = [Message("Reply with the keyword", buttons=["Send me the link"], sender="alice",
+                           ts=_ms(clock.now()))]  # fmt: skip
+    _recheck_runner(page, q, clock).run(max_items=0)
+    assert page.actions == [] and rec["status"] == cg.DM_TIMEOUT
+    assert rec["dm_text"] == "Reply with the keyword"
+
+
+def test_recheck_is_spaced_and_capped() -> None:
+    page, q, clock = FakePage(), _queued(), Clock()
+    rec = _timed_out(q)
+    page.thread = []
+    seen: list[str] = []
+    page.open_thread = lambda creator, url: seen.append(creator) or None  # type: ignore[method-assign]
+    for _ in range(4):  # same day twice is one read; then the cap of 2 ends it
+        _recheck_runner(page, q, clock).run(max_items=0)
+        _recheck_runner(page, q, clock).run(max_items=0)
+        clock.sleep(8 * 86400)
+    assert seen == ["alice", "alice"] and rec["dm_rechecks"] == 2
+
+
+def test_recheck_limits_reads_per_run() -> None:
+    page, q, clock = FakePage(), _queued(), Clock()
+    for cid, creator in (("c2", "bob"), ("c3", "carol")):
+        cg.enqueue(q, cid, f"https://www.instagram.com/reel/{cid}/", "scrape", T0)
+        _timed_out(q, cid, creator)
+    _timed_out(q)
+    seen: list[str] = []
+    page.open_thread = lambda creator, url: seen.append(creator) or None  # type: ignore[method-assign]
+    _recheck_runner(page, q, clock).run(max_items=0)
+    assert seen == ["alice", "bob"]
+    _recheck_runner(page, q, clock).run(max_items=0)
+    assert seen == ["alice", "bob", "carol"]
+
+
+def test_recheck_keeps_a_shared_thread_apart() -> None:
+    page, q, clock = FakePage(), _queued(), Clock()
+    later = T0 + timedelta(days=3)
+    cg.enqueue(q, "c2", "https://www.instagram.com/reel/B/", "scrape", T0)
+    first, second = _timed_out(q), _timed_out(q, "c2", at=later)
+    clock.sleep(9 * 86400)
+    page.thread = [Message("for B https://github.com/b/b", sender="alice",
+                           ts=_ms(later + timedelta(hours=1)))]  # fmt: skip
+    _recheck_runner(page, q, clock).run(max_items=0)
+    assert first["status"] == cg.DM_TIMEOUT and first["links"] == []
+    assert second["status"] == cg.LINK_RECEIVED and second["links"] == ["https://github.com/b/b"]
+
+
+def test_queue_page_lists_threads_that_need_a_tap() -> None:
+    q = _queued()
+    rec = _timed_out(q)
+    rec.update(dm_text="Tap below\nto get it", thread_url="https://www.instagram.com/direct/t/1/")
+    page = cg.render_queue_page(q, {})
+    assert "## Tap in the Instagram app (1)" in page
+    assert "[@alice](https://www.instagram.com/direct/t/1/)" in page
+    assert "Tap below to get it" in page
+    rec["links"], rec["status"] = ["https://x.dev"], cg.LINK_RECEIVED
+    assert "Tap in the Instagram app" not in cg.render_queue_page(q, {})
 
 
 def test_same_creator_is_held_back() -> None:

@@ -70,7 +70,7 @@ OPEN = (COMMENTING, COMMENTED, VERIFY_COMMENT)
 
 _VERB = r"\b(?P<verb>comment|drop|type|reply)\b"
 _TRIGGER = (
-    r"(?:\band\s+i'?ll\b|\bi'?ll\s+(?:send|dm|give|share)\b|\bi\s+will\s+(?:send|dm)\b"
+    r"(?:\band\s+(?:i|it)'?ll\b|\bi'?ll\s+(?:send|dm|give|share)\b|\bi\s+will\s+(?:send|dm)\b"
     r"|\bwe'?ll\s+send\b|\bto\s+(?:get|receive|grab|access|unlock)\b"
     r"|\bfor\s+(?:a|the|my)?\s*(?:free\s+)?(?:link|guide|repo|access|list|template|prompts?)\b"
     r"|\bsend\s+(?:it|you)\b|\bvia\s+(?:direct\s+message|dm)\b|\bin\s+(?:your|my)\s+dms?\b)"
@@ -303,6 +303,15 @@ def _event(rec: dict[str, Any], now: datetime, what: str) -> None:
 def _set(rec: dict[str, Any], status: str, now: datetime, note: str = "") -> None:
     rec["status"] = status
     _event(rec, now, status + (f": {note}" if note else ""))
+
+
+def _verify_comment_at(rec: dict[str, Any]) -> str | None:
+    """When a crash left this comment unconfirmed; such a record has no commented_at."""
+    for line in rec["events"]:
+        stamp, _, what = line.partition(" ")
+        if what.startswith(VERIFY_COMMENT):
+            return stamp
+    return None
 
 
 # --------------------------------------------------------------------------- rate limits
@@ -553,6 +562,7 @@ class Runner:
             for cid, rec in list(self.q["items"].items()):
                 if rec["status"] in AWAITING_DM:
                     self._poll_dm(cid, rec)
+            self._recheck_timeouts()
         except Halted as exc:
             until = self.now() + timedelta(hours=self.cfg.halt_hours)
             self.q["halted_until"] = _iso(until)
@@ -694,8 +704,8 @@ class Runner:
         return True
 
     def _poll_dm(self, cid: str, rec: dict[str, Any]) -> None:
-        at = rec.get("commented_at")
-        since = self.now() - _dt(at) if at else timedelta(hours=self.cfg.dm_timeout_hours)
+        at = rec.get("commented_at") or _verify_comment_at(rec)
+        since = self.now() - _dt(at) if at else timedelta(hours=self.cfg.dm_timeout_hours + 1)
         if since < timedelta(seconds=self.cfg.dm_min_wait_seconds) or not rec["creator"]:
             return
         try:
@@ -736,6 +746,74 @@ class Runner:
             _event(rec, self.now(), f"dm read error: {exc}")
             self.report.say(f"{cid}: DM read error ({exc})")
             self.save()
+
+    def _recheck_timeouts(self) -> None:
+        """Read timed-out threads again, a few per run. Reads only: a bot button here
+        waits for the owner's tap, so this never spends a write."""
+        if not self.apply:  # a dry-run never uses up a recheck
+            return
+        done = 0
+        for cid, rec in list(self.q["items"].items()):
+            if done >= self.cfg.dm_recheck_per_run:
+                break
+            if not self._recheck_due(cid, rec):
+                continue
+            if done:
+                self.sleep(self.rng.uniform(*self.cfg.dm_recheck_gap_seconds))
+            done += 1
+            rec["dm_rechecks"] = rec.get("dm_rechecks", 0) + 1
+            rec["dm_rechecked_at"] = _iso(self.now())
+            try:
+                self._read_timed_out(cid, rec)
+            except Halted:
+                raise
+            except Exception as exc:
+                _event(rec, self.now(), f"dm recheck error: {exc}")
+                self.report.say(f"{cid}: DM recheck error ({exc})")
+            self.save()
+
+    def _recheck_due(self, cid: str, rec: dict[str, Any]) -> bool:
+        if rec["status"] != DM_TIMEOUT or not rec["creator"] or self._creator_busy(cid, rec):
+            return False
+        if rec.get("dm_rechecks", 0) >= self.cfg.dm_recheck_max:
+            return False
+        last = rec.get("dm_rechecked_at")
+        return not last or self.now() - _dt(last) >= timedelta(days=self.cfg.dm_recheck_days)
+
+    def _read_timed_out(self, cid: str, rec: dict[str, Any]) -> None:
+        thread = self.page.open_thread(rec["creator"], rec["thread_url"])
+        self._check()
+        if not thread:
+            return
+        rec["thread_url"] = thread
+        new = self._own_window(cid, rec, _new_replies(self.page.read_thread(), rec, self.owner))
+        links = extract_links([m.text for m in new], [h for m in new for h in m.hrefs])
+        text = "\n".join(m.text for m in new if m.text.strip())
+        if links:
+            rec["links"], rec["dm_text"] = links, text
+            _set(rec, LINK_RECEIVED, self.now(), f"{len(links)} link(s) on recheck")
+            self.report.say(f"{cid}: late DM from @{rec['creator']}: {', '.join(links)}")
+        elif text and text != rec.get("dm_text"):
+            rec["dm_text"] = text
+            _event(rec, self.now(), "DM without a link yet (recheck)")
+            self.report.say(f"{cid}: @{rec['creator']} replied without a link; tap it in the app")
+
+    def _own_window(self, cid: str, rec: dict[str, Any], new: list[Message]) -> list[Message]:
+        # Timed-out reels from one creator share a thread. A reply belongs to the
+        # latest comment before it, so stop at this creator's next comment.
+        at = rec.get("commented_at")
+        later = [
+            _dt(o["commented_at"])
+            for c, o in self.q["items"].items()
+            if c != cid and o["creator"] == rec["creator"] and o.get("commented_at")
+        ]
+        later = [t for t in later if at and t > _dt(at)]
+        if not later:
+            return new
+        if not all(m.ts for m in new):
+            return []  # no timestamps: replies can't be told apart
+        cutoff = (min(later) - timedelta(minutes=2)).timestamp() * 1000
+        return [m for m in new if m.ts < cutoff]
 
     def _press_buttons(self, rec: dict[str, Any], new: list[Message]) -> list[Message]:
         """Press an allowlisted quick reply when the bot sent no link yet."""
@@ -1157,6 +1235,19 @@ def render_queue_page(q: dict[str, Any], state_items: dict[str, Any]) -> str:
     lines.append("")
     if q["halted_until"]:
         lines += [f"> [!warning] Halted until {q['halted_until']}. No actions until then.", ""]
+    taps = [
+        r
+        for r in q["items"].values()
+        if r["status"] in (*AWAITING_DM, DM_TIMEOUT) and r["dm_text"] and r["thread_url"]
+    ]
+    if taps:
+        lines += [f"## Tap in the Instagram app ({len(taps)})", ""]
+        lines += ["The bot replied without a link. Its buttons only work in the app; the daily"]
+        lines += ["run picks up the link afterwards.", ""]
+        for r in taps:
+            said = " ".join(r["dm_text"].split())[:120]
+            lines.append(f"- [@{r['creator'] or '?'}]({r['thread_url']}): {said}")
+        lines += ["", "## All reels", ""]
     lines += ["| Reel | Keyword | Creator | Status | Links |", "|---|---|---|---|---|"]
     for cid, r in q["items"].items():
         links = ", ".join(

@@ -965,7 +965,7 @@ def bad_install(step, get=None):
     )
     get = get or http
     for cmd, _, pkg in INSTALL_RE.findall(step):
-        if pkg.startswith((".", "/", "git+", "http")) or ":" in pkg:
+        if pkg.startswith((".", "/", "git+", "http", "-")) or ":" in pkg:
             continue
         cmd = cmd.lower()
         if cmd.startswith(("npx", "npm")):
@@ -1840,6 +1840,8 @@ def self_check():
     assert (
         not bad_install("Run npx real-pkg", g404)
         and not bad_install("gh repo clone a/nope", g404)
+        # a flag, not a package, however the registry answers
+        and not bad_install("pip install -e '.[dev]'", lambda *a, **k: R(404, {}))
         and not bad_install("pip install nope", lambda *a, **k: None)
     )
     # 10 tolerant JSON repair

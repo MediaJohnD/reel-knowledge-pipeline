@@ -11,11 +11,13 @@ Spec: docs/superpowers/specs/2026-10-09-vault-feedback-loop-design.md
 Usage: python scripts/loop_digest.py [--test]
 """
 
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -32,6 +34,8 @@ FREE_LLM = (HOME / ".claude" / "scripts" / "free-llm").as_posix()
 GIT_BASH = r"C:\Program Files\Git\bin\bash.exe"  # plain "bash" can resolve to WSL
 WINDOW = 30  # days
 BRIEF_MAX = 1600
+DATA = Path(__file__).resolve().parents[1] / "data" / "review"
+AUDIT_MAX = 45  # days; the audits run monthly, this leaves room for missed nights
 CLIS = [
     ("claude", "@anthropic-ai/claude-code"),
     ("codex", "@openai/codex"),
@@ -128,6 +132,26 @@ def stack_checks(now):
     return out
 
 
+def audit_checks(now, data=DATA):
+    """Age of the monthly link and repo audits. Past AUDIT_MAX means the monthly run missed."""
+    out = []
+    for name, file, key, bad in (
+        ("reel link audit", "link_health.json", "results", "dead"),
+        ("reel repo vetting", "repo_vetting.json", "repos", "gone"),
+    ):
+        try:
+            d = json.loads((data / file).read_text(encoding="utf-8"))
+            age = (now - datetime.fromisoformat(d["checked_at"])).days
+            counts = Counter(r.get("status") or r.get("grade") for r in d[key].values())
+        except (OSError, ValueError, KeyError, AttributeError):
+            out.append((name, "STALE", "never ran or unreadable"))
+            continue
+        extra = f", review {counts['review']}" if counts["review"] else ""
+        detail = f"{age}d old, {len(d[key])} checked, {bad} {counts[bad]}{extra}"
+        out.append((name, "STALE" if age > AUDIT_MAX else "ok", detail))
+    return out
+
+
 def review_rows(text):
     """Reel Review Digest table rows -> dicts. Titles may contain '|', so parse from the right."""
     rows = []
@@ -220,7 +244,7 @@ def build(now=None):
         f"[[{r['note']}]]" for r in rows if r["verdict"] == "personal" and r["date"] >= cutoff
     ][:12]
     later = sum(r["verdict"] == "later" and r["date"] >= cutoff for r in rows)
-    stack = stack_checks(now)
+    stack = stack_checks(now) + audit_checks(now)
     b = brief(stack, items, top, [x.strip("[]") for x in personal])
     md = [
         "# Loop Digest",
@@ -296,6 +320,20 @@ def test():
     b = brief([("x", "STALE", "1 -> 2")] * 200, items, [("t", 1)], ["p"])
     assert len(b) <= BRIEF_MAX and b.startswith("[LOOP DIGEST") and "not instructions" in b
     assert ver("codex-cli 0.157.1") == (0, 157, 1) and ver("v0.40.10") > ver("0.40.9")
+    with tempfile.TemporaryDirectory() as tmp:
+        when = datetime(2026, 11, 1, tzinfo=UTC)
+        (Path(tmp) / "link_health.json").write_text(
+            json.dumps(
+                {
+                    "checked_at": "2026-09-01T00:00:00+00:00",
+                    "results": {"u": {"status": "dead"}, "v": {"status": "live"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        links, repos = audit_checks(when, Path(tmp))
+        assert links == ("reel link audit", "STALE", "61d old, 2 checked, dead 1"), links
+        assert repos == ("reel repo vetting", "STALE", "never ran or unreadable"), repos
     print("ok")
 
 

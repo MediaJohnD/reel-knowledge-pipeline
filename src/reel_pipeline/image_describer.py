@@ -84,9 +84,11 @@ _CURLY_QUOTES = str.maketrans({"’": "'", "‘": "'"})
 # nothing were attached (2.7s, against 70.3s for the same picture as JPEG), so
 # the failure arrives looking like a refusal rather than a fault. Instagram
 # serves WebP routinely. Both image-selection sites accept ".webp"
-# (downloader._IMAGE_SUFFIXES and worker._cached_download_result's rescan), so
+# (models.IMAGE_SUFFIXES, used by downloader and worker._cached_download_result's rescan), so
 # the re-encode belongs here, where every source converges before the call.
-_NEEDS_REENCODE_SUFFIXES = (".webp",)
+# HEIC, AVIF, GIF and BMP join it 2026-11-01: text capture can now hand on those
+# files directly from a link, and a vision API may not accept them as they are.
+_NEEDS_REENCODE_SUFFIXES = (".webp", ".heic", ".gif", ".avif", ".bmp")
 
 
 def _reencode_for_vision(source: Path, workdir: Path, index: int) -> Path:
@@ -106,7 +108,7 @@ def _reencode_for_vision(source: Path, workdir: Path, index: int) -> Path:
     target = workdir / f"{index:03d}-{source.stem}.png"
     try:
         result = subprocess.run(  # noqa: S603 - fixed argv, no shell, path is our own download
-            ["ffmpeg", "-y", "-i", str(source), str(target)],
+            ["ffmpeg", "-y", "-i", str(source), "-frames:v", "1", str(target)],
             capture_output=True,
             text=True,
             timeout=30,

@@ -225,7 +225,33 @@ download:
     - fb.watch
     - linkedin.com
     - drive.google.com
+    # Added 2026-11-01 at the owner's direction. Anonymous: no new cookies are
+    # configured for these, public links only.
+    - loom.com
+    - reddit.com
+    - v.redd.it
+    - soundcloud.com
+    - twitch.tv
+    - rumble.com
+    - dailymotion.com
+    - ted.com
+    - streamable.com
+    - wistia.com
+    - wistia.net
   blocked_domains: []
+  # REEL_YTDLP_COOKIES_* never go to these, even when set.
+  anonymous_domains:
+    - loom.com
+    - reddit.com
+    - v.redd.it
+    - soundcloud.com
+    - twitch.tv
+    - rumble.com
+    - dailymotion.com
+    - ted.com
+    - streamable.com
+    - wistia.com
+    - wistia.net
 
 # Non-media knowledge sources - routed to TextFetcher (fetch + extract text)
 # instead of Downloader (yt-dlp/gallery-dl). Public links only - no OAuth/API
@@ -249,6 +275,19 @@ text_capture:
   render_fallback:
     enabled: true
     timeout_seconds: 20
+  # Caps for files text capture pulls down (documents read into memory, media
+  # streamed to tmp_dir). Going over raises a clear error.
+  max_document_mb: 100
+  max_media_mb: 2048
+  # Posts on these hosts can be text with no media. When the media path finds
+  # nothing, the worker tries text capture before giving up (worker.py).
+  media_text_fallback_domains:
+    - x.com
+    - twitter.com
+    - facebook.com
+    - fb.watch
+    - linkedin.com
+    - reddit.com
 
 webhook:
   host: 127.0.0.1
@@ -278,7 +317,11 @@ comment_gate:
   first_week_follow_wait_seconds: [120, 240]
   dm_min_wait_seconds: 120
   dm_timeout_hours: 48
-  halt_hours: 24                  # any challenge / action-blocked stops everything
+  dm_recheck_per_run: 10          # read-only re-reads of timed-out threads (late links, app taps)
+  dm_recheck_days: 7              # at most one re-read per thread this often
+  dm_recheck_max: 6               # then the thread is left alone for good
+  dm_recheck_gap_seconds: [20, 60]
+  halt_hours: 24                 # any challenge / action-blocked stops everything
   max_attempts: 3
   max_button_presses: 2
   reply_keyword: true             # type the reel's keyword back once when the bot asks (2026-10-02)

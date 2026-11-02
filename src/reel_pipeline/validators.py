@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import re
 import socket
 from dataclasses import dataclass
 from typing import Literal
@@ -130,8 +131,19 @@ def normalize_url(url: str) -> str:
             for key, value in parse_qsl(parsed.query)
             if key.lower() not in strip and not key.lower().startswith(_STRIP_QUERY_PREFIX)
         )
+        if host == "docs.google.com" and path.startswith("/spreadsheets/"):
+            kept_params = _with_sheet_tab(kept_params, parsed.fragment)
     query = urlencode(kept_params)
     return urlunparse((scheme, netloc, path, "", query, ""))
+
+
+def _with_sheet_tab(params: list[tuple[str, str]], fragment: str) -> list[tuple[str, str]]:
+    """A sheet's tab is often only in the fragment (`/edit#gid=77`), the one part of a URL
+    normalize_url drops, and each tab is different content. Tab 0 is the sheet itself."""
+    match = re.fullmatch(r"gid=(\d+)", fragment)
+    if match and not any(key == "gid" for key, _ in params):
+        params = sorted([*params, ("gid", match[1])])
+    return [(key, value) for key, value in params if (key, value) != ("gid", "0")]
 
 
 def sanitize_url(url: str) -> str:
@@ -234,6 +246,47 @@ def validate_url(url: str, settings: Settings) -> ValidationResult:
         )
 
     return ValidationResult(ok=True, normalized_url=normalized, content_id=content_id)
+
+
+# Link-shim pages that only forward to a URL in their query: (hosts, path, params).
+_REDIRECT_WRAPPERS: tuple[tuple[frozenset[str], str | None, tuple[str, ...]], ...] = (
+    (frozenset({"l.instagram.com"}), None, ("u",)),
+    (frozenset({"l.facebook.com", "lm.facebook.com"}), "/l.php", ("u",)),
+    (frozenset({"google.com", "www.google.com"}), "/url", ("q", "url")),
+    (frozenset({"linkedin.com", "www.linkedin.com"}), "/safety/go", ("url",)),
+    (frozenset({"youtube.com", "www.youtube.com", "m.youtube.com"}), "/redirect", ("q",)),
+)
+_MAX_REDIRECT_UNWRAPS = 3
+
+
+def unwrap_redirect(url: str) -> str:
+    """The link a platform's click-tracking wrapper points at, else the URL unchanged.
+
+    This only reads the query string: nothing is fetched. The caller still validates
+    the result, so a wrapper can't carry a blocked or private target past the checks.
+    """
+    for _ in range(_MAX_REDIRECT_UNWRAPS):
+        target = _wrapped_target(url)
+        if target is None:
+            break
+        url = target
+    return url
+
+
+def _wrapped_target(url: str) -> str | None:
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        return None
+    for hosts, path, params in _REDIRECT_WRAPPERS:
+        if host in hosts and (path is None or parsed.path.rstrip("/") == path):
+            query = dict(parse_qsl(parsed.query))
+            for param in params:
+                target = query.get(param, "")
+                if target.lower().startswith(("http://", "https://")):
+                    return target
+    return None
 
 
 def _matches_any(host: str, domains: list[str]) -> bool:

@@ -462,3 +462,29 @@ def test_describe_reports_a_failed_webp_re_encode_instead_of_sending_it_anyway(
             LlmImageDescriber(settings).describe([webp], "cid-webp-fail")
 
     assert route.call_count == 0
+
+
+@pytest.mark.parametrize("suffix", [".heic", ".gif", ".avif", ".bmp", ".HEIC"])
+def test_describe_re_encodes_the_wider_image_types(tmp_path, monkeypatch, suffix):
+    source = tmp_path / f"picture{suffix}"
+    source.write_bytes(b"fake")
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"\x89PNG\r\n\x1a\n")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    settings = make_settings(
+        tmp_path, llm=LlmConfig(provider="ollama", ollama_host="http://localhost:11434")
+    )
+    with respx.mock:
+        respx.post("http://localhost:11434/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": "a real description"})
+        )
+        LlmImageDescriber(settings).describe([source], "cid-wider")
+
+    assert len(commands) == 1
+    # An animated GIF has many frames and one output file.
+    assert commands[0][commands[0].index("-frames:v") + 1] == "1"

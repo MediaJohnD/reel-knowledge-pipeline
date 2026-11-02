@@ -32,6 +32,7 @@ from datetime import UTC, datetime, timedelta
 from itertools import repeat
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlparse
 
 import httpx
 from filelock import FileLock
@@ -40,17 +41,23 @@ from filelock import Timeout as FileLockTimeout
 from reel_pipeline.config import Settings
 from reel_pipeline.downloader import (
     Downloader,
+    DownloadError,
+    NoMediaError,
     PostUnavailableError,
     _extract_first_frame,
     _extract_frames,
     _video_has_audio_stream,
     get_downloader,
+    is_refusal,
 )
 from reel_pipeline.enricher import Enricher
 from reel_pipeline.image_describer import ImageDescriber, get_image_describer
 from reel_pipeline.llm_client import LlmCallError
 from reel_pipeline.logging_setup import get_logger, log_context
 from reel_pipeline.models import (
+    AUDIO_SUFFIXES,
+    IMAGE_SUFFIXES,
+    VIDEO_SUFFIXES,
     ContentItem,
     DownloadResult,
     EnrichmentResult,
@@ -63,13 +70,22 @@ from reel_pipeline.models import (
 from reel_pipeline.obsidian_writer import write_note
 from reel_pipeline.queue_manager import QueueManager
 from reel_pipeline.skill_writer import SkillWriter
-from reel_pipeline.text_fetcher import TextFetcher, get_text_fetcher
+from reel_pipeline.text_fetcher import (
+    ArchiveEligibleError,
+    MediaFound,
+    TextFetcher,
+    TextFetchError,
+    archive_reason,
+    get_text_fetcher,
+)
 from reel_pipeline.transcriber import Transcriber, get_transcriber
+from reel_pipeline.validators import validate_url
 
 logger = get_logger(__name__)
 
 _CAPTION_MAX_CHARS = 3000
-_VIDEO_SUFFIXES = (".mp4", ".mov", ".webm", ".mkv")
+# Below this, a media page's text is a login wall or a stub rather than the post.
+_MEDIA_TEXT_FALLBACK_MIN_CHARS = 200
 
 
 def describe_exc(exc: BaseException) -> str:
@@ -198,6 +214,9 @@ class WorkerPipeline:
             transcript: TranscriptResult | None = None
             enrichment: EnrichmentResult | None = None
             download_result: DownloadResult | None = None
+            # What yt-dlp may be sent again for a silent clip's pictures. Only a URL
+            # that passed validation: a direct file's host never did, so it stays None.
+            media_retry_url: str | None = None if record.content_kind == "text" else record.url
 
             cached_transcript = (
                 self._cached_transcript_result(record.content_id)
@@ -237,12 +256,25 @@ class WorkerPipeline:
             elif record.content_kind == "text":
                 record.status = ItemStatus.DOWNLOADING
                 self.queue_manager.update_record(record)
-                transcript = self.text_fetcher.fetch(record.url, record.content_id)
-                log_context(
-                    logger, 20, "text captured", content_id=record.content_id, url=record.url
-                )
-                self._write_transcript_cache(record.content_id, transcript)
-                record.last_completed_stage = ItemStage.TRANSCRIBED
+                try:
+                    transcript = self._capture_text(record)
+                except MediaFound as found:
+                    download_result = self._download_found_media(found, record.content_id)
+                    media_retry_url = found.url
+                    record.last_completed_stage = ItemStage.DOWNLOADED
+                    log_context(
+                        logger,
+                        20,
+                        "link turned out to be media",
+                        content_id=record.content_id,
+                        url=found.url or record.url,
+                    )
+                else:
+                    log_context(
+                        logger, 20, "text captured", content_id=record.content_id, url=record.url
+                    )
+                    self._write_transcript_cache(record.content_id, transcript)
+                    record.last_completed_stage = ItemStage.TRANSCRIBED
             else:
                 cached_download = (
                     self._cached_download_result(record.content_id)
@@ -268,16 +300,24 @@ class WorkerPipeline:
                 else:
                     record.status = ItemStatus.DOWNLOADING
                     self.queue_manager.update_record(record)
-                    download_result = self.downloader.download(record.url, record.content_id)
-                    if download_result.caption:
-                        # Read back by _cached_download_result if transcribing fails.
-                        caption_file = self.settings.tmp_dir / record.content_id / "caption.txt"
-                        caption_file.parent.mkdir(parents=True, exist_ok=True)
-                        caption_file.write_text(download_result.caption, encoding="utf-8")
-                    record.last_completed_stage = ItemStage.DOWNLOADED
-                    log_context(
-                        logger, 20, "downloaded", content_id=record.content_id, url=record.url
-                    )
+                    try:
+                        download_result = self.downloader.download(record.url, record.content_id)
+                    except DownloadError as exc:
+                        if (
+                            isinstance(exc, PostUnavailableError)
+                            or is_refusal(exc, record.url)
+                            or not (isinstance(exc, NoMediaError) or self._on_last_attempt(record))
+                        ):
+                            raise
+                        transcript = self._media_text_fallback(record, exc)
+                        self._write_transcript_cache(record.content_id, transcript)
+                        record.last_completed_stage = ItemStage.TRANSCRIBED
+                    else:
+                        self._save_caption(record.content_id, download_result.caption)
+                        record.last_completed_stage = ItemStage.DOWNLOADED
+                        log_context(
+                            logger, 20, "downloaded", content_id=record.content_id, url=record.url
+                        )
 
             if transcript is None:
                 # transcript is only still None here via the media (non-text) branch
@@ -290,11 +330,16 @@ class WorkerPipeline:
                     transcript = self.image_describer.describe(media_paths, record.content_id)
                 else:
                     transcript = self._transcribe_media_paths(media_paths, record.content_id)
-                    videos = [p for p in media_paths if p.suffix.lower() in _VIDEO_SUFFIXES]
+                    videos = [p for p in media_paths if p.suffix.lower() in VIDEO_SUFFIXES]
                     fetch_video = getattr(self.downloader, "download_video", None)
-                    if not videos and not transcript.text.strip() and fetch_video:
+                    if (
+                        not videos
+                        and not transcript.text.strip()
+                        and fetch_video
+                        and media_retry_url is not None
+                    ):
                         # yt-dlp fetched audio only; a speechless clip needs its pictures.
-                        videos = [fetch_video(record.url, record.content_id)]
+                        videos = [fetch_video(media_retry_url, record.content_id)]
                     if videos and not transcript.text.strip():
                         # Audio but no speech (music bed + on-screen text): the
                         # visuals carry the content, so describe sampled frames.
@@ -323,10 +368,14 @@ class WorkerPipeline:
             # through process_item's handler, the same way an
             # ImageDescriptionError does, instead of writing a content-free note.
             if not transcript.text.strip():
-                raise EmptyTranscriptError(
+                empty = EmptyTranscriptError(
                     f"transcript for {record.url} is empty - nothing to enrich "
                     "(no speech in the media, or no extractable text at the source)"
                 )
+                if record.content_kind == "text":
+                    raise empty
+                transcript = self._media_text_fallback(record, empty)
+                self._write_transcript_cache(record.content_id, transcript)
 
             if enrichment is None:
                 record.status = ItemStatus.ENRICHING
@@ -472,6 +521,70 @@ class WorkerPipeline:
         self.queue_manager.update_record(record)
         return record
 
+    def _on_last_attempt(self, record: StateRecord) -> bool:
+        return record.attempt_count + 1 >= self.settings.retry.max_attempts
+
+    def _capture_text(self, record: StateRecord) -> TranscriptResult:
+        """The page's text. When retries have run out on a failure that might have been
+        temporary, the archive gets one try before the item gives up."""
+        try:
+            return self.text_fetcher.fetch(record.url, record.content_id)
+        except ArchiveEligibleError as exc:
+            fetch_archived = getattr(self.text_fetcher, "fetch_archived", None)
+            if fetch_archived is None or not self._on_last_attempt(record):
+                raise
+            try:
+                return fetch_archived(record.url, record.content_id, archive_reason(exc))
+            except TextFetchError as archive_error:
+                raise type(exc)(f"{exc}; archive: {archive_error}") from exc
+
+    def _download_found_media(self, found: MediaFound, content_id: str) -> DownloadResult:
+        result = found.result
+        if result is None:
+            # The fetcher checks this too. This is the last stop before yt-dlp or
+            # gallery-dl, and neither may be handed a host that didn't pass.
+            if not found.url or not validate_url(found.url, self.settings).ok:
+                raise TextFetchError(f"refusing to download unvalidated media {found.url!r}")
+            result = self.downloader.download(found.url, content_id)
+        parts = [part for part in (found.context, result.caption) if part and part.strip()]
+        caption = "\n\n".join(parts) or None
+        result = result.model_copy(update={"caption": caption})
+        self._save_caption(content_id, caption)
+        return result
+
+    def _save_caption(self, content_id: str, caption: str | None) -> None:
+        if caption:
+            # Read back by _cached_download_result if transcribing fails.
+            caption_file = self.settings.tmp_dir / content_id / "caption.txt"
+            caption_file.parent.mkdir(parents=True, exist_ok=True)
+            caption_file.write_text(caption, encoding="utf-8")
+
+    def _media_text_fallback(self, record: StateRecord, cause: Exception) -> TranscriptResult:
+        """Text capture for a post with nothing to download, on the configured hosts
+        only. If it comes up short the original error stands, with the reason added."""
+        host = (urlparse(record.url).hostname or "").lower()
+        domains = self.settings.text_capture.media_text_fallback_domains
+        if not any(host == d or host.endswith(f".{d}") for d in domains):
+            raise cause
+        try:
+            result = self.text_fetcher.fetch(record.url, record.content_id)
+        except MediaFound:
+            reason = "the page only held media"
+        except TextFetchError as exc:
+            reason = str(exc)
+        else:
+            if len(result.text.strip()) >= _MEDIA_TEXT_FALLBACK_MIN_CHARS:
+                log_context(
+                    logger,
+                    30,
+                    "no media, kept the post's text instead",
+                    content_id=record.content_id,
+                    url=record.url,
+                )
+                return result
+            reason = f"only {len(result.text.strip())} chars"
+        raise type(cause)(f"{cause}; text capture fallback failed: {reason}") from cause
+
     def _cached_download_result(self, content_id: str) -> DownloadResult | None:
         """Returns a DownloadResult reconstructed from files still present in
         data/tmp/<content_id>/, or None if the directory is empty/missing (e.g.
@@ -499,11 +612,8 @@ class WorkerPipeline:
         # path: without it, resuming after a crash between download and
         # transcribe would re-derive VIDEO for a silent clip a fresh download
         # would now correctly call IMAGE.
-        audio_suffixes = (".mp3", ".m4a", ".wav")
-        image_suffixes = (".jpg", ".jpeg", ".png", ".webp")
-
-        audio_files = [p for p in files if p.suffix.lower() in audio_suffixes]
-        video_containers = [p for p in files if p.suffix.lower() in _VIDEO_SUFFIXES]
+        audio_files = [p for p in files if p.suffix.lower() in AUDIO_SUFFIXES]
+        video_containers = [p for p in files if p.suffix.lower() in VIDEO_SUFFIXES]
         real_videos = audio_files + [p for p in video_containers if _video_has_audio_stream(p)]
         if real_videos:
             return DownloadResult(
@@ -514,7 +624,7 @@ class WorkerPipeline:
                 caption=caption,
             )
 
-        images = [p for p in files if p.suffix.lower() in image_suffixes]
+        images = [p for p in files if p.suffix.lower() in IMAGE_SUFFIXES]
         real_video_set = set(real_videos)
         silent_videos = [p for p in video_containers if p not in real_video_set]
         images += [_extract_first_frame(p) for p in silent_videos]

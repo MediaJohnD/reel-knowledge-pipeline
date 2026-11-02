@@ -17,4 +17,8 @@ uv run python scripts\review_new_reels.py --apply --limit 10 >> "!logfile!" 2>&1
 if %ERRORLEVEL% NEQ 0 (
   echo Review failed with exit code %ERRORLEVEL% >> "!logfile!"
 )
+
+REM Monthly audits. Each does nothing until its last run is 30 days old.
+uv run python scripts\recheck_links.py --if-older-than 30 >> "!logfile!" 2>&1
+uv run python scripts\vet_repos.py --if-older-than 30 >> "!logfile!" 2>&1
 exit /b 0
