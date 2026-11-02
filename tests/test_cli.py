@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import errno
+import os
 import socket
+import subprocess
+import sys
 import time
 from datetime import UTC, datetime
 from unittest import mock
@@ -22,6 +25,22 @@ def make_settings(tmp_path) -> Settings:
         project_root=tmp_path,
         download=DownloadConfig(allowed_domains=["youtube.com"], blocked_domains=[]),
     )
+
+
+def test_unencodable_output_does_not_crash_a_redirected_command():
+    """The scheduled queue run logs to a cp1252 pipe. A '✅' in a DM button label
+    crashed it before delivery on six mornings between 2026-10-20 and 2026-10-31.
+    """
+    probe = (
+        "import typer\n"
+        "from reel_pipeline.cli import app\n"
+        "app.command('probe')(lambda: typer.echo('tap \\u2705 in the DM'))\n"
+        "app(['probe'])\n"
+    )
+    env = {**os.environ, "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"}
+    done = subprocess.run([sys.executable, "-c", probe], capture_output=True, env=env, timeout=60)
+    assert done.returncode == 0, done.stderr.decode("cp1252", "replace")
+    assert b"tap \\u2705 in the DM" in done.stdout
 
 
 def _seed_failed_permanent(settings: Settings, content_id: str) -> None:

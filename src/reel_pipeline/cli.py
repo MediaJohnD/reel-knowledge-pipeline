@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import io
 import socket
 import sys
 import time
@@ -22,6 +23,17 @@ from reel_pipeline.logging_setup import configure_logging, get_logger, resolve_l
 
 app = typer.Typer(help="Reel Knowledge Pipeline CLI", no_args_is_help=True)
 logger = get_logger(__name__)
+
+
+@app.callback()
+def _make_console_safe() -> None:
+    # A redirected stdout on Windows is cp1252 and raises on characters like the
+    # '✅' in a DM button label. The scheduled queue run died that way, right
+    # before delivery, on six mornings in 2026-10. Keep the encoding, since the
+    # PowerShell pipe reading it expects that, and print those characters escaped.
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(errors="backslashreplace")
 
 
 def _wait_for_bindable(
