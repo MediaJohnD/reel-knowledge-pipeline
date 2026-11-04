@@ -9,7 +9,7 @@ Evidence:
 - `session-context.py` (UserPromptSubmit) is keyword-only. It never surfaces a reel the
   prompt didn't already name.
 - `review_new_reels.py` is business-centric. 169 of ~491 reels are `skip`, which includes
-  every personal topic (travel, habits, dating, emergency prep).
+  every personal-interest topic.
 - 52 `try-now` verdicts have no follow-through: nothing tracks whether they were adopted.
 - Nothing checks stack freshness. CLIs, Docker images, `model-rankings.md` and the
   free-llm waterfall only change when someone happens to ask.
@@ -40,10 +40,10 @@ A stdlib-only script that runs in under 60s and needs no LLM. Sections:
   - Plus "Personal topics": the newest 12 `personal` reels, wikilinked.
 
 ### 1b. `personal` verdict in `review_new_reels.py` (owner, 2026-10-09)
-"WHY would you EVER skip something I sent... travel, habits, dating, and emergency prep."
+Reels on the owner's personal interests should never be `skip`.
 The judge stays business-only. A deterministic post-override (`personal_verdict`, after
 `career_verdict`) relabels a `skip` as `personal` when `PERSONAL_RE` matches the note's title
-or tags. The body is not used because it gave 52 hits, mostly false positives.
+or tags (patterns now live in the gitignored `config/owner_profile.yaml`). The body is not used because it gave 52 hits, mostly false positives.
 `--backfill-personal --apply` relabeled 26 past reels in the manifest, the digest and the
 notes. It is idempotent.
 

@@ -31,3 +31,6 @@ backups/
 
 # Generated per machine by scripts/review_new_reels.py --gen-have
 config/have.txt
+
+# Each person's reviewer profile (businesses, logins, interests); see owner_profile.example.yaml
+config/owner_profile.yaml

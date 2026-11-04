@@ -1,0 +1,29 @@
+# Who the reel reviewer (scripts/review_new_reels.py) works for. Optional.
+# Copy to config/owner_profile.yaml (gitignored) and make it yours. Without it the
+# reviewer judges general usefulness, nothing is tagged career/personal, and no
+# GitHub account counts as your own.
+
+# Your GitHub logins. Repos under them are marked `already-have`. The login that
+# `gh api user` returns is always added.
+github_logins: []
+
+# Put into the review prompt. Name your businesses or projects so the reviewer can
+# fill its `businesses` field, and state your constraints.
+context: |
+  Example: the owner runs two small businesses, Example Bakery and Example Studio.
+  Constraints: free or self-serve tooling only, a human stays in the loop, everything
+  must be ToS-compliant (no scraping behind logins, no spam automation).
+
+# Regexes (case-insensitive) matched against a note's title and tags. A reel the
+# reviewer would `skip` is tagged `career` or `personal` instead, so it stays findable.
+career_patterns:
+  - '\bfractional[\s-]+(?:c[a-z]?o|executive|exec|leader|head|vp|marketer|role|work|practice)s?\b'
+  - '\binterim\s+(?:c[a-z]?o|executive|exec)s?\b|\bexpert[\s-]+networks?\b|\bconsultant\s*gigs?\b'
+job_search_patterns:
+  - '\bjob[\s-]+(?:search\w*|boards?|hunt\w*|seekers?|applications?|interviews?)\b'
+  - '\b(?:remote|hidden)[\s-]+jobs?\b|(?<![\w-])interviews?\b|\brecruiters?\b|\bresumes?\b'
+  - '\bcover[\s-]+letters?\b|\bupwork\b'
+personal_patterns:
+  - '\b(?:travel\w*|trips?|flights?|hotels?|vacations?)\b'
+  - '\b(?:habits?|routines?|workouts?|fitness|sleep)\b'
+  - '\b(?:recipes?|cooking|baking|sourdough)\b'

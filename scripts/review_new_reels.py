@@ -33,6 +33,10 @@ ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "data" / "review" / "reviewed.json"
 DIGEST_NAME = "Reel Review Digest.md"  # in settings.vault_dir (the Reels folder)
 PROMPT = ROOT / "config" / "prompts" / "review_reel.md"
+# Who the reviewer works for: businesses, GitHub logins, interest patterns. Gitignored, so each
+# person keeps their own; copy config/owner_profile.example.yaml to start. Missing = no profile.
+PROFILE = ROOT / "config" / "owner_profile.yaml"
+PROFILE_EXAMPLE = ROOT / "config" / "owner_profile.example.yaml"
 YTDLP = ROOT / ".venv" / "Scripts" / "yt-dlp.exe"
 CRAWL, SEARX, OLLAMA_MODEL = "http://127.0.0.1:11235", "http://127.0.0.1:8888", "gpt-oss:20b-64k"
 VERDICTS = {"try-now", "later", "skip", "already-have"}
@@ -40,7 +44,26 @@ LOGIN_WALLED = ("instagram.com", "facebook.com", "tiktok.com", "fb.watch")
 YT_DOMAINS = ("youtube.com", "youtu.be")
 URL_RE = re.compile(r"https?://[^\s<>)\]\"'`]+")
 GH_RE = re.compile(r"github\.com/([\w.-]+)/([\w.-]+)")
-OWNERS = {"mediajohnd"}  # vault owner's GitHub logins (lowercase); gh api user adds the live login
+
+
+def load_profile(path=PROFILE):
+    """-> owner profile dict ({} when the file is absent)."""
+    import yaml
+
+    if not path.exists():
+        return {}
+    return yaml.safe_load(path.read_text("utf-8")) or {}
+
+
+def profile_re(profile, key):
+    """Join a profile's regex list into one case-insensitive pattern; empty never matches."""
+    pats = profile.get(key) or []
+    return re.compile("|".join(f"(?:{x})" for x in pats) if pats else r"(?!)", re.I)
+
+
+OWNER = load_profile()
+# vault owner's GitHub logins (lowercase); gh api user adds the live login
+OWNERS = {str(x).lower() for x in OWNER.get("github_logins") or []}
 MIN_STARS = 100  # raised from 25 2026-10-19: a 25-star repo got the same evidence weight as a
 # well-known one; 100 is still generous but filters bottom-tier noise and freshly-forked
 # namesquats without a tool-name match (name-matched repos bypass this bar regardless, see repo_ok)
@@ -990,6 +1013,13 @@ def bad_install(step, get=None):
     return None
 
 
+def owner_context(profile=None):
+    """The prompt's description of the owner, from the profile."""
+    p = OWNER if profile is None else profile
+    text = str(p.get("context") or "").strip()
+    return text or "The owner has not described their work; judge general usefulness."
+
+
 def judge(settings, note_text, ev, fetched, indep, used, have):
     (
         """-> finalized judge dict, or raises LlmBad after one retry on invalid output (LLM """
@@ -998,6 +1028,7 @@ def judge(settings, note_text, ev, fetched, indep, used, have):
     from reel_pipeline.llm_client import call_llm
 
     pre, _, tail = PROMPT.read_text(encoding="utf-8").partition("<!-- CACHE:BOUNDARY -->")
+    pre = pre.replace("{owner_context}", owner_context())
     tools = ev.get("_tools") or []
     names = tools + [r["full_name"] for r in ev["repos"] if r.get("exists")]
     hs = {squash(h) for h in have}
@@ -1148,58 +1179,36 @@ def gate_verdict(j, keyword, queue_status):
     return True
 
 
-CAREER_RE = re.compile(
-    r"\bfractional[\s-]+(?:c[a-z]?o|executive|exec|leader|head|vp|marketer|role|work|practice)s?\b"
-    r"|\binterim\s+(?:c[a-z]?o|executive|exec)s?\b|\bexpert[\s-]+networks?\b"
-    r"|\bconsultant\s*gigs?\b",  # not "advisory board": AI-agent reels use it
-    re.I,
-)
-# Matched on title + tags only: "interview" and "resume" are common words in transcripts.
-JOB_SEARCH_RE = re.compile(
-    r"\bjob[\s-]+(?:search\w*|boards?|hunt\w*|seekers?|applications?|interviews?)\b"
-    r"|\b(?:remote|hidden)[\s-]+jobs?\b|(?<![\w-])interviews?\b|\brecruiters?\b|\bresumes?\b"
-    r"|\bcover[\s-]+letters?\b|\bupwork\b",
-    re.I,
-)
+# Matched on title + tags only for job search: "interview" and "resume" are common words in
+# transcripts. Patterns live in the owner profile; with none, nothing is relabelled.
+CAREER_RE = profile_re(OWNER, "career_patterns")
+JOB_SEARCH_RE = profile_re(OWNER, "job_search_patterns")
 
 
-def career_verdict(j, text, pattern=CAREER_RE):
+def career_verdict(j, text, pattern=None):
     """Career reels are for the owner's job search, not a tool to install, so the judge
     always skips them. Tag them `career` instead so the digest keeps them findable.
     -> True if overridden."""
-    if j["verdict"] != "skip" or not pattern.search(text):
+    if j["verdict"] != "skip" or not (pattern or CAREER_RE).search(text):
         return False
     j["verdict"], j["cap_reason"] = "career", "career or job-search signal"
     return True
 
 
-# The owner's personal pillars (owner, 2026-10-09: "you know I live and breathe travel, habits,
-# dating, and emergency prep"). The judge is business-only, so it skips these; they are not skips.
-PERSONAL_RE = re.compile(
-    r"\b(?:travel\w*|trips?|itinerar\w+|hotels?|resorts?|flights?|airlines?"
-    r"|award (?:seats?|flights?)"
-    r"|frequent[\s-]flyer|hilton|marriott|hyatt|lounges?|passports?|vacations?|destinations?"
-    r"|habits?|routines?|mindset|self[\s-]improvement|journal\w*|adhd|sleep|fitness"
-    r"|workouts?|wellness|longevity|morning routine|discipline"
-    r"|dating|relationships?|tinder|hinge|bumble|first dates?|attraction"
-    r"|emergency|prepper|prepping|preparedness|survival|go[\s-]bag|bug[\s-]out|disaster|first aid"
-    r"|blackouts?|power outages?"
-    r"|new[\s-]zealand|m[aā]ori|health|immune|vaccines?|personality|self[\s-]help|motivation\w*"
-    r"|hobb(?:y|ies)|chargers?|eyeglass\w*|productivity system"
-    r"|algo(?:rithmic)?[\s-]+trading|trading\s+bots?)\b",
-    re.I,
-)
+# The owner's personal interests (from the profile). The judge is business-only, so it skips
+# these; they are not skips.
+PERSONAL_RE = profile_re(OWNER, "personal_patterns")
 
 
-def personal_verdict(j, text):
-    """Travel/habits/dating/emergency-prep reels are the owner's core personal interests:
+def personal_verdict(j, text, pattern=None):
+    """Reels matching the profile's personal_patterns are the owner's own interests:
     tag them `personal`, never `skip`. Matches title + tags only: transcripts of AI-tool reels
     say "productivity"/"travel" in passing. -> True if overridden."""
-    if j["verdict"] != "skip" or not PERSONAL_RE.search(text):
+    if j["verdict"] != "skip" or not (pattern or PERSONAL_RE).search(text):
         return False
     j["verdict"], j["cap_reason"] = (
         "personal",
-        "owner's personal interest (travel/habits/dating/prep)",
+        "owner's personal interest",
     )
     return True
 
@@ -1824,12 +1833,13 @@ def self_check():
     ] == ["n1", "n2"]
     # 8 own-repo -> already-have; catalog cap
     own = finalize(
-        dict(good, evidence=["https://github.com/MediaJohnD/foo"]),
-        {"https://github.com/MediaJohnD/foo"},
-        {"https://github.com/MediaJohnD/foo"},
+        dict(good, evidence=["https://github.com/example-owner/foo"]),
+        {"https://github.com/example-owner/foo"},
+        {"https://github.com/example-owner/foo"},
         [],
         ["foo-cli"],
         [],
+        owners={"example-owner"},
     )
     assert own["verdict"] == "already-have"
     cat = finalize(
@@ -1882,32 +1892,29 @@ def self_check():
         assert not gate_verdict({"verdict": "skip"}, kw, st)
     assert not gate_verdict({"verdict": "skip"}, None, None)
     assert not gate_verdict({"verdict": "try-now"}, kw, None)
-    # 12 career reels are tagged, not skipped; stock "fractional shares" is not career
-    j = {"verdict": "skip"}
-    assert career_verdict(j, "Scaling Fractional CMOs past $150K") and j["verdict"] == "career"
-    assert career_verdict({"verdict": "skip"}, "Join GLG, the expert network")
-    assert not career_verdict({"verdict": "skip"}, "Buy fractional shares on Robinhood")
-    assert not career_verdict({"verdict": "try-now"}, "fractional CTO toolkit repo")
-    for t in ("Alternative Job Boards", "Finding Remote Jobs", "Recruiter Message Templates"):
-        assert career_verdict({"verdict": "skip"}, t, JOB_SEARCH_RE), t
-    assert not career_verdict({"verdict": "skip"}, "Scrape any job with cron", JOB_SEARCH_RE)
-    assert not career_verdict({"verdict": "skip"}, "Funnel high-ticket ai-interview", JOB_SEARCH_RE)
-    assert not personal_verdict({"verdict": "skip"}, "Skool community ai-agents trading-bot")
-    assert personal_verdict({"verdict": "skip"}, "How Vaccines Harness the Immune System")
-    assert personal_verdict({"verdict": "skip"}, "Building an Algorithmic Trading Bot")
-    j = {"verdict": "skip"}
-    assert (
-        personal_verdict(j, "Step-by-Step Guide to Packing an Emergency Supply Bin")
-        and j["verdict"] == "personal"
+    # career/personal tagging, against the committed example profile so any clone passes
+    ex = load_profile(PROFILE_EXAMPLE)
+    car, job, per = (
+        profile_re(ex, k) for k in ("career_patterns", "job_search_patterns", "personal_patterns")
     )
-    for t in (
-        "Three-Step Scientific Dating Framework",
-        "Never Miss Twice habit",
-        "Maximize Hilton Honors",
-    ):
-        assert personal_verdict({"verdict": "skip"}, t), t
-    assert not personal_verdict({"verdict": "skip"}, "Scaling Ads: 50 Hooks to 750 Variations")
-    assert not personal_verdict({"verdict": "later"}, "travel planning app")
+    assert profile_re({}, "career_patterns").search("anything") is None
+    assert "has not described" in owner_context({}) and "Example" in owner_context(ex)
+    j = {"verdict": "skip"}
+    assert career_verdict(j, "Scaling Fractional CMOs past $150K", car) and j["verdict"] == "career"
+    assert career_verdict({"verdict": "skip"}, "Join GLG, the expert network", car)
+    assert not career_verdict({"verdict": "skip"}, "Buy fractional shares on Robinhood", car)
+    assert not career_verdict({"verdict": "try-now"}, "fractional CTO toolkit repo", car)
+    for t in ("Alternative Job Boards", "Finding Remote Jobs", "Recruiter Message Templates"):
+        assert career_verdict({"verdict": "skip"}, t, job), t
+    assert not career_verdict({"verdict": "skip"}, "Scrape any job with cron", job)
+    assert not career_verdict({"verdict": "skip"}, "Funnel high-ticket ai-interview", job)
+    assert not personal_verdict({"verdict": "skip"}, "Skool community ai-agents trading-bot", per)
+    j = {"verdict": "skip"}
+    assert personal_verdict(j, "Cheap Flights to Lisbon", per) and j["verdict"] == "personal"
+    for t in ("Never Miss Twice habit", "Beginner Sourdough Bread", "10-Minute Home Workout"):
+        assert personal_verdict({"verdict": "skip"}, t, per), t
+    assert not personal_verdict({"verdict": "skip"}, "Scaling Ads: 50 Hooks to 750 Variations", per)
+    assert not personal_verdict({"verdict": "later"}, "travel planning app", per)
     print("self-check ok")
 
 

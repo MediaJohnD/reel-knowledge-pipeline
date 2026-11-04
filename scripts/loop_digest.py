@@ -273,7 +273,7 @@ def build(now=None):
         "",
         ", ".join(f"{t} ({n})" for t, n in top),
         "",
-        "### Personal topics (travel, habits, dating, prep)",
+        "### Personal topics",
         "",
         *[f"- {p}" for p in personal],
         "",
@@ -292,7 +292,7 @@ def test():
         "| date | reel | verdict | businesses | effort | id | note |\n"
         "|---|---|---|---|---|---|---|\n"
         "| 2026-10-08 | Optimism | `skip` |  | None | `7958f20d5db75c18` | `optimism.md` |\n"
-        "| 2026-10-08 | A | B title | `try-now` | RecreationHQ | 30 min "
+        "| 2026-10-08 | A | B title | `try-now` | Example Co | 30 min "
         "| `5d663b1a8265b223` | `combining.md` |\n"
         "| 2026-08-01 | Old | `try-now` | X | 1 day | `aaaaaaaaaaaaaaaa` | `old.md` |\n"
     )

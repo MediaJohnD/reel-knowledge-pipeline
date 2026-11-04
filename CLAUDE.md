@@ -88,7 +88,7 @@ The system supports:
   specific public-doc hosts (`docs.google.com`, `airtable.com`, `findarepo.com`,
   `thefounderos.com`) turned out to have the same low-risk profile - a plain unauthenticated
   GET with no JS execution, same as any RSS reader. As of 2026-08-10, at the project owner's
-  explicit direction (personal knowledge/ADHD-management vault - "not just Reels and YouTube
+  explicit direction (personal knowledge vault - "not just Reels and YouTube
   Shorts... any knowledge or topics I find interesting"), text-capture is a **catch-all**:
   `classify_url_kind()` in `validators.py` routes any http(s) URL not matched by
   `download.allowed_domains` to the text-capture path by default, unless it's listed in

@@ -62,7 +62,15 @@ NOT_OWNERS = {
     "org",
     "you",
 }
-OWN = {"mediajohnd"}
+
+
+def own_logins():
+    """The owner's GitHub logins from config/owner_profile.yaml (gitignored), lowercase."""
+    import review_new_reels as review
+
+    return review.OWNERS
+
+
 FILES = [
     "README.md",
     "package.json",
@@ -440,12 +448,12 @@ def main(argv):
 
     overrides = load_overrides()
     now = datetime.now(UTC)
-    rows = {}
+    rows, own = {}, own_logins()
     for r in repos:
         meta, flags = fetched[r]
         if meta == "error":
             g, reasons, meta = "error", ["GitHub API error"], {}
-        elif r.split("/")[0].lower() in OWN:
+        elif r.split("/")[0].lower() in own:
             g, reasons = "own", []
         else:
             g, reasons = grade(meta, flags, now)
