@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "Safe-by-default video/reel knowledge ingestion pipeline: URL -> transcript -> enriched Obsidian note -> optional Claude/Codex skill artifact."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "typer>=0.27.1",
     "pydantic>=2.14.2",
@@ -45,7 +46,7 @@ dev = [
 reel-pipeline = "reel_pipeline.cli:app"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.uv]
