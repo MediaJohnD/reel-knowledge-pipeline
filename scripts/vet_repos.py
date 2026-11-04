@@ -65,10 +65,10 @@ NOT_OWNERS = {
 
 
 def own_logins():
-    """The owner's GitHub logins from config/owner_profile.yaml (gitignored), lowercase."""
+    """The owner's GitHub logins: config/owner_profile.yaml (gitignored) plus `gh api user`."""
     import review_new_reels as review
 
-    return review.OWNERS
+    return review.get_owners()
 
 
 FILES = [
