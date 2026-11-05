@@ -1,4 +1,3 @@
-<!-- /autoplan restore point: "C:\\Users\\media\\.gstack\\projects\\MediaJohnD-reel-knowledge-pipeline\\master-autoplan-restore-20260926-124903.md" -->
 # Comment-gated links: follow, comment, read the DM
 
 Date: 2026-09-26. Owner sign-off: given in chat on 2026-09-26 ("go with A; include DM reading").

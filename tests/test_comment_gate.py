@@ -687,7 +687,7 @@ class _LoginBrowser:
         return self.urls.pop(0)
 
     def owner_handle(self) -> str:
-        return "mediajohnd"
+        return "example_handle"
 
 
 def test_login_never_navigates_away_from_facebook_2fa() -> None:
@@ -695,7 +695,7 @@ def test_login_never_navigates_away_from_facebook_2fa() -> None:
         ["https://www.facebook.com/two_step_verification/two_factor/", "https://www.instagram.com/"]
     )
     said: list[str] = []
-    assert cg.login("p", lambda: None, said.append, b) == "mediajohnd"
+    assert cg.login("p", lambda: None, said.append, b) == "example_handle"
     assert len(said) == 1  # asked to finish 2FA once
     assert b.gotos == ["https://www.instagram.com/accounts/login/", "https://www.instagram.com/"]
 

@@ -111,6 +111,17 @@ def redact(url):
     return f"{p.scheme}://{p.netloc}{p.path}" + ("?..." if p.query else "")
 
 
+def result_keys(urls):
+    """-> {url: redacted key}, numbering repeats so links that differ only in the query
+    don't overwrite each other's result."""
+    keys, seen = {}, Counter()
+    for u in urls:
+        k = redact(u)
+        seen[k] += 1
+        keys[u] = k if seen[k] == 1 else f"{k} ({seen[k]})"
+    return keys
+
+
 def collect_notes():
     """-> ({note path: verdict or None}, Reels folder). Existing files only."""
     import review_new_reels as review
@@ -329,6 +340,8 @@ def self_check():
         "error",
     ]
     assert redact("https://a.io/p?token=1#x") == "https://a.io/p?..."
+    k = result_keys(["https://a.io/p?id=1", "https://a.io/p?id=2", "https://a.io/q"])
+    assert sorted(k.values()) == ["https://a.io/p?...", "https://a.io/p?... (2)", "https://a.io/q"]
 
     calls = []
 
@@ -423,11 +436,12 @@ def main(argv):
     print(f"retesting {len(again)}", flush=True)
     results.update(run_checks(again))
     when = datetime.now(UTC)
+    keys = result_keys(results)
     payload = {
         "checked_at": when.isoformat(),
         "skipped": dict(Counter(skipped.values())),
         "results": {
-            redact(u): {**r, "notes": [Path(n).stem for n in found[u]]} for u, r in results.items()
+            keys[u]: {**r, "notes": [Path(n).stem for n in found[u]]} for u, r in results.items()
         },
     }
     HEALTH.write_text(json.dumps(payload, indent=1), "utf-8")

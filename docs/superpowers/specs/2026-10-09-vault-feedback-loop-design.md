@@ -9,7 +9,7 @@ Evidence:
 - `session-context.py` (UserPromptSubmit) is keyword-only. It never surfaces a reel the
   prompt didn't already name.
 - `review_new_reels.py` is business-centric. 169 of ~491 reels are `skip`, which includes
-  every personal topic (travel, habits, dating, emergency prep).
+  every personal-interest topic.
 - 52 `try-now` verdicts have no follow-through: nothing tracks whether they were adopted.
 - Nothing checks stack freshness. CLIs, Docker images, `model-rankings.md` and the
   free-llm waterfall only change when someone happens to ask.
@@ -40,12 +40,34 @@ A stdlib-only script that runs in under 60s and needs no LLM. Sections:
   - Plus "Personal topics": the newest 12 `personal` reels, wikilinked.
 
 ### 1b. `personal` verdict in `review_new_reels.py` (owner, 2026-10-09)
-"WHY would you EVER skip something I sent... travel, habits, dating, and emergency prep."
+Reels on the owner's personal interests should never be `skip`.
 The judge stays business-only. A deterministic post-override (`personal_verdict`, after
 `career_verdict`) relabels a `skip` as `personal` when `PERSONAL_RE` matches the note's title
-or tags. The body is not used because it gave 52 hits, mostly false positives.
+or tags (patterns now live in the gitignored `config/owner_profile.yaml`). The body is not used because it gave 52 hits, mostly false positives.
 `--backfill-personal --apply` relabeled 26 past reels in the manifest, the digest and the
 notes. It is idempotent.
+
+Update 2026-11-05 (three-model deep dive of the reel KB): `personal` caught sales and
+recruiter reels through broad words ("mindset", "attraction", "relationship"), and
+sales/copy/pricing how-tos landed in `skip` because the tool-first judge has no repo to
+cite. Added a `method` label (`method_verdict`, `method_patterns` in the profile, matched on
+the title only because tool reels carry "outreach"/"pricing" in their tags) and an
+explicit order: career, then method, then personal. `relabel` re-checks past `personal`
+rows too, and the backfill now reads the verdict from the note for `seeded` manifest rows.
+`--backfill-personal --apply` relabelled 17 reels (13 to `method`, 2 to `career`, 2 seeded
+trading-bot reels to `personal`). The Loop Digest gained "Methods" and "Career" sections
+and a "Methods recently sent" brief line, so these labels resurface instead of hiding.
+
+Second update, same day (stack-aware labels): the judge called reels about tools already
+installed `try-now` or `skip` (Jev, Aider, Karpathy-style behavior files). `stack_rules`
+now runs after finalize: a `skip` whose title names a non-platform tool that is installed
+becomes `already-have`; a `try-now` whose job is already covered (`COVERED` gained AI pair
+programming and behavior-rules files) becomes `already-have`; a `try-now` listicle of
+"repos that replace SaaS" becomes `later`. Installed tools come from `config/have.txt` plus
+the profile's new `have_tools` list (for hosted tools no scan can see). `note_tools`
+dedupes before the cap and ignores hosting platforms (GitHub, npm, ...), so a passing
+"GitHub" mention never counts. `--backfill-stack --apply` relabelled 6 reels. The Loop
+Digest backlog now drops an unticked item once its digest row stops saying `try-now`.
 
 The script writes atomically (tmp + replace). The vault's nightly commit keeps history.
 
