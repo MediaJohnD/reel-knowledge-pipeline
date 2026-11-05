@@ -547,6 +547,8 @@ def _raise_yt_dlp(message):
         "ERROR: There's no media in this post",
         "ERROR: Nothing to download",
         "ERROR: Requested format is not available",
+        # LinkedIn's extractor when the post has no <video> tag (a text post).
+        "ERROR: [LinkedIn] 7524058914271821825: Unable to extract video; please report this",
     ],
 )
 def test_yt_dlp_says_no_media_raises_no_media_error(tmp_path, monkeypatch, message):
@@ -557,8 +559,17 @@ def test_yt_dlp_says_no_media_raises_no_media_error(tmp_path, monkeypatch, messa
         downloader.download("https://x.com/a/status/1", "cid-no-media")
 
 
-def test_yt_dlp_network_failure_stays_a_plain_download_error(tmp_path, monkeypatch):
-    _install_fake_yt_dlp(monkeypatch, extract_info_impl=_raise_yt_dlp("HTTP Error 500"))
+@pytest.mark.parametrize(
+    "message",
+    [
+        "HTTP Error 500",
+        # Other extractors' field names: a broken extractor, not a post without video.
+        "ERROR: [Foo] 1: Unable to extract video url; please report this issue",
+        "ERROR: [Foo] 1: Unable to extract video id; please report this issue",
+    ],
+)
+def test_yt_dlp_other_failures_stay_plain_download_errors(tmp_path, monkeypatch, message):
+    _install_fake_yt_dlp(monkeypatch, extract_info_impl=_raise_yt_dlp(message))
     downloader = YtDlpDownloader(Settings(project_root=tmp_path))
 
     with pytest.raises(DownloadError) as caught:

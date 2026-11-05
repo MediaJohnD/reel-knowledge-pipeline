@@ -241,6 +241,94 @@ def test_silent_clip_retry_still_uses_the_url_for_ordinary_media(tmp_path):
     assert downloader.video_calls == ["https://www.youtube.com/watch?v=abc"]
 
 
+# --- A short link that lands on a media host with nothing to download ---
+
+
+class ShortLinkFetcher(ScriptedFetcher):
+    """The short link redirects onto `target`; `target` itself has text."""
+
+    def __init__(self, target: str):
+        super().__init__()
+        self.target = target
+
+    def fetch(self, url: str, content_id: str) -> TranscriptResult:
+        self.calls.append(url)
+        if url != self.target:
+            raise MediaFound(url=self.target)
+        return _text(content_id)
+
+
+_POST = "https://x.com/someone/status/1"
+
+
+def test_short_link_to_a_post_with_no_media_keeps_the_posts_text(tmp_path):
+    """lnkd.in -> a LinkedIn text post: yt-dlp finds no video. The post's own
+    page has the text, so it must be captured, as a direct link to it would be."""
+    fetcher = ShortLinkFetcher(_POST)
+    pipeline = _pipeline(
+        _settings(tmp_path),
+        downloader=RaisingDownloader(NoMediaError("No video could be found in this tweet")),
+        text_fetcher=fetcher,
+    )
+    _queue(pipeline, "https://short.example/p/abc")
+
+    summary = pipeline.run_once()
+
+    assert summary.done == 1
+    assert fetcher.calls == ["https://short.example/p/abc", _POST]
+
+
+def test_short_link_plain_download_error_waits_for_the_last_attempt(tmp_path):
+    fetcher = ShortLinkFetcher(_POST)
+    pipeline = _pipeline(
+        _settings(tmp_path, max_attempts=2),
+        downloader=RaisingDownloader(DownloadError("Unable to extract video")),
+        text_fetcher=fetcher,
+    )
+    _queue(pipeline, "https://short.example/p/abc")
+
+    pipeline.run_once()
+
+    assert _POST not in fetcher.calls[1:]
+    assert _only_record(pipeline).status is ItemStatus.FAILED
+
+    summary = pipeline.run_once()
+
+    assert summary.done == 1
+    assert fetcher.calls[-1] == _POST
+
+
+def test_short_link_refused_download_never_reaches_text_capture(tmp_path):
+    fetcher = ShortLinkFetcher(_POST)
+    pipeline = _pipeline(
+        _settings(tmp_path, max_attempts=1),
+        downloader=RaisingDownloader(DownloadError("ERROR: HTTP Error 403: Forbidden")),
+        text_fetcher=fetcher,
+    )
+    _queue(pipeline, "https://short.example/p/abc")
+
+    pipeline.run_once()
+
+    assert fetcher.calls == ["https://short.example/p/abc"]
+    assert _only_record(pipeline).status is ItemStatus.FAILED_PERMANENT
+
+
+def test_short_link_to_a_host_without_text_fallback_keeps_its_error(tmp_path):
+    target = "https://www.youtube.com/watch?v=abc"
+    fetcher = ShortLinkFetcher(target)
+    pipeline = _pipeline(
+        _settings(tmp_path, max_attempts=1),
+        downloader=RaisingDownloader(NoMediaError("no video")),
+        text_fetcher=fetcher,
+    )
+    _queue(pipeline, "https://short.example/p/abc")
+
+    pipeline.run_once()
+
+    assert fetcher.calls == ["https://short.example/p/abc"]
+    assert _only_record(pipeline).status is not ItemStatus.DONE
+
+
 # --- Media to text ---
 
 
