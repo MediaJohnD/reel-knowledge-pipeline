@@ -1318,6 +1318,14 @@ def relabel(j, about, body="", title=None, pats=None):
     return True
 
 
+def _write_raw(path: Path, text: str) -> None:
+    """Atomic write with no newline translation, so a note keeps its own line endings."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
 def _backfill(settings, apply, verdicts, decide, show_cap=False):
     """Shared walk for the relabel backfills. For each past review whose verdict is in
     `verdicts`, decide(j, fm, text) may change j; the new verdict goes to the manifest, the
@@ -1354,10 +1362,12 @@ def _backfill(settings, apply, verdicts, decide, show_cap=False):
             line = f"- verdict: {new}" + (
                 f" (capped: {j['cap_reason']})" if show_cap and j.get("cap_reason") else ""
             )
-            atomic_write(
+            # text was read raw (CRLF kept), so write it back raw: atomic_write's text mode
+            # would turn each \r\n into \r\r\n on Windows. [^\r\n]* keeps the line's \r.
+            _write_raw(
                 p,
                 re.sub(
-                    rf"(?m)^- verdict: {re.escape(was)}(?![\w-]).*$",
+                    rf"(?m)^- verdict: {re.escape(was)}(?![\w-])[^\r\n]*",
                     lambda _, line=line: line,
                     text,
                     count=1,
@@ -2156,10 +2166,10 @@ def self_check():
             "s2": ("Ten Copywriting Frameworks Again", "later"),
         }
         for cid, (title, v) in notes.items():
-            Path(t, f"{cid}.md").write_text(
-                f"---\ntitle: {title}\n---\n# {title}\n\n## Review (auto, d)\n- verdict: {v}\n",
-                "utf-8",
-            )
+            # m1 has CRLF line endings, the others LF: a relabel must keep each as it was
+            nl = "\r\n" if cid == "m1" else "\n"
+            body = f"---\ntitle: {title}\n---\n# {title}\n\n## Review (auto, d)\n- verdict: {v}\n"
+            Path(t, f"{cid}.md").write_bytes(body.replace("\n", nl).encode("utf-8"))
         Path(t, DIGEST_NAME).write_text("| [[m1]] | `skip` | x | `m1` |\n", "utf-8")
         save_manifest(
             {
@@ -2176,6 +2186,9 @@ def self_check():
         for cid, want in (("m1", "method"), ("s1", "method"), ("s2", "later")):
             assert f"- verdict: {want}\n" in Path(t, f"{cid}.md").read_text("utf-8"), cid
         assert "`method`" in Path(t, DIGEST_NAME).read_text("utf-8")
+        m1b, s1b = Path(t, "m1.md").read_bytes(), Path(t, "s1.md").read_bytes()
+        assert b"\r\r" not in m1b and m1b.count(b"\r\n") == m1b.count(b"\n"), m1b
+        assert b"\r" not in s1b, s1b
         backfill_personal(V, True, pats)  # idempotent: nothing left to relabel
         assert load_manifest()["items"] == m
     # stack backfill: re-applies the have / covered / listicle rules to past reviews
