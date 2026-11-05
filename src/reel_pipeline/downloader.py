@@ -76,8 +76,12 @@ class NoMediaError(DownloadError):
     """yt-dlp reached the page and says there is nothing on it to download."""
 
 
+# "unable to extract video;" is LinkedIn's extractor finding no <video> tag (a text
+# post). Only that exact field name: "video url" or "video id" is a broken extractor.
 _NO_MEDIA_RE = re.compile(
-    r"unsupported url|no video|no media|nothing to download|requested format", re.IGNORECASE
+    r"unsupported url|no video|no media|nothing to download|requested format"
+    r"|unable to extract video;",
+    re.IGNORECASE,
 )
 
 

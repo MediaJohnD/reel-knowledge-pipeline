@@ -259,16 +259,28 @@ class WorkerPipeline:
                 try:
                     transcript = self._capture_text(record)
                 except MediaFound as found:
-                    download_result = self._download_found_media(found, record.content_id)
-                    media_retry_url = found.url
-                    record.last_completed_stage = ItemStage.DOWNLOADED
-                    log_context(
-                        logger,
-                        20,
-                        "link turned out to be media",
-                        content_id=record.content_id,
-                        url=found.url or record.url,
-                    )
+                    try:
+                        download_result = self._download_found_media(found, record.content_id)
+                    except DownloadError as exc:
+                        # A short link onto a post with no video (lnkd.in -> a
+                        # LinkedIn text post): the post's own page holds the text.
+                        if found.url is None or not self._text_fallback_allowed(
+                            exc, found.url, record
+                        ):
+                            raise
+                        transcript = self._media_text_fallback(record, exc, url=found.url)
+                        self._write_transcript_cache(record.content_id, transcript)
+                        record.last_completed_stage = ItemStage.TRANSCRIBED
+                    else:
+                        media_retry_url = found.url
+                        record.last_completed_stage = ItemStage.DOWNLOADED
+                        log_context(
+                            logger,
+                            20,
+                            "link turned out to be media",
+                            content_id=record.content_id,
+                            url=found.url or record.url,
+                        )
                 else:
                     log_context(
                         logger, 20, "text captured", content_id=record.content_id, url=record.url
@@ -303,11 +315,7 @@ class WorkerPipeline:
                     try:
                         download_result = self.downloader.download(record.url, record.content_id)
                     except DownloadError as exc:
-                        if (
-                            isinstance(exc, PostUnavailableError)
-                            or is_refusal(exc, record.url)
-                            or not (isinstance(exc, NoMediaError) or self._on_last_attempt(record))
-                        ):
+                        if not self._text_fallback_allowed(exc, record.url, record):
                             raise
                         transcript = self._media_text_fallback(record, exc)
                         self._write_transcript_cache(record.content_id, transcript)
@@ -559,15 +567,26 @@ class WorkerPipeline:
             caption_file.parent.mkdir(parents=True, exist_ok=True)
             caption_file.write_text(caption, encoding="utf-8")
 
-    def _media_text_fallback(self, record: StateRecord, cause: Exception) -> TranscriptResult:
-        """Text capture for a post with nothing to download, on the configured hosts
-        only. If it comes up short the original error stands, with the reason added."""
-        host = (urlparse(record.url).hostname or "").lower()
+    def _text_fallback_allowed(self, exc: DownloadError, url: str, record: StateRecord) -> bool:
+        """A failed download may try text capture: never for a gone post or a
+        refusal, at once for no media, else only on the last attempt."""
+        if isinstance(exc, PostUnavailableError) or is_refusal(exc, url):
+            return False
+        return isinstance(exc, NoMediaError) or self._on_last_attempt(record)
+
+    def _media_text_fallback(
+        self, record: StateRecord, cause: Exception, url: str | None = None
+    ) -> TranscriptResult:
+        """Text capture of `url` (default: the item's own) for a post with nothing to
+        download, on the configured hosts only. If it comes up short the original
+        error stands, with the reason added."""
+        url = url or record.url
+        host = (urlparse(url).hostname or "").lower()
         domains = self.settings.text_capture.media_text_fallback_domains
         if not any(host == d or host.endswith(f".{d}") for d in domains):
             raise cause
         try:
-            result = self.text_fetcher.fetch(record.url, record.content_id)
+            result = self.text_fetcher.fetch(url, record.content_id)
         except MediaFound:
             reason = "the page only held media"
         except TextFetchError as exc:
@@ -579,7 +598,7 @@ class WorkerPipeline:
                     30,
                     "no media, kept the post's text instead",
                     content_id=record.content_id,
-                    url=record.url,
+                    url=url,
                 )
                 return result
             reason = f"only {len(result.text.strip())} chars"

@@ -37,13 +37,14 @@ too if you save photo posts or videos with no speech (music-only reels). Those a
 described from images, and Groq alone hits its per-minute limit after about 3 images,
 so those items fail and retry later. Speech videos work fine with Groq only.
 
-`--extra local-whisper` transcribes on your own CPU (no GPU needed). To use
-OpenAI's hosted Whisper instead, skip the extra and set
+`--extra local-whisper` transcribes on your own CPU (no GPU needed). The first
+run downloads the Whisper `small` model once (about 460 MB), so it takes longer
+than later runs. To use OpenAI's hosted Whisper instead, skip the extra and set
 `REEL_TRANSCRIPTION_BACKEND=openai` plus `OPENAI_API_KEY`.
 
-**If you use Ollama**, add `REEL_OLLAMA_HOST=http://127.0.0.1:11434` (Ollama's
-normal port; this repo's default, 11435, is specific to the owner's machine).
-The Ollama model tags in `config/settings.yaml` (`gpt-oss:20b-64k`,
+**If you use Ollama**, it is expected on its normal port (11434); set
+`REEL_OLLAMA_HOST` only if yours runs elsewhere. Ollama is the last rung of the
+fallback chain, so without it your hosted keys do the work. The Ollama model tags in `config/settings.yaml` (`gpt-oss:20b-64k`,
 `gemma4:12b`) are the owner's; pull your own models and edit those names, or
 skip Ollama and let the hosted keys do the work.
 
