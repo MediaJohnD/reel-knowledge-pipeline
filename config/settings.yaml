@@ -46,7 +46,9 @@ transcription:
 # "anthropic" (set ANTHROPIC_API_KEY) for hosted Claude instead.
 llm:
   provider: groq # anthropic | ollama | groq | gemini | openrouter | mistral | openai_compat
-  ollama_host: http://127.0.0.1:11435
+  # Ollama's standard port. The owner's machine runs it on 11435 and sets
+  # REEL_OLLAMA_HOST in .env, so a fresh clone needs no edit here.
+  ollama_host: http://127.0.0.1:11434
   # Text fallback chain, tried in order on any call failure (dead key, rate
   # limit, context overflow) - see call_llm()'s docstring in llm_client.py.
   # `provider` above and enrichment.model/skill_writer.model below are only
