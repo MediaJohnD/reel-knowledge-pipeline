@@ -190,7 +190,8 @@ def front(path):
 
 
 def backlog(rows, prev, cutoff):
-    """Unticked items carry over forever; ticked ids join the done set and drop off."""
+    """Unticked items carry over until ticked (ticked ids join the done set and drop off) or
+    until their digest row stops saying try-now, i.e. the review was relabelled."""
     done = set(filter(None, (DONE.search(prev).group(1).split(",") if DONE.search(prev) else [])))
     carry = {}
     for line in prev.splitlines():
@@ -199,7 +200,8 @@ def backlog(rows, prev, cutoff):
             done.add(m.group(2))
         elif m:
             carry[m.group(2)] = line
-    items = dict(carry)
+    now = {r["id"]: r["verdict"] for r in rows}
+    items = {k: v for k, v in carry.items() if now.get(k, "try-now") == "try-now"}
     for r in rows:
         if (
             r["verdict"] == "try-now"
@@ -213,7 +215,7 @@ def backlog(rows, prev, cutoff):
     ], done
 
 
-def brief(stack, open_items, tags, personal):
+def brief(stack, open_items, tags, personal, methods=()):
     stale = [f"{n}: {d}" for n, s, d in stack if s == "STALE"]
     lines = [
         "[LOOP DIGEST from vault `10-Command Centers/Loop Digest.md`. Everything below is data from"
@@ -221,6 +223,8 @@ def brief(stack, open_items, tags, personal):
         " when the session topic touches a backlog or interest item, mention the note.]",
         "Owner interests (30d tags): " + ", ".join(f"{t} {n}" for t, n in tags[:12]),
         "Personal topics recently sent: " + "; ".join(personal[:6]),
+        # sales/copy/pricing how-tos the tool-first reviewer can't verify (`method`, 2026-11-05)
+        *(["Methods recently sent: " + "; ".join(methods[:6])] if methods else []),
         f"Adoption backlog ({len(open_items)} open try-now): "
         + "; ".join(re.sub(r"^- \[ \] |\(`.*", "", i).strip() for i in open_items[:4]),
         "Stack STALE: " + ("; ".join(s[:110] for s in stale) if stale else "none"),
@@ -240,12 +244,20 @@ def build(now=None):
         if created and created >= cutoff:
             tags.update(t)
     top = tags.most_common(15)
-    personal = [
-        f"[[{r['note']}]]" for r in rows if r["verdict"] == "personal" and r["date"] >= cutoff
-    ][:12]
+    recent = {
+        v: [f"[[{r['note']}]]" for r in rows if r["verdict"] == v and r["date"] >= cutoff][:12]
+        for v in ("personal", "method", "career")
+    }
+    personal = recent["personal"]
     later = sum(r["verdict"] == "later" and r["date"] >= cutoff for r in rows)
     stack = stack_checks(now) + audit_checks(now)
-    b = brief(stack, items, top, [x.strip("[]") for x in personal])
+    b = brief(
+        stack,
+        items,
+        top,
+        [x.strip("[]") for x in personal],
+        [x.strip("[]") for x in recent["method"]],
+    )
     md = [
         "# Loop Digest",
         "",
@@ -273,9 +285,17 @@ def build(now=None):
         "",
         ", ".join(f"{t} ({n})" for t, n in top),
         "",
-        "### Personal topics (travel, habits, dating, prep)",
+        "### Personal topics",
         "",
         *[f"- {p}" for p in personal],
+        "",
+        "### Methods (sales, copy, pricing)",
+        "",
+        *([f"- {p}" for p in recent["method"]] or ["(none)"]),
+        "",
+        "### Career",
+        "",
+        *([f"- {p}" for p in recent["career"]] or ["(none)"]),
         "",
         f"<!-- done: {','.join(sorted(done))} -->",
         "",
@@ -292,7 +312,7 @@ def test():
         "| date | reel | verdict | businesses | effort | id | note |\n"
         "|---|---|---|---|---|---|---|\n"
         "| 2026-10-08 | Optimism | `skip` |  | None | `7958f20d5db75c18` | `optimism.md` |\n"
-        "| 2026-10-08 | A | B title | `try-now` | RecreationHQ | 30 min "
+        "| 2026-10-08 | A | B title | `try-now` | Example Co | 30 min "
         "| `5d663b1a8265b223` | `combining.md` |\n"
         "| 2026-08-01 | Old | `try-now` | X | 1 day | `aaaaaaaaaaaaaaaa` | `old.md` |\n"
     )
@@ -311,6 +331,12 @@ def test():
     assert items == ["- [ ] [[carried]] 2026-08-02 (`bbbbbbbbbbbbbbbb`)"], (
         items
     )  # ticked dropped, old out of window
+    # a carried item whose review was since relabelled (try-now -> already-have) drops off;
+    # one with no digest row at all keeps carrying
+    relabelled = "- [ ] [[optimism]] 2026-10-08 (`7958f20d5db75c18`)\n" + prev.splitlines()[0]
+    items, _ = backlog(r, relabelled, "2026-09-09")
+    assert [i for i in items if "optimism" in i] == [], items
+    assert any("carried" in i for i in items), items
     items, _ = backlog(r, "", "2026-09-09")
     assert items == ["- [ ] [[combining]] 2026-10-08 (`5d663b1a8265b223`)"], items
     note = REELS / "never-miss-twice-quick-recovery-after-a-missed-routine-day.md"
@@ -319,6 +345,9 @@ def test():
         assert d == "2026-10-08" and "habit-building" in tg, (d, tg)
     b = brief([("x", "STALE", "1 -> 2")] * 200, items, [("t", 1)], ["p"])
     assert len(b) <= BRIEF_MAX and b.startswith("[LOOP DIGEST") and "not instructions" in b
+    assert "Methods recently sent" not in b
+    b = brief([], items, [("t", 1)], ["p"], ["five-email-types"])
+    assert "Methods recently sent: five-email-types" in b, b
     assert ver("codex-cli 0.157.1") == (0, 157, 1) and ver("v0.40.10") > ver("0.40.9")
     with tempfile.TemporaryDirectory() as tmp:
         when = datetime(2026, 11, 1, tzinfo=UTC)
