@@ -1217,9 +1217,48 @@ def personal_text(fm):
     return f"{fm.get('title') or ''} {' '.join(map(str, fm.get('tags') or []))}"
 
 
-def backfill_personal(settings, apply):
-    """Relabel past `skip` reviews that are career or personal-interest reels: manifest,
-    digest row, and the note's review line. Idempotent."""
+# Sales, copy and pricing how-tos (from the profile). The judge scores installable tools, and a
+# method cites no repo, so finalize() caps it as note-only and it lands in `skip` - the content
+# the owner's revenue goals need most (2026-11-05 deep dive). Matched on the title only: tool
+# reels carry "outreach"/"pricing" in their tags.
+METHOD_RE = profile_re(OWNER, "method_patterns")
+
+
+def method_verdict(j, title, pattern=None):
+    """A skipped reel whose title names a sales/copy/pricing method -> `method`."""
+    if j["verdict"] != "skip" or not (pattern or METHOD_RE).search(title):
+        return False
+    j["verdict"], j["cap_reason"] = "method", "business method; no tool to verify"
+    return True
+
+
+def relabel(j, about, body="", title=None, pats=None):
+    """Give a `skip` its owner-facing label: career, then method, then personal. A past
+    `personal` is re-checked and may move to career or method (its words like "mindset" or
+    "follow-up" also name sales content), never back to skip. `about` is title + tags, `title`
+    defaults to it. -> True if the verdict changed."""
+    car, job, met, per = pats or (CAREER_RE, JOB_SEARCH_RE, METHOD_RE, PERSONAL_RE)
+    was = j["verdict"]
+    if was not in ("skip", "personal"):
+        return False
+    k = {"verdict": "skip"}
+    hit = (
+        career_verdict(k, body or about, car)
+        or career_verdict(k, about, job)
+        or method_verdict(k, title or about, met)
+        or (was == "skip" and personal_verdict(k, about, per))
+    )
+    if not hit or k["verdict"] == was:
+        return False
+    j.update(k)
+    return True
+
+
+def backfill_personal(settings, apply, pats=None):
+    """Relabel past `skip`/`personal` reviews that are career, method or personal-interest
+    reels: manifest, digest row, and the note's review line. A `seeded` row (reviewed
+    before the manifest stored verdicts) has its verdict only in the note, so it is read
+    from there and only the note changes. Idempotent."""
     from reel_pipeline.comment_gate import atomic_write
     from reel_pipeline.obsidian_writer import read_frontmatter
 
@@ -1227,33 +1266,38 @@ def backfill_personal(settings, apply):
     digest = settings.vault_dir / DIGEST_NAME
     dtext = digest.read_text("utf-8")
     for cid, r in m["items"].items():
-        p = r.get("verdict") == "skip" and find_note(settings, r.get("note_path") or "")
+        was, seeded = r.get("verdict"), not r.get("verdict")
+        p = (seeded or was in ("skip", "personal")) and find_note(
+            settings, r.get("note_path") or ""
+        )
         if not p:
             continue
         text = p.read_bytes().decode("utf-8")
-        j = {"verdict": "skip"}
-        about = personal_text(read_frontmatter(p) or {})
-        if not (
-            career_verdict(j, about)
-            or career_verdict(j, about, JOB_SEARCH_RE)
-            or personal_verdict(j, about)
-        ):
+        if seeded:
+            mt = re.search(r"(?m)^- verdict: (skip|personal)\b", text)
+            if not mt:
+                continue
+            was = mt.group(1)
+        fm = read_frontmatter(p) or {}
+        j = {"verdict": was}
+        if not relabel(j, personal_text(fm), title=str(fm.get("title") or ""), pats=pats):
             continue
         n += 1
         new = j["verdict"]
-        print(f"  {cid}: skip -> {new}: {p.name}")
+        print(f"  {cid}: {was} -> {new}: {p.name}")
         if apply:
-            r["verdict"], r["cap_reason"] = new, j["cap_reason"]
+            if not seeded:
+                r["verdict"], r["cap_reason"] = new, j["cap_reason"]
             atomic_write(
-                p, re.sub(r"(?m)^- verdict: skip\b.*$", f"- verdict: {new}", text, count=1)
+                p, re.sub(rf"(?m)^- verdict: {was}\b.*$", f"- verdict: {new}", text, count=1)
             )
             dtext = re.sub(
-                rf"(?m)^(\|.*)\| `skip` \|(.*\| `{cid}` \|.*)$", rf"\1| `{new}` |\2", dtext
+                rf"(?m)^(\|.*)\| `{was}` \|(.*\| `{cid}` \|.*)$", rf"\1| `{new}` |\2", dtext
             )
     if apply and n:
         save_manifest(m)
         atomic_write(digest, dtext)
-    print(f"{'APPLY' if apply else 'DRY-RUN'}: {n} skip review(s) relabelled")
+    print(f"{'APPLY' if apply else 'DRY-RUN'}: {n} review(s) relabelled")
 
 
 def apply_comment_gate(settings, cid, text, fm, a):
@@ -1265,11 +1309,8 @@ def apply_comment_gate(settings, cid, text, fm, a):
 
     body = re.split(r"\r?\n\r?\n## Review \(auto,", text)[0]
     kw = cg.detect_comment_gate(body)
-    if kw is None and a["j"]:
-        about = personal_text(fm)
-        career_verdict(a["j"], body) or career_verdict(
-            a["j"], about, JOB_SEARCH_RE
-        ) or personal_verdict(a["j"], about)
+    if kw is None and a["j"] and a["j"]["verdict"] == "skip":
+        relabel(a["j"], personal_text(fm), body, title=str(fm.get("title") or ""))
     if kw is None or not a["j"]:
         return
     import filelock
@@ -1915,6 +1956,73 @@ def self_check():
         assert personal_verdict({"verdict": "skip"}, t, per), t
     assert not personal_verdict({"verdict": "skip"}, "Scaling Ads: 50 Hooks to 750 Variations", per)
     assert not personal_verdict({"verdict": "later"}, "travel planning app", per)
+    # method: a sales/copy/pricing how-to the tool-first judge skips (no repo to cite) is kept
+    # findable as `method`. Title only: tool reels carry "outreach"/"pricing" in their tags.
+    pats = car, job, profile_re(ex, "method_patterns"), per
+    for t in (
+        "Five Email Types for a Killer Client Outreach Campaign",
+        "Four-Question Pricing Framework with Customer Segmentation",
+        "10 Copywriting Frameworks for High-Converting Content",
+        "Alex Hormozi 10 Sales Scripts Cheat Sheet",
+    ):
+        j = {"verdict": "skip"}
+        assert relabel(j, t, t, pats=pats) and j["verdict"] == "method", (t, j)
+    for t in ("Harvey: Open-Source AI Sales Agent", "Automated Low-Cost Prospecting with Jev"):
+        assert not relabel({"verdict": "skip"}, t, t, pats=pats), t
+    # order: career and method beat personal, so "mindset"/"follow-up" sales notes and a
+    # recruiter-facing profile note are not filed as the owner's hobbies
+    j = {"verdict": "skip"}
+    assert relabel(j, "Four-Step Sales Process mindset habits", pats=pats)
+    assert j["verdict"] == "method", j
+    j = {"verdict": "skip"}
+    assert relabel(j, "Clean Up Your LinkedIn Profile for Recruiter Attention", pats=pats)
+    assert j["verdict"] == "career", j
+    j = {"verdict": "skip"}
+    assert relabel(j, "Strategic Salary Negotiation", pats=pats) and j["verdict"] == "career"
+    j = {"verdict": "skip"}
+    assert relabel(j, "Never Miss Twice habit", pats=pats) and j["verdict"] == "personal"
+    # a past `personal` label is re-checked and may move to career/method, never back to skip
+    j = {"verdict": "personal"}
+    assert relabel(j, "Avoid Neediness to Strengthen Your Pricing Power mindset", pats=pats)
+    assert j["verdict"] == "method", j
+    assert not relabel({"verdict": "personal"}, "Cheap Flights to Lisbon", pats=pats)
+    assert not relabel({"verdict": "later"}, "10 Copywriting Frameworks", pats=pats)
+    # backfill end to end: a manifest skip, a seeded row whose verdict lives only in the
+    # note, and a `later` note that must stay put
+    with tempfile.TemporaryDirectory() as t:
+
+        class V:
+            vault_dir = Path(t)
+
+        MANIFEST = Path(t, "reviewed.json")
+        notes = {
+            "m1": ("Ten Copywriting Frameworks", "skip (capped: note-only claims, unverified)"),
+            "s1": ("Five Email Types for a Client Outreach Campaign", "skip"),
+            "s2": ("Ten Copywriting Frameworks Again", "later"),
+        }
+        for cid, (title, v) in notes.items():
+            Path(t, f"{cid}.md").write_text(
+                f"---\ntitle: {title}\n---\n# {title}\n\n## Review (auto, d)\n- verdict: {v}\n",
+                "utf-8",
+            )
+        Path(t, DIGEST_NAME).write_text("| [[m1]] | `skip` | x | `m1` |\n", "utf-8")
+        save_manifest(
+            {
+                "items": {
+                    "m1": {"verdict": "skip", "note_path": str(Path(t, "m1.md"))},
+                    "s1": {"status": "seeded", "note_path": str(Path(t, "s1.md"))},
+                    "s2": {"status": "seeded", "note_path": str(Path(t, "s2.md"))},
+                }
+            }
+        )
+        backfill_personal(V, True, pats)
+        m = load_manifest()["items"]
+        assert m["m1"]["verdict"] == "method" and "verdict" not in m["s1"], m
+        for cid, want in (("m1", "method"), ("s1", "method"), ("s2", "later")):
+            assert f"- verdict: {want}\n" in Path(t, f"{cid}.md").read_text("utf-8"), cid
+        assert "`method`" in Path(t, DIGEST_NAME).read_text("utf-8")
+        backfill_personal(V, True, pats)  # idempotent: nothing left to relabel
+        assert load_manifest()["items"] == m
     print("self-check ok")
 
 

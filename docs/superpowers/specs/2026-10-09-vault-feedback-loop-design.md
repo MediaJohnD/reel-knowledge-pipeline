@@ -47,6 +47,17 @@ or tags (patterns now live in the gitignored `config/owner_profile.yaml`). The b
 `--backfill-personal --apply` relabeled 26 past reels in the manifest, the digest and the
 notes. It is idempotent.
 
+Update 2026-11-05 (three-model deep dive of the reel KB): `personal` caught sales and
+recruiter reels through broad words ("mindset", "attraction", "relationship"), and
+sales/copy/pricing how-tos landed in `skip` because the tool-first judge has no repo to
+cite. Added a `method` label (`method_verdict`, `method_patterns` in the profile, matched on
+the title only because tool reels carry "outreach"/"pricing" in their tags) and an
+explicit order: career, then method, then personal. `relabel` re-checks past `personal`
+rows too, and the backfill now reads the verdict from the note for `seeded` manifest rows.
+`--backfill-personal --apply` relabelled 17 reels (13 to `method`, 2 to `career`, 2 seeded
+trading-bot reels to `personal`). The Loop Digest gained "Methods" and "Career" sections
+and a "Methods recently sent" brief line, so these labels resurface instead of hiding.
+
 The script writes atomically (tmp + replace). The vault's nightly commit keeps history.
 
 ### 2. SessionStart hook: inject the brief

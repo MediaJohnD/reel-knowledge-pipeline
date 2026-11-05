@@ -1,6 +1,6 @@
 # Who the reel reviewer (scripts/review_new_reels.py) works for. Optional.
 # Copy to config/owner_profile.yaml (gitignored) and make it yours. Without it the
-# reviewer judges general usefulness, nothing is tagged career/personal, and no
+# reviewer judges general usefulness, nothing is tagged career/method/personal, and no
 # GitHub account counts as your own.
 
 # Your GitHub logins. Repos under them are marked `already-have`. The login that
@@ -22,7 +22,14 @@ career_patterns:
 job_search_patterns:
   - '\bjob[\s-]+(?:search\w*|boards?|hunt\w*|seekers?|applications?|interviews?)\b'
   - '\b(?:remote|hidden)[\s-]+jobs?\b|(?<![\w-])interviews?\b|\brecruiters?\b|\bresumes?\b'
-  - '\bcover[\s-]+letters?\b|\bupwork\b'
+  - '\bcover[\s-]+letters?\b|\bupwork\b|\bsalary\b'
+# Matched against the title only (tool reels carry these words in their tags). A skipped
+# sales, copywriting or pricing how-to is tagged `method`: it has no repo to cite, so the
+# tool-first reviewer would otherwise bury it. Checked after career, before personal.
+method_patterns:
+  - '\bcold[\s-]+(?:emails?|outreach|calls?)\b|\boutreach[\s-]+(?:campaigns?|sequences?|emails?)\b'
+  - '\bsales[\s-]+(?:process|calls?|scripts?|frameworks?|techniques?|skills?)\b|\bfollow[\s-]?ups?\b'
+  - '\b(?:pricing|copywriting|positioning|objections?|negotiat\w+)\b|\bdiscovery[\s-]+calls?\b'
 personal_patterns:
   - '\b(?:travel\w*|trips?|flights?|hotels?|vacations?)\b'
   - '\b(?:habits?|routines?|workouts?|fitness|sleep)\b'
