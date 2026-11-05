@@ -78,7 +78,7 @@ you set them up yourself:
 
 - `scripts/review_new_reels.py`, `config/prompts/review_reel.md`: an optional reel-review
   step that judges whether each saved tool is worth trying. It reads who it works for
-  (your businesses, GitHub logins, and the topics to tag `career` or `personal`) from
+  (your businesses, GitHub logins, and the topics to tag `career`, `method` or `personal`) from
   `config/owner_profile.yaml`. Copy `config/owner_profile.example.yaml` to that name and
   make it yours; the file is gitignored. Its `config/have.txt` (your installed tools) is
   generated on each machine with `--gen-have` and is not committed either.
