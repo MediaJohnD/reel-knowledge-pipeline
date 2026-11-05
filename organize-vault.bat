@@ -59,10 +59,22 @@ git add -A >> "!vaultlog!" 2>&1
 git diff --cached --quiet
 if errorlevel 1 (
   git commit -q -m "Vault snapshot !mydate!" >> "!vaultlog!" 2>&1
-  git push -q >> "!vaultlog!" 2>&1
-  if errorlevel 1 echo Vault push failed - commit is local only >> "!vaultlog!"
 ) else (
   echo No vault changes to commit >> "!vaultlog!"
 )
+
+REM Pull before pushing. Cloud agents (Claude Duet) commit notes straight to the
+REM GitHub repo; without this pull those notes never reach Obsidian, and the
+REM first remote commit makes every later push fail as non-fast-forward, which
+REM freezes what the agents read. Rebase keeps tonight's snapshot on top. On a
+REM conflict, abort and leave both sides intact for a human rather than guess.
+git pull -q --rebase --autostash >> "!vaultlog!" 2>&1
+if errorlevel 1 (
+  echo Vault pull failed - rebase aborted, push skipped, resolve by hand >> "!vaultlog!"
+  git rebase --abort >> "!vaultlog!" 2>&1
+  exit /b !organize_rc!
+)
+git push -q >> "!vaultlog!" 2>&1
+if errorlevel 1 echo Vault push failed - commit is local only >> "!vaultlog!"
 
 exit /b !organize_rc!
