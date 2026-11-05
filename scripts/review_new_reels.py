@@ -14,6 +14,8 @@ are skipped while the worker's state.run_once.lock is held. Never raises out per
   --rereview <note>       replace only that note's "## Review (auto," section, update digest """
     """+ manifest
   --gen-have              regenerate config/have.txt from what is installed
+  --backfill-personal     relabel past skip/personal reviews as career/method/personal
+  --backfill-stack        re-apply the already-have / covered-job / listicle rules to past reviews
   --seed DIR  one-off: mark ids covered by batch-*/recheck-*.json in DIR as seeded
 """
 )
@@ -121,6 +123,24 @@ COVERED = (
         re.compile(r"browser[- ]use|web access|access the internet|ai browsing|web browsing", re.I),
     ),
     ("Superpowers", re.compile(r"token (waste|usage|saving)|eating your tokens", re.I)),
+    # 2026-11-05 deep dive: Aider was try-now although Claude Code and Codex do the job.
+    (
+        "Claude Code / Codex",
+        re.compile(
+            r"\bai[\W_]+pair[\W_]?programm|\bpair[\W_]?programm\w*[\W_]+(?:tool|assistant|agent)"
+            r"|\bterminal[\W_]+(?:ai[\W_]+)?(?:coding|pair)",
+            re.I,
+        ),
+    ),
+    # ...and behaviour-rule files for Claude, which live in ~/.claude/CLAUDE.md.
+    (
+        "~/.claude/CLAUDE.md rules",
+        re.compile(
+            r"karpathy|\bbehaviou?r[\W_]+(?:skills?|rules?|guidelines?|files?)\b"
+            r"|claude\W*s?\b[^.]*\bbad habits",
+            re.I,
+        ),
+    ),
 )
 
 
@@ -137,7 +157,10 @@ def covered_by(title, j=None):
 # judge ignored).
 LISTICLE = re.compile(
     r"^\W*(\d+|two|three|four|five|six|seven|eight|nine|ten)\b|\bpromo\b|checklist"
-    r"|\bstep \d|\d+\W?steps?\b|\bcore steps\b|blueprint",
+    r"|\bstep \d|\d+\W?steps?\b|\bcore steps\b|blueprint"
+    # "free repos that match/replace paid SaaS" roundups (2026-11-05: one was try-now, with
+    # a first step for an unrelated web framework picked from the list)
+    r"|\b(?:repos|alternatives|tools)\b[^.]*\b(?:match|replac\w*)\b[^.]*\bsaas\b",
     re.I,
 )
 
@@ -483,15 +506,19 @@ def norm(u):
     return m.group(1).lower() + m.group(2).lower() + m.group(3) if m else u
 
 
-def load_have():
+def load_have(profile=None):
+    """config/have.txt plus the profile's `have_tools`: tools wired somewhere --gen-have can't
+    see (an API called from another project, say). Private names are dropped either way."""
     try:
-        return [
+        rows = [
             line.split("#")[0].strip()
             for line in HAVE.read_text("utf-8").splitlines()
             if line.split("#")[0].strip()
         ]
     except OSError:
-        return []
+        rows = []
+    extra = (OWNER if profile is None else profile).get("have_tools") or []
+    return have_names(rows + [str(x) for x in extra])
 
 
 def squash(x):
@@ -961,6 +988,48 @@ def finalize(j, fetched, indep, used, names, have_hits, meta=None, owners=None):
     return j
 
 
+# Code hosts and registries a reel names in passing ("the repo is on GitHub"); never the
+# reel's subject, so they don't count when deciding a reel is about a tool already installed.
+PLATFORMS = {"github", "gitlab", "bitbucket", "huggingface", "npm", "pypi"}
+
+
+def note_tools(raw):
+    """tools_mentioned -> distinct names (case/space-insensitive), first MAX_TOOLS. Deduping
+    first matters: "Claude Code" listed twice pushed the reel's real subject past the cap."""
+    seen, out = set(), []
+    for t in extract("", raw)[2]:
+        if squash(t) and squash(t) not in seen:
+            seen.add(squash(t))
+            out.append(t)
+    return out[:MAX_TOOLS]
+
+
+def owns_subject(title, tools, have):
+    """The judge skipped it, but the reel is about a tool already in the stack: every named
+    tool (code hosts aside) is installed and the title names one of them. 2026-11-05: the Jev
+    prospecting reel was `skip` ("no public repo") although Jev is wired in."""
+    hs = {squash(h) for h in have}
+    named = [squash(t) for t in tools if squash(t) not in PLATFORMS]
+    return bool(named) and all(t in hs for t in named) and any(t in squash(title) for t in named)
+
+
+def stack_rules(j, title, tools=(), have=()):
+    """Title rules that run after finalize(): a skipped reel about an installed tool, or a
+    try-now whose job the stack already does -> already-have; a try-now listicle -> later.
+    -> True if the verdict changed."""
+    if j["verdict"] == "skip" and owns_subject(title, tools, have):
+        j["verdict"], j["cap_reason"] = "already-have", "the tool it is about is already installed"
+        return True
+    if j["verdict"] != "try-now":
+        return False
+    who = covered_by(title, j)
+    if who:
+        j["verdict"], j["cap_reason"] = "already-have", f"job already covered by {who}"
+    elif is_listicle(title, j):
+        j["verdict"], j["cap_reason"] = "later", "listicle/checklist/promo, not one tool"
+    return j["verdict"] != "try-now"
+
+
 def parse_json(raw):
     (
         """Tolerant: object may be fenced or truncated mid-string/array; close it and keep """
@@ -1071,12 +1140,7 @@ def judge(settings, note_text, ev, fetched, indep, used, have):
         if not err:
             j = finalize(j, fetched, indep, used, names, hits, meta, owners)
             m = re.search(r"^title:\s*(.+)$", note_text, re.M)
-            title = m.group(1) if m else ""
-            who = covered_by(title, j)
-            if j["verdict"] == "try-now" and who:
-                j["verdict"], j["cap_reason"] = "already-have", f"job already covered by {who}"
-            elif j["verdict"] == "try-now" and is_listicle(title, j):
-                j["verdict"], j["cap_reason"] = "later", "listicle/checklist/promo, not one tool"
+            stack_rules(j, m.group(1) if m else "", tools, have)
             return j
     raise LlmBad(err)
 
@@ -1254,50 +1318,102 @@ def relabel(j, about, body="", title=None, pats=None):
     return True
 
 
-def backfill_personal(settings, apply, pats=None):
-    """Relabel past `skip`/`personal` reviews that are career, method or personal-interest
-    reels: manifest, digest row, and the note's review line. A `seeded` row (reviewed
-    before the manifest stored verdicts) has its verdict only in the note, so it is read
-    from there and only the note changes. Idempotent."""
+def _backfill(settings, apply, verdicts, decide, show_cap=False):
+    """Shared walk for the relabel backfills. For each past review whose verdict is in
+    `verdicts`, decide(j, fm, text) may change j; the new verdict goes to the manifest, the
+    digest row and the note's review line. A `seeded` row (reviewed before the manifest
+    stored verdicts) has its verdict only in the note, so it is read from there and only
+    the note changes. Idempotent."""
     from reel_pipeline.comment_gate import atomic_write
     from reel_pipeline.obsidian_writer import read_frontmatter
 
     m, n = load_manifest(), 0
     digest = settings.vault_dir / DIGEST_NAME
-    dtext = digest.read_text("utf-8")
+    dtext = digest.read_text("utf-8") if digest.exists() else ""
+    alts = "|".join(re.escape(v) for v in verdicts)
     for cid, r in m["items"].items():
         was, seeded = r.get("verdict"), not r.get("verdict")
-        p = (seeded or was in ("skip", "personal")) and find_note(
-            settings, r.get("note_path") or ""
-        )
+        p = (seeded or was in verdicts) and find_note(settings, r.get("note_path") or "")
         if not p:
             continue
         text = p.read_bytes().decode("utf-8")
         if seeded:
-            mt = re.search(r"(?m)^- verdict: (skip|personal)\b", text)
+            mt = re.search(rf"(?m)^- verdict: ({alts})(?![\w-])", text)
             if not mt:
                 continue
             was = mt.group(1)
-        fm = read_frontmatter(p) or {}
         j = {"verdict": was}
-        if not relabel(j, personal_text(fm), title=str(fm.get("title") or ""), pats=pats):
+        if not decide(j, read_frontmatter(p) or {}, text) or j["verdict"] == was:
             continue
         n += 1
         new = j["verdict"]
         print(f"  {cid}: {was} -> {new}: {p.name}")
         if apply:
             if not seeded:
-                r["verdict"], r["cap_reason"] = new, j["cap_reason"]
+                r["verdict"], r["cap_reason"] = new, j.get("cap_reason")
+            line = f"- verdict: {new}" + (
+                f" (capped: {j['cap_reason']})" if show_cap and j.get("cap_reason") else ""
+            )
             atomic_write(
-                p, re.sub(rf"(?m)^- verdict: {was}\b.*$", f"- verdict: {new}", text, count=1)
+                p,
+                re.sub(
+                    rf"(?m)^- verdict: {re.escape(was)}(?![\w-]).*$",
+                    lambda _, line=line: line,
+                    text,
+                    count=1,
+                ),
             )
             dtext = re.sub(
-                rf"(?m)^(\|.*)\| `{was}` \|(.*\| `{cid}` \|.*)$", rf"\1| `{new}` |\2", dtext
+                rf"(?m)^(\|.*)\| `{re.escape(was)}` \|(.*\| `{cid}` \|.*)$",
+                lambda mm, new=new: f"{mm.group(1)}| `{new}` |{mm.group(2)}",
+                dtext,
             )
     if apply and n:
         save_manifest(m)
-        atomic_write(digest, dtext)
+        if digest.exists():
+            atomic_write(digest, dtext)
     print(f"{'APPLY' if apply else 'DRY-RUN'}: {n} review(s) relabelled")
+
+
+def backfill_personal(settings, apply, pats=None):
+    """Relabel past `skip`/`personal` reviews that are career, method or personal-interest
+    reels (see _backfill)."""
+
+    def decide(j, fm, _text):
+        return relabel(j, personal_text(fm), title=str(fm.get("title") or ""), pats=pats)
+
+    _backfill(settings, apply, ("skip", "personal"), decide)
+
+
+def review_field(text, key):
+    """One `- key: value` line from a note's review section ('' if absent)."""
+    m = re.search(rf"(?m)^- {re.escape(key)}: (.*)$", text.split("## Review (auto,")[-1])
+    return m.group(1).strip() if m else ""
+
+
+def backfill_stack(settings, apply, have=None):
+    """Re-apply the stack-aware rules to past `skip`/`try-now`/`later` reviews, as a fresh
+    review would now: a try-now/later whose named tools are all installed (finalize), a skip
+    about an installed tool, a try-now whose job the stack does -> already-have; a try-now
+    listicle -> later (see _backfill)."""
+    have = load_have() if have is None else have
+    hs = {squash(h) for h in have}
+
+    def decide(j, fm, text):
+        tools = note_tools(fm.get("tools_mentioned"))
+        if j["verdict"] != "skip" and tools and all(squash(t) in hs for t in tools):
+            j["verdict"], j["cap_reason"] = "already-have", "every named tool is already installed"
+            return True
+        j["reasoning"] = review_field(text, "reasoning")
+        j["first_step"] = review_field(text, "first_step")
+        # evidence repos keep a single-tool title (Three.js) from reading as a listicle
+        j["evidence"] = [
+            f"https://github.com/{r}"
+            for r in re.findall(r"\]\(https://github\.com/([\w.-]+/[\w.-]+)\)", text)
+        ]
+        return stack_rules(j, str(fm.get("title") or ""), tools, have)
+
+    _backfill(settings, apply, ("skip", "try-now", "later"), decide, show_cap=True)
 
 
 def apply_comment_gate(settings, cid, text, fm, a):
@@ -1359,7 +1475,7 @@ def analyse(settings, text, fm, key):
     ]  # never research/judge our own previous review (feedback loop)
     have = load_have()
     ev, used, fetched, indep = research(settings, text, fm, key, have)
-    ev["_tools"] = extract("", fm.get("tools_mentioned"))[2][:MAX_TOOLS]
+    ev["_tools"] = note_tools(fm.get("tools_mentioned"))
     try:
         j = judge(settings, text, ev, fetched, indep, used, have)
     except LlmBad as e:
@@ -1748,6 +1864,45 @@ def self_check():
         )["verdict"]
         == "already-have"
     )
+    # stack-aware labels (2026-11-05 deep dive): every named tool already in the stack means
+    # `already-have` even when the judge said skip (the Jev prospecting reel)
+    j = {"verdict": "skip"}
+    assert stack_rules(j, "Automated Low-Cost Prospecting with Jev", ["Jev"], ["jev"])
+    assert j["verdict"] == "already-have" and j["cap_reason"].startswith("the tool it is"), j
+    for title, tools in (
+        ("Prospecting with Jev and Treg", ["Jev", "Treg"]),  # Treg isn't installed
+        ("Discover Free Software Directories", ["GitHub"]),  # a code host, not the subject
+        ("Ultra-Fast Scraper That Integrates with AI Agents", ["codex"]),  # title names no tool
+    ):
+        j = {"verdict": "skip"}
+        assert not stack_rules(j, title, tools, ["jev", "github", "codex"]), (title, j)
+    # duplicates are dropped before the cap, so the reel's real subject stays in the list
+    dup = ["Claude Code", "claude code", "GitHub", "Agency Agents"]
+    assert note_tools(dup) == ["Claude Code", "GitHub", "Agency Agents"]
+    assert note_tools('["A", "a ", "B"]') == ["A", "B"] and note_tools(None) == []
+    # a terminal pair programmer, or a Claude behaviour-rules file, duplicates the stack
+    aider = {"reasoning": "a terminal AI pair‑programming workflow", "first_step": "pipx"}
+    assert (
+        covered_by("Aider: Open-Source AI Pair Programming Tool for the Terminal", aider)
+        == "Claude Code / Codex"
+    )
+    rules = {"reasoning": "a behavior skills file that fixes Claude's habits", "first_step": ""}
+    assert covered_by("Behavior Skills File Fixes Claude's 4 Bad Habits", rules)
+    assert covered_by(
+        "The One-File Fix: Karpathy-Inspired AI Behavior Guidelines",
+        {"reasoning": "Karpathy's guidelines", "first_step": ""},
+    )
+    assert not covered_by("Pair Programming Interview Tips", {"reasoning": "pair programming"})
+    assert not covered_by("Break 3 Bad Habits Before Bed", {"reasoning": "bad habits"})
+    # "free repos that match/replace paid SaaS" is a listicle, not one tool
+    hono = {"evidence": [f"https://github.com/{r}" for r in ("a/anydoc", "b/kritt", "c/hono")]}
+    assert is_listicle("Free Open‑Source GitHub Repos That Match Paid SaaS", hono)
+    assert is_listicle("Open-Source Alternatives That Replace $500/mo of SaaS")
+    assert not is_listicle("Hono: Ultrafast Web Framework")
+    # the profile's have_tools (wired where --gen-have can't see) count as installed; the
+    # private-tool filter still applies, since the list goes to the cloud judge
+    have = load_have({"have_tools": ["Jev", "Robinhood MCP"]})
+    assert "jev" in have and not any("robinhood" in h for h in have), have
     # replace_review touches only the review section
     doc = "# T\n\nbody\r\n\n## Review (auto, 2026-01-01)\n\n- old\n\n## After\nkeep\n"
     out = replace_review(doc, "\n\n## Review (auto, 2026-09-24)\n\n- new\n")
@@ -2023,6 +2178,57 @@ def self_check():
         assert "`method`" in Path(t, DIGEST_NAME).read_text("utf-8")
         backfill_personal(V, True, pats)  # idempotent: nothing left to relabel
         assert load_manifest()["items"] == m
+    # stack backfill: re-applies the have / covered / listicle rules to past reviews
+    with tempfile.TemporaryDirectory() as t:
+
+        class W:
+            vault_dir = Path(t)
+
+        MANIFEST = Path(t, "reviewed.json")
+        rows = {
+            "j1": ("Automated Prospecting with Jev", "[Jev]", "skip", "a subscription API"),
+            "a1": ("Aider: AI Pair Programming Tool", "[Aider]", "try-now", "AI pair programming"),
+            "r1": ("Free GitHub Repos That Match Paid SaaS", "[Hono]", "try-now", "Hono"),
+            "k1": ("Hono: Web Framework", "[Hono]", "try-now", "a fast web framework"),
+            "s1": ("Seeded Jev Guide", "[Jev]", "later", "Jev docs"),
+            "g1": ("Free Software Directories", "[GitHub]", "skip", "gated links"),
+            "d1": (
+                "Run an AI Agency with Agency Agents",
+                "[Claude Code, Claude Code, GitHub, Agency Agents]",
+                "try-now",
+                "installs into Claude Code",
+            ),
+        }
+        for cid, (title, tools, v, why) in rows.items():
+            Path(t, f"{cid}.md").write_text(
+                f"---\ntitle: '{title}'\ntools_mentioned: {tools}\n---\n# {title}\n\n"
+                f"## Review (auto, d)\n\n- verdict: {v}\n- first_step: x\n- reasoning: {why}\n",
+                "utf-8",
+            )
+        Path(t, DIGEST_NAME).write_text("| [[j1]] | `skip` | x | `j1` |\n", "utf-8")
+        items = {c: {"verdict": rows[c][2], "note_path": str(Path(t, f"{c}.md"))} for c in rows}
+        items["s1"] = {"status": "seeded", "note_path": str(Path(t, "s1.md"))}
+        save_manifest({"items": items})
+        have = ["jev", "claude code", "github"]
+        backfill_stack(W, True, have)
+        m = load_manifest()["items"]
+        want = {
+            "j1": "already-have",
+            "a1": "already-have",
+            "r1": "later",
+            "k1": "try-now",
+            "g1": "skip",
+            "d1": "try-now",
+        }
+        assert {c: m[c]["verdict"] for c in want} == want, m
+        assert "verdict" not in m["s1"], m["s1"]
+        assert "- verdict: already-have (capped: every named tool" in Path(t, "s1.md").read_text(
+            "utf-8"
+        )
+        assert "- verdict: try-now\n" in Path(t, "k1.md").read_text("utf-8")
+        assert "`already-have`" in Path(t, DIGEST_NAME).read_text("utf-8")
+        backfill_stack(W, True, have)  # idempotent
+        assert load_manifest()["items"] == m
     print("self-check ok")
 
 
@@ -2054,6 +2260,8 @@ def main(argv):
         return seed(settings, arg("--seed"), state)
     if "--backfill-personal" in argv:
         return backfill_personal(settings, apply)
+    if "--backfill-stack" in argv:
+        return backfill_stack(settings, apply)
     if "--backfill-comment-gates" in argv:
         return backfill_comment_gates(settings, state, key, apply)
     rereview_delivered(settings, state, key, apply)

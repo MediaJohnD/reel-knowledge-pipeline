@@ -190,7 +190,8 @@ def front(path):
 
 
 def backlog(rows, prev, cutoff):
-    """Unticked items carry over forever; ticked ids join the done set and drop off."""
+    """Unticked items carry over until ticked (ticked ids join the done set and drop off) or
+    until their digest row stops saying try-now, i.e. the review was relabelled."""
     done = set(filter(None, (DONE.search(prev).group(1).split(",") if DONE.search(prev) else [])))
     carry = {}
     for line in prev.splitlines():
@@ -199,7 +200,8 @@ def backlog(rows, prev, cutoff):
             done.add(m.group(2))
         elif m:
             carry[m.group(2)] = line
-    items = dict(carry)
+    now = {r["id"]: r["verdict"] for r in rows}
+    items = {k: v for k, v in carry.items() if now.get(k, "try-now") == "try-now"}
     for r in rows:
         if (
             r["verdict"] == "try-now"
@@ -329,6 +331,12 @@ def test():
     assert items == ["- [ ] [[carried]] 2026-08-02 (`bbbbbbbbbbbbbbbb`)"], (
         items
     )  # ticked dropped, old out of window
+    # a carried item whose review was since relabelled (try-now -> already-have) drops off;
+    # one with no digest row at all keeps carrying
+    relabelled = "- [ ] [[optimism]] 2026-10-08 (`7958f20d5db75c18`)\n" + prev.splitlines()[0]
+    items, _ = backlog(r, relabelled, "2026-09-09")
+    assert [i for i in items if "optimism" in i] == [], items
+    assert any("carried" in i for i in items), items
     items, _ = backlog(r, "", "2026-09-09")
     assert items == ["- [ ] [[combining]] 2026-10-08 (`5d663b1a8265b223`)"], items
     note = REELS / "never-miss-twice-quick-recovery-after-a-missed-routine-day.md"

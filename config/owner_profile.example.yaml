@@ -7,6 +7,11 @@
 # `gh api user` returns is always added.
 github_logins: []
 
+# Tools you already use that `--gen-have` can't detect (an API called from another
+# project, a hosted service). A reel whose every named tool is here, or in
+# config/have.txt, is marked `already-have`. Names are matched ignoring case and spaces.
+have_tools: []
+
 # Put into the review prompt. Name your businesses or projects so the reviewer can
 # fill its `businesses` field, and state your constraints.
 context: |
