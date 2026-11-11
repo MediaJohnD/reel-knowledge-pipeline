@@ -528,6 +528,11 @@ Less slick than the Shortcut (no clipboard auto-read, no Action Button
 binding), but needs zero setup beyond Tailscale itself and works from any
 device/browser, not just iOS.
 
+## Search-index sync (new notes findable the same day)
+
+After a run writes notes, `index_sync.py` asks the local Khoj index to pick them up (`search_index_sync` in `config/settings.yaml`), so a note is searchable by meaning within about a minute instead of after the 02:00 scheduled reindex. It is best-effort (a down index never fails a run), loopback URLs only, and throttled to one call per `min_interval_minutes` (30), with the last call recorded in `data/inbox/.index_sync.json`. Measured 2026-11-11: an incremental reindex took 56 s. Set `enabled: false` to turn it off. The daily 02:00 task stays as the backstop.
+
+
 ## Troubleshooting
 
 | Symptom | Likely cause |
