@@ -344,6 +344,15 @@ maintenance:
   # degrading. Set to 0 to disable. See docs/runbook.md's "known limitations".
   state_size_warning_threshold: 5000
 
+# Ask the local Khoj semantic index to pick up new notes right after a run
+# writes them (otherwise they are unsearchable by meaning until its 02:00 run).
+# Best-effort, loopback only, at most one call per min_interval_minutes.
+search_index_sync:
+  enabled: true
+  update_url: "http://localhost:42110/api/update?t=markdown&force=false"
+  min_interval_minutes: 30
+  timeout_seconds: 300
+
 # Retry policy for items that fail processing (download/transcribe/enrich/write
 # errors - not validation/blocked-domain rejections, which never retry).
 # Exponential backoff: after each failure, the item waits backoff_schedule_minutes[N]

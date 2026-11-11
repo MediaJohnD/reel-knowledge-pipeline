@@ -268,6 +268,16 @@ class MaintenanceConfig(BaseModel):
     state_size_warning_threshold: int = 5000
 
 
+class SearchIndexSyncConfig(BaseModel):
+    # After a run writes notes, ask a local semantic index (Khoj) to pick them up
+    # instead of waiting for its daily scheduled run. Off by default; loopback
+    # URLs only (see index_sync.py). Throttled so bursts of batches cost one call.
+    enabled: bool = False
+    update_url: str = ""
+    min_interval_minutes: int = 30
+    timeout_seconds: int = 300
+
+
 class RetryConfig(BaseModel):
     # Exponential backoff in minutes, indexed by (attempt_count - 1); clamped to
     # the last entry once attempt_count exceeds the schedule's length (only
@@ -302,6 +312,7 @@ class Settings(BaseModel):
     text_capture: TextCaptureConfig = Field(default_factory=TextCaptureConfig)
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
+    search_index_sync: SearchIndexSyncConfig = Field(default_factory=SearchIndexSyncConfig)
     retry: RetryConfig = Field(default_factory=RetryConfig)
     comment_gate: CommentGateConfig = Field(default_factory=CommentGateConfig)
 
@@ -540,6 +551,7 @@ def load_settings(
         text_capture=TextCaptureConfig(**raw.get("text_capture", {})),
         webhook=WebhookConfig(**raw.get("webhook", {})),
         maintenance=MaintenanceConfig(**raw.get("maintenance", {})),
+        search_index_sync=SearchIndexSyncConfig(**raw.get("search_index_sync", {})),
         retry=RetryConfig(**raw.get("retry", {})),
         comment_gate=CommentGateConfig(**raw.get("comment_gate", {})),
         webhook_secret=env.get("REEL_WEBHOOK_SECRET") or None,
