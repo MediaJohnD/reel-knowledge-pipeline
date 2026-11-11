@@ -21,4 +21,7 @@ if %ERRORLEVEL% NEQ 0 (
 REM Monthly audits. Each does nothing until its last run is 30 days old.
 uv run python scripts\recheck_links.py --if-older-than 30 >> "!logfile!" 2>&1
 uv run python scripts\vet_repos.py --if-older-than 30 >> "!logfile!" 2>&1
+REM Refresh the Loop Digest (try-now backlog, stack freshness) every night, so the
+REM backlog stays current even on days the review above finds 0 notes.
+uv run python scripts\loop_digest.py >> "!logfile!" 2>&1
 exit /b 0
