@@ -128,3 +128,21 @@ def test_enrich_uses_text_capture_prompt_for_text_content(tmp_path):
     Enricher(settings).enrich(transcript, "https://github.com/owner/repo")
 
     assert "reference" in captured["prompt"].lower() or "README" in captured["prompt"]
+
+
+def test_extract_json_unwraps_a_single_object_list():
+    # Real failure 2026-11-06: a model answered [ {...} ] and EnrichmentResult(**list)
+    # crashed with a TypeError instead of a clear enrichment error.
+    from reel_pipeline.enricher import _extract_json
+
+    assert _extract_json('[{"title": "t"}]') == {"title": "t"}
+
+
+def test_extract_json_rejects_non_object_json_with_enrichment_error():
+    import pytest
+
+    from reel_pipeline.enricher import EnrichmentError, _extract_json
+
+    for raw in ('[{"a": 1}, {"b": 2}]', "[]", '"just a string"', "42"):
+        with pytest.raises(EnrichmentError, match="not a JSON object"):
+            _extract_json(raw)

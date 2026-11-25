@@ -99,10 +99,11 @@ llm:
       model: gemini-3.5-flash-lite
     - provider: gemini
       model: gemini-3.1-flash-lite
-    - provider: mistral
-      model: ministral-8b-latest
-    - provider: mistral
-      model: open-mistral-nemo
+    # Mistral rungs (ministral-8b-latest, open-mistral-nemo) removed 2026-11-25:
+    # every chat call now returns 402 "You need a subscription to access this
+    # API" (billing_no_api_budget_configured) on the only MISTRAL_API_KEY; last
+    # 200 was 2026-11-01. Restore both lines here (and pixtral-12b-2409 in
+    # vision_waterfall) once a live chat call on that key returns 200 again.
     # Replaced nemotron-3-super-120b-a12b:free on 2026-11-01 after it started
     # returning 404. Live-verified the same day, served by NVIDIA only.
     - provider: openrouter
@@ -129,8 +130,7 @@ llm:
       model: gemini-3.1-flash-lite
     - provider: groq
       model: qwen/qwen3.8-27b
-    - provider: mistral
-      model: pixtral-12b-2409
+    # pixtral-12b-2409 (Mistral) removed 2026-11-25, same 402 as the text chain.
     - provider: openrouter
       model: google/gemma-4-31b-it:free
     - provider: ollama
