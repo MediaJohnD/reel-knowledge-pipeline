@@ -41,7 +41,9 @@ def organize_vault(settings: Settings) -> list[str]:
 
             frontmatter = read_frontmatter(current)
             file_content_id = frontmatter.get("content_id") if frontmatter else None
-            owner = by_content_id.get(file_content_id) if file_content_id else None
+            # Hand-edited YAML can make content_id a list/dict; that is just a
+            # mismatch to report, not a lookup key.
+            owner = by_content_id.get(file_content_id) if isinstance(file_content_id, str) else None
             if (
                 file_content_id != record.content_id
                 and owner is not None
@@ -81,8 +83,9 @@ def organize_vault(settings: Settings) -> list[str]:
 
             current.rename(target_path)
             changes.append(f"moved {current} -> {target_path}")
+            old_path = record.note_path  # captured first: record itself is in state too
             for other in state.values():
-                if other.note_path == record.note_path:  # record itself + merged aliases
+                if other.note_path == old_path:  # record itself + merged aliases
                     other.note_path = str(target_path)
 
     manager.mutate_state(mutate)
