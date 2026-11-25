@@ -31,6 +31,7 @@ def organize_vault(settings: Settings) -> list[str]:
     changes: list[str] = []
 
     def mutate(state: dict[str, StateRecord]) -> None:
+        by_content_id = {r.content_id: r for r in state.values()}
         for record in state.values():
             if record.status != ItemStatus.DONE or not record.note_path:
                 continue
@@ -40,6 +41,19 @@ def organize_vault(settings: Settings) -> list[str]:
 
             frontmatter = read_frontmatter(current)
             file_content_id = frontmatter.get("content_id") if frontmatter else None
+            owner = by_content_id.get(file_content_id) if file_content_id else None
+            if (
+                file_content_id != record.content_id
+                and owner is not None
+                and owner is not record
+                and owner.status == ItemStatus.DONE
+                and owner.note_path == record.note_path
+            ):
+                # A merged duplicate: the same source captured twice, folded
+                # into the owner's note. The record stays DONE so the URL is
+                # never re-ingested; the owner's own pass renames the file and
+                # carries this record's note_path along (below).
+                continue
             if file_content_id is not None and file_content_id != record.content_id:
                 # state.json's note_path for this record doesn't actually belong to
                 # it - the file's own frontmatter says otherwise (stale note_path
@@ -67,7 +81,9 @@ def organize_vault(settings: Settings) -> list[str]:
 
             current.rename(target_path)
             changes.append(f"moved {current} -> {target_path}")
-            record.note_path = str(target_path)
+            for other in state.values():
+                if other.note_path == record.note_path:  # record itself + merged aliases
+                    other.note_path = str(target_path)
 
     manager.mutate_state(mutate)
     return changes
