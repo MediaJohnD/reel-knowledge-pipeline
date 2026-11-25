@@ -115,6 +115,95 @@ def test_stale_note_path_with_mismatched_frontmatter_content_id_is_skipped_not_r
     assert path.is_file()  # left untouched on disk
 
 
+def _add_merged_alias(manager, alias_id, kept_path):
+    # A duplicate capture merged into another record's note: its own record
+    # stays DONE (so the URL is never re-ingested) but points at the kept note,
+    # whose frontmatter carries the owner's content_id.
+    record = StateRecord(
+        content_id=alias_id,
+        url=f"https://example.com/{alias_id}",
+        normalized_url=f"https://example.com/{alias_id}",
+        source=QueueSource.QUEUE_FILE,
+        status=ItemStatus.DONE,
+        content_kind="text",
+        added_at=datetime(2026, 1, 2, tzinfo=UTC),
+        updated_at=datetime(2026, 1, 2, tzinfo=UTC),
+        note_path=str(kept_path),
+    )
+    manager.update_record(record)
+
+
+def test_merged_duplicate_record_pointing_at_owners_note_is_not_reported(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    manager = QueueManager(settings)
+    kept = _write_done_record(settings, manager, "owner-id", "Kept Note", content_kind="text")
+    _add_merged_alias(manager, "alias-id", kept)
+
+    assert organize_vault(settings) == []
+    assert kept.is_file()
+    assert manager.load_state()["alias-id"].note_path == str(kept)
+
+
+def test_merged_duplicate_record_follows_owner_rename(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    manager = QueueManager(settings)
+    path = _write_done_record(settings, manager, "owner-id", "Kept Note", content_kind="text")
+    stale = path.with_name("Old Name.md")
+    path.rename(stale)
+
+    def point_owner_at_stale(state):
+        state["owner-id"].note_path = str(stale)
+
+    manager.mutate_state(point_owner_at_stale)
+    _add_merged_alias(manager, "alias-id", stale)
+
+    changes = organize_vault(settings)
+
+    normalized = stale.with_name("kept-note.md")
+    assert changes == [f"moved {stale} -> {normalized}"]
+    state = manager.load_state()
+    assert state["owner-id"].note_path == str(normalized)
+    assert state["alias-id"].note_path == str(normalized)
+    assert organize_vault(settings) == []
+
+
+def test_all_merged_aliases_follow_owner_rename_regardless_of_order(tmp_path):
+    # The owner is processed first here (dict order), so the aliases must be
+    # matched against the path it had *before* the rename.
+    settings = Settings(project_root=tmp_path)
+    manager = QueueManager(settings)
+    path = _write_done_record(settings, manager, "a-owner", "Kept Note", content_kind="text")
+    stale = path.with_name("Old Name.md")
+    path.rename(stale)
+
+    def point_owner_at_stale(state):
+        state["a-owner"].note_path = str(stale)
+
+    manager.mutate_state(point_owner_at_stale)
+    _add_merged_alias(manager, "y-alias", stale)
+    _add_merged_alias(manager, "z-alias", stale)
+
+    changes = organize_vault(settings)
+
+    normalized = stale.with_name("kept-note.md")
+    assert changes == [f"moved {stale} -> {normalized}"]
+    state = manager.load_state()
+    assert {state[k].note_path for k in ("a-owner", "y-alias", "z-alias")} == {str(normalized)}
+    assert organize_vault(settings) == []
+
+
+def test_non_scalar_frontmatter_content_id_is_reported_not_crashed(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    manager = QueueManager(settings)
+    path = _write_done_record(settings, manager, "doc1", "Some Note", content_kind="text")
+    path.write_text("---\ncontent_id: [doc1]\ntitle: Some Note\n---\nbody\n", encoding="utf-8")
+
+    changes = organize_vault(settings)
+
+    assert len(changes) == 1 and "skipped" in changes[0]
+    assert path.is_file()
+
+
 def test_rerun_is_a_no_op(tmp_path):
     settings = Settings(project_root=tmp_path)
     manager = QueueManager(settings)
