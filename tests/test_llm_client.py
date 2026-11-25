@@ -947,3 +947,25 @@ def test_call_llm_skips_nvidia_rung_without_key(tmp_path):
             return_value=httpx.Response(200, json={"choices": [{"message": {"content": "g"}}]})
         )
         assert call_llm(settings, "prompt", model="ignored", max_tokens=100) == "g"
+
+
+@pytest.mark.parametrize(("think", "expected"), [(False, False), (None, "absent")])
+def test_ollama_text_call_sends_think_only_when_configured(tmp_path, think, expected):
+    # 2026-11-25: Bonsai 2.5 thinks by default; think=false cut a real enrichment
+    # from 73 s to 19 s with the JSON still valid. None leaves the model default.
+    settings = Settings(
+        project_root=tmp_path,
+        llm=LlmConfig(
+            ollama_think=think,
+            text_waterfall=[WaterfallStep(provider="ollama", model="bonsai-2.5:27b-64k")],
+        ),
+    )
+
+    with respx.mock:
+        route = respx.post(f"{settings.llm.ollama_host}/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": "ok"})
+        )
+        assert call_llm(settings, "prompt", model="ignored", max_tokens=10) == "ok"
+
+    body = json.loads(route.calls.last.request.content)
+    assert body.get("think", "absent") == expected

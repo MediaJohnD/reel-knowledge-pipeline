@@ -391,6 +391,11 @@ def _call_ollama(
                 "prompt": prompt,
                 "stream": False,
                 "options": _ollama_options(settings, max_tokens),
+                **(
+                    {"think": settings.llm.ollama_think}
+                    if settings.llm.ollama_think is not None
+                    else {}
+                ),
             },
         )
     except httpx.HTTPError as exc:

@@ -104,6 +104,10 @@ class LlmConfig(BaseModel):
     # llm_client._ollama_options - a mismatched num_ctx forces a model reload
     # that fights Hermes and every other caller sharing the one Ollama).
     ollama_num_ctx: int = 0
+    # "think" for Ollama *text* calls. None sends nothing (the model's default);
+    # False turns thinking off on models that think by default. Vision calls
+    # always send False (see llm_client._call_ollama_vision).
+    ollama_think: bool | None = None
     # Minimum seconds between consecutive calls to a given provider - worker.py
     # processes actionable items back-to-back with no natural pacing (a backlog
     # re-queue can fire a dozen+ LLM calls in under a minute), which is exactly
@@ -145,7 +149,7 @@ class ImageDescriptionConfig(BaseModel):
     # Groq model whose input_modalities includes "image" (check GET
     # /openai/v1/models - most Groq text models do NOT support images) when
     # "groq".
-    model: str = "gemma4:12b"
+    model: str = "bonsai-2.5:27b-64k"
     max_tokens: int = 1024
     # Vision works on "ollama", "anthropic", "gemini", or "groq"
     # (describe_images() in llm_client.py) - some providers have no vision path wired
