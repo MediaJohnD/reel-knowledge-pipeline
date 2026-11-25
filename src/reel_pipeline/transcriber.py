@@ -48,6 +48,28 @@ def _get_whisper_model(model_size: str, device: str, compute_type: str) -> Any:
     return _MODEL_CACHE[key]
 
 
+# Chunked fallback for audio too long to transcribe in one pass. 10 min of 16 kHz
+# audio is a ~190 MB spectrogram, versus ~1.1 GiB for the hour-long video that failed.
+_SAMPLE_RATE = 16000
+_CHUNK_SECONDS = 600
+
+
+def _transcribe_in_chunks(
+    model: Any, media_path: Path, extra: dict[str, str]
+) -> tuple[str, str | None, float]:
+    from faster_whisper import decode_audio  # type: ignore[import-not-found]
+
+    audio = decode_audio(str(media_path), sampling_rate=_SAMPLE_RATE)
+    step = _CHUNK_SECONDS * _SAMPLE_RATE
+    parts: list[str] = []
+    language: str | None = None
+    for start in range(0, len(audio), step):
+        segments, info = model.transcribe(audio[start : start + step], vad_filter=True, **extra)
+        parts.extend(segment.text.strip() for segment in segments)
+        language = language or getattr(info, "language", None)
+    return " ".join(p for p in parts if p), language, len(audio) / _SAMPLE_RATE
+
+
 class LocalWhisperTranscriber:
     backend_name = "local"
 
@@ -78,6 +100,25 @@ class LocalWhisperTranscriber:
             extra = {"hotwords": hotwords} if hotwords else {}
             segments, info = model.transcribe(str(media_path), vad_filter=True, **extra)
             text = " ".join(segment.text.strip() for segment in segments)
+            language = getattr(info, "language", None)
+            duration = getattr(info, "duration", None)
+        except MemoryError:
+            # faster-whisper builds one spectrogram for the whole file (complex128), so
+            # a ~1 h video needs over 1 GiB in a single allocation and can fail while
+            # short reels never do (real failure 2026-11-22). Retry in fixed slices.
+            log_context(
+                logger,
+                20,
+                "whole-file transcription ran out of memory, retrying in chunks",
+                content_id=content_id,
+                chunk_seconds=_CHUNK_SECONDS,
+            )
+            try:
+                text, language, duration = _transcribe_in_chunks(model, media_path, extra)
+            except Exception as exc:  # noqa: BLE001 - same normalization as below
+                raise TranscriptionError(
+                    f"faster-whisper failed to transcribe {media_path.name!r} in chunks: {exc}"
+                ) from exc
         except IndexError as exc:
             # faster-whisper (via PyAV) indexes container.streams.audio[0] internally;
             # a video with no audio track makes that tuple empty, surfacing as a bare
@@ -115,9 +156,9 @@ class LocalWhisperTranscriber:
         return TranscriptResult(
             content_id=content_id,
             text=text,
-            language=getattr(info, "language", None),
+            language=language,
             backend=self.backend_name,
-            duration_seconds=getattr(info, "duration", None),
+            duration_seconds=duration,
         )
 
 

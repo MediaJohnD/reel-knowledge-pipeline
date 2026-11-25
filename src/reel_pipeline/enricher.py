@@ -47,10 +47,20 @@ def render_and_split(template: str, **values: str) -> tuple[str, str]:
     return static_part.strip(), dynamic_part.strip()
 
 
+def _as_object(parsed: object, raw_text: str) -> dict:
+    # Some models wrap the answer in a one-item list (seen 2026-11-06); anything else
+    # that isn't an object would crash EnrichmentResult(**data) with a TypeError.
+    if isinstance(parsed, list) and len(parsed) == 1:
+        parsed = parsed[0]
+    if not isinstance(parsed, dict):
+        raise EnrichmentError(f"Model output is not a JSON object: {raw_text!r}")
+    return parsed
+
+
 def _extract_json(raw_text: str) -> dict:
     candidate = _FENCE_RE.sub("", raw_text.strip()).strip()
     try:
-        return json.loads(candidate)
+        return _as_object(json.loads(candidate), raw_text)
     except json.JSONDecodeError as exc:
         # Fall back to the outermost {...} span in case the model added stray prose.
         start, end = candidate.find("{"), candidate.rfind("}")

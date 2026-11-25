@@ -194,3 +194,59 @@ def test_real_faster_whisper_can_decode_audio_with_the_installed_av(tmp_path):
         wav.writeframes(bytes(32000))
 
     assert abs(len(faster_whisper.decode_audio(str(audio))) - 16000) < 1600
+
+
+def test_out_of_memory_on_long_audio_falls_back_to_chunked_transcription(tmp_path, monkeypatch):
+    # Real failure 2026-11-22: a 61-minute video made faster-whisper allocate a 1.09 GiB
+    # spectrogram for the whole file at once and die with MemoryError. The fallback
+    # decodes once and transcribes fixed-length slices, so peak memory stays bounded.
+    from reel_pipeline import transcriber as transcriber_module
+
+    class FakeSegment:
+        def __init__(self, text):
+            self.text = text
+
+    class FakeInfo:
+        language = "en"
+        duration = 0.0
+
+    calls = []
+
+    def transcribe_impl(audio, **kwargs):
+        calls.append((audio, kwargs))
+        if isinstance(audio, str):
+            raise MemoryError("Unable to allocate 1.09 GiB")
+        return [FakeSegment(f" part{len(calls) - 1} ")], FakeInfo()
+
+    _install_fake_faster_whisper(monkeypatch, transcribe_impl)
+    monkeypatch.setattr(transcriber_module, "_CHUNK_SECONDS", 1)
+    samples = [0.0] * (transcriber_module._SAMPLE_RATE * 2 + 5)  # 2 s + a sliver
+    sys.modules["faster_whisper"].decode_audio = lambda path, sampling_rate: samples  # type: ignore[attr-defined]
+
+    settings = Settings(project_root=tmp_path)
+    media_path = tmp_path / "long.mp3"
+    media_path.write_bytes(b"fake")
+
+    result = LocalWhisperTranscriber(settings).transcribe(media_path, "abc")
+
+    assert result.text == "part1 part2 part3"
+    assert result.language == "en"
+    assert result.duration_seconds == pytest.approx(len(samples) / transcriber_module._SAMPLE_RATE)
+    assert len(calls) == 4  # the failed whole-file try, then three slices
+    assert [len(a) for a, _ in calls[1:]] == [16000, 16000, 5]
+    assert all(kw.get("vad_filter") for _, kw in calls)
+
+
+def test_chunked_fallback_failure_is_a_transcription_error(tmp_path, monkeypatch):
+    def transcribe_impl(audio, **kwargs):
+        raise MemoryError("still too big")
+
+    _install_fake_faster_whisper(monkeypatch, transcribe_impl)
+    sys.modules["faster_whisper"].decode_audio = lambda path, sampling_rate: [0.0] * 10  # type: ignore[attr-defined]
+
+    settings = Settings(project_root=tmp_path)
+    media_path = tmp_path / "long.mp3"
+    media_path.write_bytes(b"fake")
+
+    with pytest.raises(TranscriptionError, match="in chunks"):
+        LocalWhisperTranscriber(settings).transcribe(media_path, "abc")
