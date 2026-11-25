@@ -104,6 +104,12 @@ llm:
     # API" (billing_no_api_budget_configured) on the only MISTRAL_API_KEY; last
     # 200 was 2026-11-01. Restore both lines here (and pixtral-12b-2409 in
     # vision_waterfall) once a live chat call on that key returns 200 again.
+    # Mistral Large 4 via NVIDIA NIM (NVIDIA-hosted, US), added 2026-11-25 in
+    # the old Mistral slot. Groq serves no Mistral model and every Mistral on
+    # OpenRouter is paid (live /models check that day). Reasoning model: ~300
+    # thinking tokens before the answer, ~20 s per call.
+    - provider: nvidia
+      model: mistralai/mistral-large-4-1t-a52b
     # Replaced nemotron-3-super-120b-a12b:free on 2026-11-01 after it started
     # returning 404. Live-verified the same day, served by NVIDIA only.
     - provider: openrouter
@@ -111,7 +117,7 @@ llm:
     # Local unmetered last resort (verified live 2026-09-24 on :11435). Added
     # because the chain previously had no Ollama rung at all.
     - provider: ollama
-      model: gpt-oss:20b-64k
+      model: bonsai-2.5:27b-64k
   # Vision fallback chain for photo/carousel description (describe_images()).
   # Same 2026-08-25 research and the same China-infra exclusions apply.
   # Gemini 3.5 then 3.1 Flash-Lite first (500 RPD each, both vision-capable,
@@ -138,7 +144,7 @@ llm:
   # 0 = send no num_ctx, so each tag loads at one fixed size and is shared with
   # Hermes instead of reloaded: *-64k tags bake 64k, the rest get the server's
   # OLLAMA_CONTEXT_LENGTH=16384 (user env, 2026-10-09). Local models on this
-  # machine: gpt-oss:20b-64k (the one chat model, shared with Hermes),
+  # machine: bonsai-2.5:27b-64k (always-on chat model, pinned for Hermes; 2026-11-25),
   # gemma4:12b (vision only), embeddinggemma (mem0).
   ollama_num_ctx: 0
   # Minimum seconds between consecutive calls to each provider - run_once()
@@ -153,6 +159,7 @@ llm:
     gemini: 6.0 # 10 RPM free tier
     openrouter: 2.0
     mistral: 30.0 # 2 RPM free tier - the binding limit for the vision fallback
+    nvidia: 2.0 # rate-limited free developer tier; same spacing as OpenRouter
 
 enrichment:
   # Model name meaning depends on llm.provider above - a Groq model id

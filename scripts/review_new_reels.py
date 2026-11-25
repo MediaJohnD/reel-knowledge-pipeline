@@ -722,9 +722,10 @@ def condense(settings, text, what):
         json={
             "model": OLLAMA_MODEL,
             "stream": False,
-            # 2026-11-25: Bonsai 2.5 is the always-on local model (Hermes default, pinned), so condense
-            # reuses the resident model instead of swapping gpt-oss in (each swap stalls every Ollama
-            # request, Khoj/mem0 embeds included). Same README condense: Bonsai 32-40 s vs gpt-oss 187 s.
+            # 2026-11-25: Bonsai 2.5 is the always-on local model (Hermes default,
+            # pinned), so condense reuses the resident model instead of swapping
+            # gpt-oss in (each swap stalls every Ollama request, Khoj/mem0 embeds
+            # included). Same README condense: Bonsai 32-40 s vs gpt-oss 187 s.
             "think": False,
             "options": {"num_predict": 1500},
             "prompt": (

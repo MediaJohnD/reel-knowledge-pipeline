@@ -893,3 +893,57 @@ def test_openai_compat_null_content_raises_llm_call_error(tmp_path):
         )
         with pytest.raises(LlmCallError, match="no text content"):
             call_llm(settings, "prompt", model="qwen3-8b", max_tokens=100)
+
+
+def test_call_llm_nvidia_rung_sends_bearer_key_and_json_mode(tmp_path):
+    # Added 2026-11-25 to host Mistral Large 4 on NVIDIA NIM after the direct
+    # Mistral key started returning 402.
+    settings = Settings(
+        project_root=tmp_path,
+        llm=LlmConfig(
+            text_waterfall=[
+                WaterfallStep(provider="nvidia", model="mistralai/mistral-large-4-1t-a52b")
+            ]
+        ),
+    )
+    settings.nvidia_api_key = "nvapi-test"
+
+    with respx.mock:
+        route = respx.post("https://integrate.api.nvidia.com/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {"message": {"content": '{"ok": true}', "reasoning_content": "hmm"}}
+                    ]
+                },
+            )
+        )
+        result = call_llm(settings, "prompt", model="ignored", max_tokens=100, json_mode=True)
+
+    assert result == '{"ok": true}'
+    sent = route.calls.last.request
+    assert sent.headers["Authorization"] == "Bearer nvapi-test"
+    body = json.loads(sent.content)
+    assert body["model"] == "mistralai/mistral-large-4-1t-a52b"
+    assert body["response_format"] == {"type": "json_object"}
+
+
+def test_call_llm_skips_nvidia_rung_without_key(tmp_path):
+    settings = Settings(
+        project_root=tmp_path,
+        llm=LlmConfig(
+            text_waterfall=[
+                WaterfallStep(provider="nvidia", model="mistralai/mistral-large-4-1t-a52b"),
+                WaterfallStep(provider="groq", model="openai/gpt-oss-120b"),
+            ]
+        ),
+    )
+    settings.nvidia_api_key = None
+    settings.groq_api_key = "gsk-test"
+
+    with respx.mock:
+        respx.post("https://api.groq.com/openai/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json={"choices": [{"message": {"content": "g"}}]})
+        )
+        assert call_llm(settings, "prompt", model="ignored", max_tokens=100) == "g"
