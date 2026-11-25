@@ -68,7 +68,8 @@ class WaterfallStep(BaseModel):
 
 
 class LlmConfig(BaseModel):
-    # "anthropic" | "ollama" | "groq" | "gemini" | "openrouter" | "mistral" | "openai_compat"
+    # "anthropic" | "ollama" | "groq" | "gemini" | "openrouter" | "mistral" | "nvidia"
+    # | "openai_compat"
     provider: str = "anthropic"
     ollama_host: str = "http://localhost:11434"
     # Base URL for provider "openai_compat": any local OpenAI-style server.
@@ -82,7 +83,9 @@ class LlmConfig(BaseModel):
     text_waterfall: list[WaterfallStep] = Field(default_factory=list)
     # Ollama model for text calls that must stay on this machine (screenshot and
     # text shares - personal content), bypassing text_waterfall entirely.
-    local_text_model: str = "gpt-oss:20b-64k"
+    # bonsai-2.5:27b-64k since 2026-11-25: the always-on (pinned) local model, so local calls
+    # never swap models in Ollama; passed the enrichment JSON contract live (90 s).
+    local_text_model: str = "bonsai-2.5:27b-64k"
     # Same shape, for describe_images() (photo/carousel vision calls). Empty
     # means "no waterfall" - falls back to image_description.provider (or
     # llm.provider) with the caller's model, as before.
@@ -115,6 +118,7 @@ class LlmConfig(BaseModel):
             "gemini": 6.0,
             "openrouter": 2.0,
             "mistral": 30.0,
+            "nvidia": 2.0,
         }
     )
 
@@ -313,6 +317,7 @@ class Settings(BaseModel):
     gemini_api_key: str | None = None
     openrouter_api_key: str | None = None
     mistral_api_key: str | None = None
+    nvidia_api_key: str | None = None
 
     # Instagram requires an authenticated session to download reliably (see
     # docs/runbook.md). Treated like a secret - a cookies file/browser choice is as
@@ -436,6 +441,14 @@ class Settings(BaseModel):
             )
         return self.mistral_api_key
 
+    def require_nvidia_api_key(self) -> str:
+        if not self.nvidia_api_key:
+            raise MissingLlmCredentialError(
+                "NVIDIA_API_KEY is not set. Set it in your environment or .env "
+                "before using an llm.text_waterfall step with provider: nvidia."
+            )
+        return self.nvidia_api_key
+
     def require_instagram_cookies(self) -> tuple[str, str]:
         """Returns (kind, value): ("file", path) or ("browser", browser_name)."""
         if self.instagram_cookies_file:
@@ -549,6 +562,7 @@ def load_settings(
         gemini_api_key=env.get("GEMINI_API_KEY") or None,
         openrouter_api_key=env.get("OPENROUTER_API_KEY") or None,
         mistral_api_key=env.get("MISTRAL_API_KEY") or None,
+        nvidia_api_key=env.get("NVIDIA_API_KEY") or None,
         instagram_cookies_file=env.get("REEL_INSTAGRAM_COOKIES_FILE") or None,
         instagram_cookies_browser=env.get("REEL_INSTAGRAM_COOKIES_BROWSER") or None,
         ytdlp_cookies_file=env.get("REEL_YTDLP_COOKIES_FILE") or None,

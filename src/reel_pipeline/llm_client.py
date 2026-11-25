@@ -15,6 +15,8 @@ Dispatches by settings.llm.provider:
 - "mistral": Mistral's OpenAI-compatible chat completions API (requires
   MISTRAL_API_KEY). Free "Experiment" tier: 1B tokens/month, 2 RPM. Pixtral
   models support vision.
+- "nvidia": NVIDIA NIM's OpenAI-compatible chat completions API (requires
+  NVIDIA_API_KEY, free developer tier, NVIDIA-hosted). Text only here.
 - "openai_compat": any local OpenAI-style server (LM Studio, Lemonade) at
   settings.llm.openai_compat_base_url, no API key. Text and vision.
 
@@ -54,6 +56,7 @@ _ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
 _GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 _OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+_NVIDIA_ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions"
 _MISTRAL_ENDPOINT = "https://api.mistral.ai/v1/chat/completions"
 _GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
 # Gemini's key goes in the x-goog-api-key header, never the ?key= query param
@@ -523,6 +526,52 @@ def _call_groq_vision(
     return text
 
 
+def _call_hosted_openai_style(
+    *,
+    label: str,
+    endpoint: str,
+    api_key: str,
+    prompt: str,
+    model: str,
+    max_tokens: int,
+    json_mode: bool,
+    client: httpx.Client | None,
+) -> str:
+    """Shared body for hosted OpenAI-compatible chat APIs with a Bearer key."""
+    owned_client = client or httpx.Client(timeout=120.0)
+    owns_client = client is None
+    body: dict = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
+    try:
+        payload = _post_json(
+            owned_client,
+            endpoint,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "content-type": "application/json",
+            },
+            json=body,
+        )
+    except httpx.HTTPError as exc:
+        raise LlmCallError(
+            f"{label} API request failed: {exc}", status_code=_http_status(exc)
+        ) from exc
+    finally:
+        if owns_client:
+            owned_client.close()
+
+    choices = payload.get("choices", [])
+    text = choices[0].get("message", {}).get("content", "") if choices else ""
+    if not text:
+        raise LlmCallError(f"{label} API response had no text content: {payload!r}")
+    return text
+
+
 def _call_openrouter(
     settings: Settings,
     prompt: str,
@@ -537,39 +586,40 @@ def _call_openrouter(
     (e.g. "meta-llama/llama-3.3-70b-instruct:free") - pick one via
     llm.text_waterfall, this function doesn't enforce the suffix.
     """
-    api_key = settings.require_openrouter_api_key()
-    owned_client = client or httpx.Client(timeout=120.0)
-    owns_client = client is None
-    body: dict = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    if json_mode:
-        body["response_format"] = {"type": "json_object"}
-    try:
-        payload = _post_json(
-            owned_client,
-            _OPENROUTER_ENDPOINT,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "content-type": "application/json",
-            },
-            json=body,
-        )
-    except httpx.HTTPError as exc:
-        raise LlmCallError(
-            f"OpenRouter API request failed: {exc}", status_code=_http_status(exc)
-        ) from exc
-    finally:
-        if owns_client:
-            owned_client.close()
+    return _call_hosted_openai_style(
+        label="OpenRouter",
+        endpoint=_OPENROUTER_ENDPOINT,
+        api_key=settings.require_openrouter_api_key(),
+        prompt=prompt,
+        model=model,
+        max_tokens=max_tokens,
+        json_mode=json_mode,
+        client=client,
+    )
 
-    choices = payload.get("choices", [])
-    text = choices[0].get("message", {}).get("content", "") if choices else ""
-    if not text:
-        raise LlmCallError(f"OpenRouter API response had no text content: {payload!r}")
-    return text
+
+def _call_nvidia(
+    settings: Settings,
+    prompt: str,
+    *,
+    model: str,
+    max_tokens: int,
+    json_mode: bool = False,
+    client: httpx.Client | None = None,
+) -> str:
+    """NVIDIA NIM (build.nvidia.com), OpenAI-compatible. Reasoning models put
+    their thinking in message.reasoning_content and the answer in content, so
+    give them a max_tokens budget with room for both."""
+    return _call_hosted_openai_style(
+        label="NVIDIA NIM",
+        endpoint=_NVIDIA_ENDPOINT,
+        api_key=settings.require_nvidia_api_key(),
+        prompt=prompt,
+        model=model,
+        max_tokens=max_tokens,
+        json_mode=json_mode,
+        client=client,
+    )
 
 
 def _call_mistral(
@@ -887,6 +937,15 @@ def _call_text_provider(
             json_mode=json_mode,
             client=client,
         )
+    if provider == "nvidia":
+        return _call_nvidia(
+            settings,
+            combined,
+            model=model,
+            max_tokens=max_tokens,
+            json_mode=json_mode,
+            client=client,
+        )
     if provider == "openai_compat":
         return _call_openai_compat(
             settings, combined, model=model, max_tokens=max_tokens, client=client
@@ -902,6 +961,7 @@ def _require_provider_credential(settings: Settings, provider: str) -> None:
         "gemini": settings.require_gemini_api_key,
         "openrouter": settings.require_openrouter_api_key,
         "mistral": settings.require_mistral_api_key,
+        "nvidia": settings.require_nvidia_api_key,
     }
     require_key = required_keys.get(provider)
     if require_key:
