@@ -106,3 +106,13 @@ def test_write_note_is_idempotent_and_overwrites_same_path(tmp_path):
     assert first_path == second_path
     matching_files = list(settings.vault_dir.glob(f"{slugify(item.enrichment.title)}*.md"))
     assert len(matching_files) == 1
+
+
+def test_note_is_written_in_plain_english(tmp_path):
+    settings = Settings(project_root=tmp_path)
+    item = make_item(title="3D‑Printed Desk 🚀")
+    item.transcript.text = "Great ✅ 中文 tool"
+    raw = write_note(settings, item).read_text(encoding="utf-8")
+    assert "3D-Printed Desk" in raw
+    assert "Great tool" in raw
+    assert "‑" not in raw and "🚀" not in raw and "中" not in raw

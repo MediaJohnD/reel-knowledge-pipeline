@@ -1323,6 +1323,10 @@ def relabel(j, about, body="", title=None, pats=None):
 
 def _write_raw(path: Path, text: str) -> None:
     """Atomic write with no newline translation, so a note keeps its own line endings."""
+    if path.suffix == ".md":  # vault notes stay in plain English
+        from reel_pipeline.text_clean import english_clean
+
+        text = english_clean(text)
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
         f.write(text)
@@ -1570,7 +1574,9 @@ def write_review(settings, cid, p, text, fm, a, replace=False):
     lk = lock_free(settings)
     if lk is None:
         raise RuntimeError("run_once lock held; retry next run")
-    sec = render(a["j"], a["ev"], a["used"])
+    from reel_pipeline.text_clean import english_clean
+
+    sec = english_clean(render(a["j"], a["ev"], a["used"]))
     sec = sec.replace("\n", "\r\n" if "\r\n" in text else "\n")
     try:
         p.write_bytes((replace_review(text, sec) if replace else text + sec).encode("utf-8"))

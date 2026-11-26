@@ -22,6 +22,7 @@ import yaml
 
 from reel_pipeline.config import Settings
 from reel_pipeline.models import ContentItem
+from reel_pipeline.text_clean import english_clean
 from reel_pipeline.validators import sanitize_url
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -136,6 +137,7 @@ def _render_body(item: ContentItem) -> str:
 def write_note(settings: Settings, item: ContentItem) -> Path:
     settings.vault_dir.mkdir(parents=True, exist_ok=True)
     path = note_path(settings, item.content_id, item.enrichment.title)
-    content = _render_frontmatter(item) + "\n" + _render_body(item)
+    # English-only vault rule (John, 2026-11-24): strip mojibake, emoji, foreign-script noise.
+    content = english_clean(_render_frontmatter(item) + "\n" + _render_body(item))
     path.write_text(content, encoding="utf-8")
     return path
