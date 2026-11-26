@@ -4,7 +4,13 @@ from reel_pipeline.text_clean import english_clean
 
 
 def test_repairs_cp1252_mojibake():
-    assert english_clean("real\u00e2\u20ac\u2018time and \u00e2\u20ac\u0153quoted\u00e2\u20ac\x9d caf\u00c3\u00a9") == 'real-time and "quoted" caf\u00e9'
+    assert (
+        english_clean(
+            "real\u00e2\u20ac\u2018time and \u00e2\u20ac\u0153quoted\u00e2\u20ac\x9d "
+            "caf\u00c3\u00a9"
+        )
+        == 'real-time and "quoted" caf\u00e9'
+    )
 
 
 def test_replacement_char_becomes_dash():
@@ -18,9 +24,9 @@ def test_odd_hyphens_spaces_and_quotes_normalized():
 
 
 def test_emoji_status_words_and_decorative_removed():
-    assert english_clean("\u2705 Done \u274c Failed \u26a0\ufe0f Careful \U0001f680 Launch \U0001f447") == (
-        "Done Failed Warning: Careful Launch"
-    )
+    assert english_clean(
+        "\u2705 Done \u274c Failed \u26a0\ufe0f Careful \U0001f680 Launch \U0001f447"
+    ) == ("Done Failed Warning: Careful Launch")
     assert english_clean("1\ufe0f\u20e3 First") == "1. First"
 
 
@@ -28,7 +34,8 @@ def test_language_switcher_lines_dropped():
     text = (
         "intro\n"
         '<a href="docs/README_CN.md"><img alt="\u7b80\u4f53\u4e2d\u6587" src="x"></a>\n'
-        "[English](README.md) | [\u65e5\u672c\u8a9e](README_JP.md) | [\ud55c\uad6d\uc5b4](README_KO.md)\n"
+        "[English](README.md) | [\u65e5\u672c\u8a9e](README_JP.md) "
+        "| [\ud55c\uad6d\uc5b4](README_KO.md)\n"
         "outro"
     )
     assert english_clean(text) == "intro\noutro"
@@ -43,7 +50,10 @@ def test_flipped_text_unflipped():
 
 
 def test_keeps_english_typography_and_accents():
-    text = "Te P\u0101 T\u016b \u2014 M\u0101ori caf\u00e9 \u2192 next \u2265 5\u00b0 \u20ac10 \u251c\u2500\u2500 src"
+    text = (
+        "Te P\u0101 T\u016b \u2014 M\u0101ori caf\u00e9 \u2192 "
+        "next \u2265 5\u00b0 \u20ac10 \u251c\u2500\u2500 src"
+    )
     assert english_clean(text) == text
 
 

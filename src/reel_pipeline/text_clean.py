@@ -53,13 +53,38 @@ def _fix_mojibake_run(match: re.Match[str]) -> str:
 
 # --- 2. punctuation and invisible characters ---------------------------------
 _CHAR_MAP = {
-    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2212": "-", "\u00ad": "",
-    "\u00a0": " ", "\u202f": " ", "\u2007": " ", "\u2009": " ", "\u200a": " ",
-    "\u2002": " ", "\u2003": " ", "\u205f": " ", "\u3000": " ", "\u3164": " ",
-    "\u2028": "\n", "\u2029": "\n",
-    "\u200b": "", "\u200c": "", "\u200d": "", "\u2060": "", "\ufeff": "",
-    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'", "\u2032": "'",
-    "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"', "\u2033": '"',
+    "\u2010": "-",
+    "\u2011": "-",
+    "\u2012": "-",
+    "\u2212": "-",
+    "\u00ad": "",
+    "\u00a0": " ",
+    "\u202f": " ",
+    "\u2007": " ",
+    "\u2009": " ",
+    "\u200a": " ",
+    "\u2002": " ",
+    "\u2003": " ",
+    "\u205f": " ",
+    "\u3000": " ",
+    "\u3164": " ",
+    "\u2028": "\n",
+    "\u2029": "\n",
+    "\u200b": "",
+    "\u200c": "",
+    "\u200d": "",
+    "\u2060": "",
+    "\ufeff": "",
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201a": "'",
+    "\u201b": "'",
+    "\u2032": "'",
+    "\u201c": '"',
+    "\u201d": '"',
+    "\u201e": '"',
+    "\u201f": '"',
+    "\u2033": '"',
     "\u2026": "...",
 }
 _CHAR_TABLE = str.maketrans(_CHAR_MAP)
@@ -67,27 +92,56 @@ _CHAR_TABLE = str.maketrans(_CHAR_MAP)
 # circled digits/letters, double exclamation and the info sign -> plain text.
 _COMPAT = re.compile(
     "["
-    + chr(0x1D400) + "-" + chr(0x1D7FF)
-    + chr(0xFB00) + "-" + chr(0xFB06)
-    + chr(0x2460) + "-" + chr(0x24FF)
-    + chr(0x203C) + chr(0x2139)
+    + chr(0x1D400)
+    + "-"
+    + chr(0x1D7FF)
+    + chr(0xFB00)
+    + "-"
+    + chr(0xFB06)
+    + chr(0x2460)
+    + "-"
+    + chr(0x24FF)
+    + chr(0x203C)
+    + chr(0x2139)
     + "]"
 )
-_CHAR_TABLE_NO_QUOTES = str.maketrans(
-    {k: v for k, v in _CHAR_MAP.items() if v not in ("'", '"')}
-)
+_CHAR_TABLE_NO_QUOTES = str.maketrans({k: v for k, v in _CHAR_MAP.items() if v not in ("'", '"')})
 
 # --- 3. emoji ----------------------------------------------------------------
 _EMOJI_WORDS = {
-    "\u2705": "Yes", "\u2714": "Yes", "\u2713": "Yes", "\u2611": "Yes",
-    "\u274c": "No", "\u2716": "No", "\u2717": "No", "\u2718": "No", "\u274e": "No",
-    "\u26a0": "Warning:", "\u26d4": "Blocked:", "\U0001f6ab": "Blocked:",
-    "\u2610": "[ ]", "\u2b50": "*", "\u2605": "*", "\u2606": "*", "\U0001f31f": "*",
-    "\U0001f7e2": "Green", "\U0001f7e1": "Yellow", "\U0001f534": "Red",
-    "\U0001f7e0": "Orange", "\u26aa": "White", "\u26ab": "Black",
-    "\u27a1": "\u2192", "\u2794": "\u2192", "\u279c": "\u2192", "\u27a4": "\u2192",
-    "\u2b05": "\u2190", "\u2b06": "\u2191", "\u2b07": "\u2193",
-    "\u25b6": "\u2192", "\u25ba": "\u2192", "\u25b8": "\u2192",
+    "\u2705": "Yes",
+    "\u2714": "Yes",
+    "\u2713": "Yes",
+    "\u2611": "Yes",
+    "\u274c": "No",
+    "\u2716": "No",
+    "\u2717": "No",
+    "\u2718": "No",
+    "\u274e": "No",
+    "\u26a0": "Warning:",
+    "\u26d4": "Blocked:",
+    "\U0001f6ab": "Blocked:",
+    "\u2610": "[ ]",
+    "\u2b50": "*",
+    "\u2605": "*",
+    "\u2606": "*",
+    "\U0001f31f": "*",
+    "\U0001f7e2": "Green",
+    "\U0001f7e1": "Yellow",
+    "\U0001f534": "Red",
+    "\U0001f7e0": "Orange",
+    "\u26aa": "White",
+    "\u26ab": "Black",
+    "\u27a1": "\u2192",
+    "\u2794": "\u2192",
+    "\u279c": "\u2192",
+    "\u27a4": "\u2192",
+    "\u2b05": "\u2190",
+    "\u2b06": "\u2191",
+    "\u2b07": "\u2193",
+    "\u25b6": "\u2192",
+    "\u25ba": "\u2192",
+    "\u25b8": "\u2192",
 }
 _EMOJI_CLASS = (
     "\U0001f000-\U0001faff\u2600-\u27bf\u2b00-\u2bff\u2300-\u23ff"
@@ -110,17 +164,56 @@ _FOREIGN_RUN = re.compile(f"[ \t]*[{_FOREIGN_CLASS}][{_FOREIGN_CLASS}\\s]*")
 _SWITCHER_HINT = re.compile(r"README|lang|badge|\]\(|<a\s|<img|<p\b|</?div", re.I)
 
 # --- 5. upside-down text -----------------------------------------------------
-_FLIP_MARKERS = set("\u0250\u01dd\u0279\u0287\u0265\u026f\u028d\u028e\u025f\u0183\u0254\u0131\u029e\u0259")
-_UNFLIP = str.maketrans({
-    "\u0250": "a", "q": "b", "\u0254": "c", "p": "d", "\u01dd": "e", "\u0259": "e",
-    "\u025f": "f", "\u0183": "g", "\u0265": "h", "\u0131": "i", "\u027e": "j",
-    "\u029e": "k", "\u026f": "m", "u": "n", "d": "p", "b": "q", "\u0279": "r",
-    "\u0287": "t", "n": "u", "\u028c": "v", "\u028d": "w", "\u028e": "y",
-    "\u02d9": ".", "\u00bf": "?", "\u00a1": "!", "(": ")", ")": "(",
-    "[": "]", "]": "[", "{": "}", "}": "{", "<": ">", ">": "<", "'": ",", ",": "'",
-    "\u2200": "A", "\u018e": "E", "\u2132": "F", "\u05e4": "P", "\u22a5": "T",
-    "\u2229": "U", "\u039b": "V", "\u2144": "Y",
-})
+_FLIP_MARKERS = set(
+    "\u0250\u01dd\u0279\u0287\u0265\u026f\u028d\u028e\u025f\u0183\u0254\u0131\u029e\u0259"
+)
+_UNFLIP = str.maketrans(
+    {
+        "\u0250": "a",
+        "q": "b",
+        "\u0254": "c",
+        "p": "d",
+        "\u01dd": "e",
+        "\u0259": "e",
+        "\u025f": "f",
+        "\u0183": "g",
+        "\u0265": "h",
+        "\u0131": "i",
+        "\u027e": "j",
+        "\u029e": "k",
+        "\u026f": "m",
+        "u": "n",
+        "d": "p",
+        "b": "q",
+        "\u0279": "r",
+        "\u0287": "t",
+        "n": "u",
+        "\u028c": "v",
+        "\u028d": "w",
+        "\u028e": "y",
+        "\u02d9": ".",
+        "\u00bf": "?",
+        "\u00a1": "!",
+        "(": ")",
+        ")": "(",
+        "[": "]",
+        "]": "[",
+        "{": "}",
+        "}": "{",
+        "<": ">",
+        ">": "<",
+        "'": ",",
+        ",": "'",
+        "\u2200": "A",
+        "\u018e": "E",
+        "\u2132": "F",
+        "\u05e4": "P",
+        "\u22a5": "T",
+        "\u2229": "U",
+        "\u039b": "V",
+        "\u2144": "Y",
+    }
+)
 _LINE_PREFIX = re.compile(r"^(\s*(?:>\s*)*(?:[-*+]\s+|\d+\.\s+)?)(.*)$")
 
 
@@ -129,7 +222,10 @@ def _unflip_line(line: str) -> str:
     markers = sum(1 for c in line if c in _FLIP_MARKERS)
     if markers < 3 or not letters or markers / len(letters) < 0.2:
         return line
-    prefix, body = _LINE_PREFIX.match(line).groups()
+    m = _LINE_PREFIX.match(line)
+    if m is None:
+        return line
+    prefix, body = m.groups()
     return prefix + body[::-1].translate(_UNFLIP).strip()
 
 
