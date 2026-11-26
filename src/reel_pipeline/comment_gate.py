@@ -254,6 +254,10 @@ def save_queue(path: Path, q: dict[str, Any]) -> None:
 
 
 def atomic_write(path: Path, text: str) -> None:
+    if path.suffix == ".md":  # vault notes stay in plain English
+        from reel_pipeline.text_clean import english_clean
+
+        text = english_clean(text)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
