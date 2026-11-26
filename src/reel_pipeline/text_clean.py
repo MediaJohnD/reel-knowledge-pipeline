@@ -15,6 +15,9 @@ whole vault.
 from __future__ import annotations
 
 import re
+import unicodedata
+
+import yaml
 
 # --- 1. cp1252 mojibake -------------------------------------------------------
 _CP1252_HIGH = (
@@ -60,6 +63,19 @@ _CHAR_MAP = {
     "\u2026": "...",
 }
 _CHAR_TABLE = str.maketrans(_CHAR_MAP)
+# Fake "bold/italic" caption fonts (Mathematical Alphanumerics), ligatures,
+# circled digits/letters, double exclamation and the info sign -> plain text.
+_COMPAT = re.compile(
+    "["
+    + chr(0x1D400) + "-" + chr(0x1D7FF)
+    + chr(0xFB00) + "-" + chr(0xFB06)
+    + chr(0x2460) + "-" + chr(0x24FF)
+    + chr(0x203C) + chr(0x2139)
+    + "]"
+)
+_CHAR_TABLE_NO_QUOTES = str.maketrans(
+    {k: v for k, v in _CHAR_MAP.items() if v not in ("'", '"')}
+)
 
 # --- 3. emoji ----------------------------------------------------------------
 _EMOJI_WORDS = {
@@ -117,12 +133,21 @@ def _unflip_line(line: str) -> str:
     return prefix + body[::-1].translate(_UNFLIP).strip()
 
 
+# A status mark followed by a word ("[ok] Ready") adds nothing once it is gone;
+# standing alone (a table cell) it becomes the word.
+_DROP_BEFORE_TEXT = {"Yes", "No", "Green", "Yellow", "Red", "Orange", "White", "Black"}
+
+
 def _emoji_sub(match: re.Match[str]) -> str:
     run = match.group(0)
+    rest = match.string[match.end() :]
+    before_text = bool(rest) and (rest[0].isalnum() or rest[0] in "`*_[(\"'")
     words, kept = [], []
     for ch in run.rstrip(" \t"):
         if ch in _EMOJI_WORDS:
-            words.append(_EMOJI_WORDS[ch])
+            word = _EMOJI_WORDS[ch]
+            if not (before_text and word in _DROP_BEFORE_TEXT):
+                words.append(word)
         elif ch in _KEEP_SHAPES:
             kept.append(ch)
     out = " ".join(words) + "".join(kept)
@@ -141,15 +166,16 @@ def _clean_line(line: str) -> str:
     line = _KEYCAP.sub(r"\1.", line)
     line = _EMOJI_RUN.sub(_emoji_sub, line)
     if line != original:
-        indent = len(line) - len(line.lstrip(" \t"))
-        body = re.sub(r"[ \t]{2,}", " ", line[indent:]).rstrip()
-        line = line[:indent] + body
+        # Spacing is left alone so aligned trees and tables keep their columns;
+        # only whitespace a removed character left at the end of the line goes.
+        if original == original.rstrip(" \t"):
+            line = line.rstrip(" \t")
         if not line.strip() and original.strip():
             return "\x00DROP"
     return line
 
 
-def english_clean(text: str) -> str:
+def _clean_body(text: str, quotes: bool = True) -> str:
     """Return ``text`` with mojibake repaired and non-English noise removed."""
     if not text:
         return text
@@ -159,7 +185,44 @@ def english_clean(text: str) -> str:
     text = text.replace("\u00e2\u20ac\ufffd", '"')
     text = _MOJIBAKE.sub(_fix_mojibake_run, text)
     text = re.sub(r"[ \t]*\ufffd[ \t]*", " - ", text)
-    text = text.translate(_CHAR_TABLE)
+    text = text.translate(_CHAR_TABLE if quotes else _CHAR_TABLE_NO_QUOTES)
+    text = _COMPAT.sub(lambda m: unicodedata.normalize("NFKC", m.group(0)), text)
     lines = [_clean_line(line) for line in text.split("\n")]
     text = "\n".join(line for line in lines if line != "\x00DROP")
     return text.replace("\n", "\r\n") if crlf else text
+
+
+def _yaml_ok(block: str) -> bool:
+    try:
+        yaml.safe_load(block)
+        return True
+    except yaml.YAMLError:
+        return False
+
+
+def english_clean(text: str) -> str:
+    """Return ``text`` with mojibake repaired and non-English noise removed.
+
+    YAML frontmatter is cleaned too, but never left unparseable: a straight
+    quote can end a quoted YAML value early, so if the cleaned block no longer
+    parses the quotes are kept curly, and if it still fails the block is kept.
+    """
+    if not text:
+        return text
+    crlf = "\r\n" in text
+    body = text.replace("\r\n", "\n") if crlf else text
+    head = ""
+    if body.startswith("---\n"):
+        end = body.find("\n---", 4)
+        if end > 0:
+            head, body = body[: end + 1], body[end + 1 :]
+    if head:
+        inner = head[4:]
+        cleaned = _clean_body(inner)
+        if not _yaml_ok(cleaned):
+            cleaned = _clean_body(inner, quotes=False)
+            if not _yaml_ok(cleaned) and _yaml_ok(inner):
+                cleaned = inner
+        head = "---\n" + cleaned
+    out = head + _clean_body(body)
+    return out.replace("\n", "\r\n") if crlf else out

@@ -114,5 +114,5 @@ def test_note_is_written_in_plain_english(tmp_path):
     item.transcript.text = "Great ✅ 中文 tool"
     raw = write_note(settings, item).read_text(encoding="utf-8")
     assert "3D-Printed Desk" in raw
-    assert "Great Yes tool" in raw
+    assert "Great tool" in raw
     assert "‑" not in raw and "🚀" not in raw and "中" not in raw

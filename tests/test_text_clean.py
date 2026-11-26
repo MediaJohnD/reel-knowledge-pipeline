@@ -19,7 +19,7 @@ def test_odd_hyphens_spaces_and_quotes_normalized():
 
 def test_emoji_status_words_and_decorative_removed():
     assert english_clean("\u2705 Done \u274c Failed \u26a0\ufe0f Careful \U0001f680 Launch \U0001f447") == (
-        "Yes Done No Failed Warning: Careful Launch"
+        "Done Failed Warning: Careful Launch"
     )
     assert english_clean("1\ufe0f\u20e3 First") == "1. First"
 
@@ -54,3 +54,26 @@ def test_idempotent():
 
 def test_crlf_line_endings_kept():
     assert english_clean("a \u2705\r\nb\r\n") == "a Yes\r\nb\r\n"
+
+
+def test_frontmatter_never_made_unparseable():
+    import yaml
+
+    rsq = chr(0x2019)
+    text = f"---\ntitle: 'SEO Isn{rsq}t Dead'\n---\nIt{rsq}s fine\n"
+    out = english_clean(text)
+    yaml.safe_load(out.split("---\n")[1])
+    assert out.endswith("It's fine\n")
+
+
+def test_status_mark_alone_becomes_word():
+    assert english_clean("| a | ✅ | ❌ |") == "| a | Yes | No |"
+
+
+def test_aligned_tree_spacing_kept():
+    line = "├── reddit.py       ▸ OpenCLI"
+    assert english_clean(line) == "├── reddit.py       " + chr(0x2192) + " OpenCLI"
+
+
+def test_fake_fonts_ligatures_and_circled_digits_plain():
+    assert english_clean("𝗔𝗕𝗖 ﬁle ①②") == "ABC file 12"
