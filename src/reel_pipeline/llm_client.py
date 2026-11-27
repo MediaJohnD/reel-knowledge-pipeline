@@ -389,7 +389,8 @@ def _call_ollama(
         think: dict = {"think": "medium"}
         options = _ollama_options(settings, max_tokens + 4096)
     else:
-        think = {"think": settings.llm.ollama_think} if settings.llm.ollama_think is not None else {}
+        flag = settings.llm.ollama_think
+        think = {"think": flag} if flag is not None else {}
         options = _ollama_options(settings, max_tokens)
     try:
         payload = _post_json(
