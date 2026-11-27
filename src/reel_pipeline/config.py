@@ -85,7 +85,7 @@ class LlmConfig(BaseModel):
     # text shares - personal content), bypassing text_waterfall entirely.
     # bonsai-2.5:27b-64k since 2026-11-25: the always-on (pinned) local model, so local calls
     # never swap models in Ollama; passed the enrichment JSON contract live (90 s).
-    local_text_model: str = "bonsai-2.5:27b-64k"
+    local_text_model: str = "gpt-oss:20b-64k"  # 2026-11-26 evening: pinned text model at reasoning medium
     # Same shape, for describe_images() (photo/carousel vision calls). Empty
     # means "no waterfall" - falls back to image_description.provider (or
     # llm.provider) with the caller's model, as before.

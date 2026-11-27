@@ -115,9 +115,11 @@ llm:
     - provider: openrouter
       model: nvidia/nemotron-3.5-lightning:free
     # Local unmetered last resort (verified live 2026-09-24 on :11435). Added
-    # because the chain previously had no Ollama rung at all.
+    # because the chain previously had no Ollama rung at all. gpt-oss:20b-64k at
+    # reasoning medium since 2026-11-26 evening: it is the pinned local text model
+    # (ties Bonsai on agentic 25/25 at 2x decode); Bonsai stays for vision below.
     - provider: ollama
-      model: bonsai-2.5:27b-64k
+      model: gpt-oss:20b-64k
   # Vision fallback chain for photo/carousel description (describe_images()).
   # Same 2026-08-25 research and the same China-infra exclusions apply.
   # Gemini 3.5 then 3.1 Flash-Lite first (500 RPD each, both vision-capable,
@@ -148,12 +150,15 @@ llm:
   # 0 = send no num_ctx, so each tag loads at one fixed size and is shared with
   # Hermes instead of reloaded: *-64k tags bake 64k, the rest get the server's
   # OLLAMA_CONTEXT_LENGTH=16384 (user env, 2026-10-09). Local models on this
-  # machine: bonsai-2.5:27b-64k (always-on chat model, pinned for Hermes; 2026-11-25),
+  # machine: gpt-oss:20b-64k (pinned text model since 2026-11-26 evening),
+  # bonsai-2.5:27b-64k (vision, loaded on demand),
   # gemma4:12b (no longer used here since 2026-11-25), embeddinggemma (mem0).
   ollama_num_ctx: 0
   # Thinking off for local text calls (2026-11-25, real enrichment prompt on
   # two 8000-char transcripts): Bonsai 2.5 took 73 s / 50 s thinking and
   # 19 s / 14 s without, JSON valid every time, one or two fewer tags/takeaways.
+  # gpt-oss ignores this: llm_client always sends think "medium" to gpt-oss
+  # (low or false drops it to 15/25 agentic, 2026-11-26 re-bench).
   ollama_think: false
   # Minimum seconds between consecutive calls to each provider - run_once()
   # has no natural pacing between items, so re-processing a backlog can fire
