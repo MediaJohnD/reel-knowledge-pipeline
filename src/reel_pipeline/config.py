@@ -149,7 +149,7 @@ class ImageDescriptionConfig(BaseModel):
     # Groq model whose input_modalities includes "image" (check GET
     # /openai/v1/models - most Groq text models do NOT support images) when
     # "groq".
-    model: str = "bonsai-2.5:27b-64k"
+    model: str = "lfm3-vl:2b-16k"
     max_tokens: int = 1024
     # Vision works on "ollama", "anthropic", "gemini", or "groq"
     # (describe_images() in llm_client.py) - some providers have no vision path wired
