@@ -312,6 +312,19 @@ class QueueManager:
                 return record
 
         if not result.ok:
+            if not url.strip():
+                # Refused, but not persisted: an empty paste has no id to key on and
+                # was stored under "" as a backlog item that could never resolve.
+                return StateRecord(
+                    content_id="",
+                    url=url,
+                    normalized_url="",
+                    source=source,
+                    status=ItemStatus.BLOCKED,
+                    added_at=now,
+                    updated_at=now,
+                    error=result.reason,
+                )
             content_id = result.content_id or url
             existing = state.get(content_id)
             if existing is None:

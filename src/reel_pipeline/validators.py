@@ -51,11 +51,15 @@ _STRIP_QUERY_PARAMS = {
     "dm_net",
     "li_fat_id",
     "rcm",
+    # Singular attribution (`singular=345____<campaign>__<adset>__<ad>`), which carries a
+    # different value per ad creative: Warby Parker, 2026-11-13 and 11-17.
+    "singular",
 }
 
 # Every utm_* param is tracking, and ad tools keep inventing new ones (utm_adname,
-# utm_adset, utm_referrer), each of which minted a second note for one page.
-_STRIP_QUERY_PREFIX = "utm_"
+# utm_adset, utm_referrer), each of which minted a second note for one page. Meta's
+# fb_ad/fb_adid/fb_adset/fb_campaign/... family did the same (Warby Parker, 2026-11).
+_STRIP_QUERY_PREFIX = ("utm_", "fb_")
 
 # Query params that carry a credential or per-share token. Only sanitize_url() drops
 # these - see its docstring for why they must stay out of _STRIP_QUERY_PARAMS.

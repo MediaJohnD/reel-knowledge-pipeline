@@ -430,3 +430,21 @@ def test_unwrap_redirect_handles_a_wrapper_inside_a_wrapper():
         )
         == "https://a.example/b"
     )
+
+
+def test_meta_fb_and_singular_ad_params_do_not_change_content_id():
+    """Two Warby Parker ad creatives carried different fb_ad/fb_adid/fb_campaign/... and
+    Singular `singular=` attribution values and became two items for one page
+    (2026-11-13 and 2026-11-17). utm_* was already stripped; fb_* and singular were not."""
+    page = "https://www.warbyparker.com/collections/intelligent-eyewear"
+    creative_a = (
+        f"{page}?utm_source=facebook&singular=345____1__2__3&fb_ad=FourFrames"
+        "&fb_adid=52688418584813&fb_adset=Prospecting&fb_campaignid=1"
+    )
+    creative_b = (
+        f"{page}?utm_source=facebook&singular=345____9__8__7&fb_ad=GreenFrame"
+        "&fb_adid=52688412650013&fb_adsetid=2&fb_campaign=Traffic"
+    )
+
+    assert compute_content_id(creative_a) == compute_content_id(creative_b)
+    assert compute_content_id(creative_a) == compute_content_id(page)
