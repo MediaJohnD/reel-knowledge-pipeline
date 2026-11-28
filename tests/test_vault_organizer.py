@@ -252,3 +252,27 @@ def test_auto_hub_links_unhubbed_notes(tmp_path, monkeypatch):
     assert auto_hub(settings) == [
         f'unhubbed {b.stem}: model picked "travel-hub/See Also"'
     ]  # idempotent
+
+
+def test_duplicate_finder_matches_on_the_pipeline_dedup_key(tmp_path):
+    """Exact source_url equality missed a utm or capitalization variant of the same page,
+    so the nightly check could report "no duplicates" while two notes covered one repo."""
+    from reel_pipeline.vault_organizer import find_duplicate_notes
+
+    settings = Settings(project_root=tmp_path)
+    settings.vault_dir.mkdir(parents=True, exist_ok=True)
+
+    def note(name: str, cid: str, url: str) -> None:
+        (settings.vault_dir / name).write_text(
+            f"---\ncontent_id: {cid}\nsource_url: {url}\ntitle: {name}\n---\nbody\n",
+            encoding="utf-8",
+        )
+
+    note("a.md", "id1", "https://github.com/d4vinci/Scrapling?utm_source=dm")
+    note("b.md", "id2", "https://github.com/D4Vinci/Scrapling")
+    note("c.md", "id3", "https://github.com/other/repo")
+
+    findings = find_duplicate_notes(settings)
+
+    assert len(findings) == 1
+    assert "a.md" in findings[0] and "b.md" in findings[0] and "c.md" not in findings[0]

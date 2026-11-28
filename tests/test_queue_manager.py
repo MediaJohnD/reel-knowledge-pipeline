@@ -660,6 +660,20 @@ def test_google_doc_view_variants_are_one_item(tmp_path):
     assert len(qm.load_state()) == 2
 
 
+def test_github_owner_and_repo_case_variants_are_one_item(tmp_path):
+    """GitHub owner/repo names are case-insensitive: d4vinci/Scrapling and D4Vinci/Scrapling
+    are one repo (live state, 2026-11-28). Paths below the repo stay case-sensitive."""
+    settings = Settings(project_root=tmp_path)
+    qm = QueueManager(settings)
+    first = qm.add_url("https://github.com/d4vinci/Scrapling", source=QueueSource.WEBHOOK)
+    again = qm.add_url("https://github.com/D4Vinci/scrapling/", source=QueueSource.COMMENT_GATE)
+    assert again.content_id == first.content_id
+    file_a = qm.add_url("https://github.com/x/y/blob/main/README.md", source=QueueSource.WEBHOOK)
+    file_b = qm.add_url("https://github.com/x/y/blob/main/readme.md", source=QueueSource.WEBHOOK)
+    assert file_a.content_id != file_b.content_id
+    assert len(qm.load_state()) == 3
+
+
 def test_drive_folder_view_variants_are_one_item(tmp_path):
     settings = Settings(project_root=tmp_path)
     qm = QueueManager(settings)
