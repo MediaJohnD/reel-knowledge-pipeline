@@ -382,6 +382,16 @@ def _call_ollama(
 ) -> str:
     owned_client = client or httpx.Client(timeout=600.0)
     owns_client = client is None
+    # gpt-oss takes a reasoning level, not a bool: "medium" is the measured best
+    # (2026-11-26 re-bench: low or think=false 15/25 agentic, medium 25/25), and its
+    # reasoning tokens count against num_predict, so give it extra room.
+    if model.startswith("gpt-oss"):
+        think: dict = {"think": "medium"}
+        options = _ollama_options(settings, max_tokens + 4096)
+    else:
+        flag = settings.llm.ollama_think
+        think = {"think": flag} if flag is not None else {}
+        options = _ollama_options(settings, max_tokens)
     try:
         payload = _post_json(
             owned_client,
@@ -390,12 +400,8 @@ def _call_ollama(
                 "model": model,
                 "prompt": prompt,
                 "stream": False,
-                "options": _ollama_options(settings, max_tokens),
-                **(
-                    {"think": settings.llm.ollama_think}
-                    if settings.llm.ollama_think is not None
-                    else {}
-                ),
+                "options": options,
+                **think,
             },
         )
     except httpx.HTTPError as exc:

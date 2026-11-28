@@ -115,9 +115,11 @@ llm:
     - provider: openrouter
       model: nvidia/nemotron-3.5-lightning:free
     # Local unmetered last resort (verified live 2026-09-24 on :11435). Added
-    # because the chain previously had no Ollama rung at all.
+    # because the chain previously had no Ollama rung at all. gpt-oss:20b-64k at
+    # reasoning medium since 2026-11-26 evening: it is the pinned local text model
+    # (ties Bonsai on agentic 25/25 at 2x decode); Bonsai stays for vision below.
     - provider: ollama
-      model: bonsai-2.5:27b-64k
+      model: gpt-oss:20b-64k
   # Vision fallback chain for photo/carousel description (describe_images()).
   # Same 2026-08-25 research and the same China-infra exclusions apply.
   # Gemini 3.5 then 3.1 Flash-Lite first (500 RPD each, both vision-capable,
@@ -139,21 +141,29 @@ llm:
     # pixtral-12b-2409 (Mistral) removed 2026-11-25, same 402 as the text chain.
     - provider: openrouter
       model: google/gemma-4-31b-it:free
-    # Bonsai 2.5 replaced gemma4:12b here on 2026-11-25: on a text-heavy ad
-    # and a street photo it took 13-17 s vs 47-76 s, read every line of text
-    # verbatim, and invented nothing (gemma4 made up "Greek text and dates" and
-    # a "LISBOA" label). It is also the resident model, so no GPU swap.
+    # lfm3-vl:2b replaced Bonsai 2.5 here on 2026-11-27. Bonsai (8.3 GB) cannot
+    # sit beside the pinned gpt-oss (12.9 GB) on the 16 GB card, so each image
+    # evicted gpt-oss and stalled embeds. lfm3-vl (1.7 GB) pairs with it:
+    # synthetic vision 10/10 in 9 s, gpt-oss stays at 45-53 tok/s alongside.
+    # On 3 real carousel slides with the describe_image_post prompt it took
+    # 26 s vs Bonsai's 46 s and invented nothing, with less detail and one
+    # misread price sign. The -16k tag shares one load with Hermes vision.
+    # (Bonsai replaced gemma4:12b on 2026-11-25 because gemma4 invented text.)
     - provider: ollama
-      model: bonsai-2.5:27b-64k
+      model: lfm3-vl:2b-16k
   # 0 = send no num_ctx, so each tag loads at one fixed size and is shared with
   # Hermes instead of reloaded: *-64k tags bake 64k, the rest get the server's
   # OLLAMA_CONTEXT_LENGTH=16384 (user env, 2026-10-09). Local models on this
-  # machine: bonsai-2.5:27b-64k (always-on chat model, pinned for Hermes; 2026-11-25),
+  # machine: gpt-oss:20b-64k (pinned text model since 2026-11-26 evening),
+  # lfm3-vl:2b-16k (vision since 2026-11-27, loads beside gpt-oss),
+  # bonsai-2.5:27b-64k (no longer used here since 2026-11-27),
   # gemma4:12b (no longer used here since 2026-11-25), embeddinggemma (mem0).
   ollama_num_ctx: 0
   # Thinking off for local text calls (2026-11-25, real enrichment prompt on
   # two 8000-char transcripts): Bonsai 2.5 took 73 s / 50 s thinking and
   # 19 s / 14 s without, JSON valid every time, one or two fewer tags/takeaways.
+  # gpt-oss ignores this: llm_client always sends think "medium" to gpt-oss
+  # (low or false drops it to 15/25 agentic, 2026-11-26 re-bench).
   ollama_think: false
   # Minimum seconds between consecutive calls to each provider - run_once()
   # has no natural pacing between items, so re-processing a backlog can fire
@@ -196,10 +206,10 @@ skill_writer:
 # 2026-09-24: fits fully on the 16GB GPU, ~3x faster, far fewer hallucinated
 # details in a blind-scored benchmark) is served by the
 # Ollama instance named in REEL_OLLAMA_HOST (port 11435 on this machine), not
-# the default 11434. Bonsai 2.5 replaced gemma4:12b on 2026-11-25 (see
+# the default 11434. lfm3-vl:2b-16k replaced Bonsai 2.5 on 2026-11-27 (see
 # vision_waterfall above for the measurements).
 image_description:
-  model: bonsai-2.5:27b-64k
+  model: lfm3-vl:2b-16k
   max_tokens: 1024
   provider: ollama
   # A carousel longer than this is described in several calls and the results

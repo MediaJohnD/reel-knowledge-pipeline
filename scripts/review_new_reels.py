@@ -40,7 +40,7 @@ PROMPT = ROOT / "config" / "prompts" / "review_reel.md"
 PROFILE = ROOT / "config" / "owner_profile.yaml"
 PROFILE_EXAMPLE = ROOT / "config" / "owner_profile.example.yaml"
 YTDLP = ROOT / ".venv" / "Scripts" / "yt-dlp.exe"
-CRAWL, SEARX, OLLAMA_MODEL = "http://127.0.0.1:11235", "http://127.0.0.1:8888", "bonsai-2.5:27b-64k"
+CRAWL, SEARX, OLLAMA_MODEL = "http://127.0.0.1:11235", "http://127.0.0.1:8888", "gpt-oss:20b-64k"
 VERDICTS = {"try-now", "later", "skip", "already-have"}
 LOGIN_WALLED = ("instagram.com", "facebook.com", "tiktok.com", "fb.watch")
 YT_DOMAINS = ("youtube.com", "youtu.be")
@@ -722,12 +722,11 @@ def condense(settings, text, what):
         json={
             "model": OLLAMA_MODEL,
             "stream": False,
-            # 2026-11-25: Bonsai 2.5 is the always-on local model (Hermes default,
-            # pinned), so condense reuses the resident model instead of swapping
-            # gpt-oss in (each swap stalls every Ollama request, Khoj/mem0 embeds
-            # included). Same README condense: Bonsai 32-40 s vs gpt-oss 187 s.
-            "think": False,
-            "options": {"num_predict": 1500},
+            # 2026-11-26 evening: gpt-oss:20b-64k is the pinned local text model
+            # again (the 11-25 "gpt-oss 187 s" was low reasoning plus a GPU shared
+            # with Bonsai). Medium reasoning; its tokens count against num_predict.
+            "think": "medium",
+            "options": {"num_predict": 6000},
             "prompt": (
                 "Condense to under 1500 characters, facts only (what it is, install, license, "
                 f"caveats). Source: {what}\n\n{text[:9000]}"

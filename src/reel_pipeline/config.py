@@ -83,9 +83,9 @@ class LlmConfig(BaseModel):
     text_waterfall: list[WaterfallStep] = Field(default_factory=list)
     # Ollama model for text calls that must stay on this machine (screenshot and
     # text shares - personal content), bypassing text_waterfall entirely.
-    # bonsai-2.5:27b-64k since 2026-11-25: the always-on (pinned) local model, so local calls
-    # never swap models in Ollama; passed the enrichment JSON contract live (90 s).
-    local_text_model: str = "bonsai-2.5:27b-64k"
+    # gpt-oss:20b-64k since 2026-11-26 evening: the pinned local text model, always called
+    # at reasoning medium (llm_client._call_ollama). Bonsai 2.5 is the vision model.
+    local_text_model: str = "gpt-oss:20b-64k"
     # Same shape, for describe_images() (photo/carousel vision calls). Empty
     # means "no waterfall" - falls back to image_description.provider (or
     # llm.provider) with the caller's model, as before.
@@ -149,7 +149,7 @@ class ImageDescriptionConfig(BaseModel):
     # Groq model whose input_modalities includes "image" (check GET
     # /openai/v1/models - most Groq text models do NOT support images) when
     # "groq".
-    model: str = "bonsai-2.5:27b-64k"
+    model: str = "lfm3-vl:2b-16k"
     max_tokens: int = 1024
     # Vision works on "ollama", "anthropic", "gemini", or "groq"
     # (describe_images() in llm_client.py) - some providers have no vision path wired
