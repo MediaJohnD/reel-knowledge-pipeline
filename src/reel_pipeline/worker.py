@@ -884,7 +884,12 @@ class WorkerPipeline:
             lock_path = self.settings.state_file.with_suffix(".run_once.lock")
             try:
                 with FileLock(str(lock_path), timeout=600):
-                    return self._run_once_locked()
+                    summary = self._run_once_locked()
+                # Outside the run lock: a slow index must not hold up other runs.
+                from reel_pipeline import index_sync
+
+                index_sync.notify_index(self.settings, len(summary.note_paths))
+                return summary
             except FileLockTimeout as exc:
                 raise RunOnceLockError(
                     f"Could not acquire the run_once() lock ({lock_path}) within 600s - "
