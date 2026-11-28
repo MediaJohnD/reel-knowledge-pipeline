@@ -926,3 +926,16 @@ def test_a_sheets_first_tab_is_the_sheet_itself(tmp_path):
     for variant in (f"{sheet}?gid=0", f"{sheet}#gid=0", f"{sheet}?usp=sharing"):
         assert qm.add_url(variant, source=QueueSource.WEBHOOK).content_id == first.content_id
     assert len(qm.load_state()) == 1
+
+
+def test_empty_paste_is_refused_without_a_state_record(tmp_path):
+    """An empty webhook paste was stored as a BLOCKED record under content_id "" on
+    2026-11-03 and sat in the backlog. It is refused, but nothing is persisted."""
+    settings = Settings(project_root=tmp_path)
+    qm = QueueManager(settings)
+
+    for paste in ("", "   "):
+        record = qm.add_url(paste, source=QueueSource.WEBHOOK)
+        assert record.status == ItemStatus.BLOCKED
+
+    assert qm.load_state() == {}
