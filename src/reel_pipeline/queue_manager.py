@@ -522,9 +522,15 @@ _DRIVE_FILE = re.compile(
     r"^https://drive\.google\.com/(?:(?:u/\d+/)?file/(?:u/\d+/)?d/|(?:open|uc)\?(?:[^#]*&)?id=)([\w-]+)"
 )
 
+# GitHub owner and repo names are case-insensitive: d4vinci/Scrapling and D4Vinci/Scrapling
+# are one repo, and the second spelling would have made a new note (2026-11-28). Only the
+# owner/repo part is folded; file paths below it are case-sensitive.
+_GITHUB_REPO = re.compile(r"^https://github\.com/[^/?#]+/[^/?#]+")
+
 
 def _dedup_key(normalized_url: str) -> str:
     url = sanitize_url(normalized_url)
+    url = _GITHUB_REPO.sub(lambda m: m[0].lower(), url)
     match = _GOOGLE_DOC.match(url)
     if match:
         key = f"{match.group(1)}d/{match.group(2)}"

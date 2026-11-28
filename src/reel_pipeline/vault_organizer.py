@@ -19,7 +19,8 @@ from pathlib import Path
 from reel_pipeline.config import Settings
 from reel_pipeline.models import ItemStatus, StateRecord
 from reel_pipeline.obsidian_writer import note_filename, read_frontmatter
-from reel_pipeline.queue_manager import QueueManager
+from reel_pipeline.queue_manager import QueueManager, _dedup_key
+from reel_pipeline.validators import normalize_url
 
 
 def organize_vault(settings: Settings) -> list[str]:
@@ -112,7 +113,9 @@ def find_duplicate_notes(settings: Settings) -> list[str]:
             by_content_id[content_id].append(path)
         source_url = frontmatter.get("source_url")
         if source_url:
-            by_source_url[source_url].append(path)
+            # Same key ingestion dedups on, so a utm or capitalization variant of one
+            # page is caught here too, not only byte-identical URLs.
+            by_source_url[_dedup_key(normalize_url(str(source_url)))].append(path)
 
     findings: list[str] = []
     for content_id, paths in by_content_id.items():
